@@ -165,41 +165,64 @@ impl Default for Config {
     }
 }
 
-/// Root directory for all Sotto data (config, models, the ONNX runtime dll).
+/// Helper to find a read-only asset either in SOTTO_DATA_DIR, the app's local resources directory,
+/// or falling back to the default D:\sotto location.
+fn find_asset(relative_path: PathBuf) -> PathBuf {
+    // 1. Check if SOTTO_DATA_DIR is set
+    if let Ok(dir) = std::env::var("SOTTO_DATA_DIR") {
+        return PathBuf::from(dir).join(&relative_path);
+    }
+    
+    // 2. Check if the resources directory next to the executable exists and contains the asset
+    if let Ok(exe_path) = std::env::current_exe() {
+        if let Some(exe_dir) = exe_path.parent() {
+            let asset_path = exe_dir.join("resources").join(&relative_path);
+            if asset_path.exists() {
+                return asset_path;
+            }
+        }
+    }
+    
+    // 3. Fallback to data_dir()
+    data_dir().join(&relative_path)
+}
+
+/// Writable root directory for Sotto configurations and logs.
 ///
-/// Defaults to `D:\sotto` rather than `%APPDATA%`: this machine's C: drive is
-/// space-constrained and the Parakeet model alone is ~670 MB. Override with
-/// the `SOTTO_DATA_DIR` environment variable.
+/// Defaults to `D:\sotto` if it exists. Otherwise, falls back to the user's
+/// `%APPDATA%\sotto` directory. Override with the `SOTTO_DATA_DIR` environment variable.
 pub fn data_dir() -> PathBuf {
     if let Ok(dir) = std::env::var("SOTTO_DATA_DIR") {
         return PathBuf::from(dir);
     }
-    PathBuf::from(r"D:\sotto")
+    let d_sotto = PathBuf::from(r"D:\sotto");
+    if d_sotto.exists() {
+        return d_sotto;
+    }
+    if let Ok(appdata) = std::env::var("APPDATA") {
+        return PathBuf::from(appdata).join("sotto");
+    }
+    d_sotto
 }
 
 /// Directory the Parakeet v3 int8 model files live in.
 pub fn model_dir() -> PathBuf {
-    data_dir().join("models").join("parakeet-tdt-0.6b-v3-int8")
+    find_asset(PathBuf::from("models").join("parakeet-tdt-0.6b-v3-int8"))
 }
 
 /// Path to the ONNX Runtime shared library (`ort` load-dynamic target).
 pub fn onnxruntime_dll() -> PathBuf {
-    data_dir().join("onnxruntime.dll")
+    find_asset(PathBuf::from("onnxruntime.dll"))
 }
 
 /// GGUF model file for the Tier 1 LLM polish sidecar.
 pub fn llm_model_path() -> PathBuf {
-    data_dir()
-        .join("models")
-        .join("qwen2.5-1.5b-instruct-q4_k_m.gguf")
+    find_asset(PathBuf::from("models").join("qwen2.5-1.5b-instruct-q4_k_m.gguf"))
 }
 
 /// The bundled llama.cpp server executable.
 pub fn llama_server_exe() -> PathBuf {
-    data_dir()
-        .join("runtime")
-        .join("llama")
-        .join("llama-server.exe")
+    find_asset(PathBuf::from("runtime").join("llama").join("llama-server.exe"))
 }
 
 impl Config {

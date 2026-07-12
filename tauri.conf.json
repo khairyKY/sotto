@@ -43,7 +43,19 @@
   },
   "bundle": {
     "active": true,
-    "targets": "all",
-    "icon": ["icons/32x32.png", "icons/128x128.png", "icons/icon.ico"]
+    "targets": ["nsis"],
+    "icon": ["icons/32x32.png", "icons/128x128.png", "icons/icon.ico"],
+    "resources": [
+      "D:/sotto/onnxruntime.dll",
+      "D:/sotto/models/parakeet-tdt-0.6b-v3-int8/**/*",
+      "D:/sotto/runtime/**/*"
+    ],
+    "windows": {
+      "nsis": {
+        "installMode": "both",
+        "displayLanguageSelector": false,
+        "compression": "none"
+      }
+    }
   }
 }
