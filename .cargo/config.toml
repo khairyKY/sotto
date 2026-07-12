@@ -1,5 +1,5 @@
-[build]
-target = "x86_64-pc-windows-gnu"
-
+# Target comes from the rustup override (msvc on this branch). The gnu linker
+# mapping below only applies when explicitly building --target x86_64-pc-windows-gnu
+# (the master/egui fallback).
 [target.x86_64-pc-windows-gnu]
 linker = "D:/Coding/Tools/mingw64/bin/gcc.exe"

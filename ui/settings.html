@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Sotto — Settings</title>
+    <link rel="stylesheet" href="./fonts.css" />
+    <link rel="stylesheet" href="./settings.css" />
+  </head>
+  <body>
+    <!-- Custom title bar (window has no OS chrome). -->
+    <header class="titlebar" data-tauri-drag-region>
+      <div class="titlebar-left" data-tauri-drag-region>
+        <span class="mark-tile">
+          <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true">
+            <path class="smark" d="M11.3 4.4 C11.3 4.4 5.2 3.6 5.2 6.5 C5.2 9.2 11.4 8 11.4 10.8 C11.4 13.6 5.4 12.8 5.4 12.8"
+              fill="none" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" />
+          </svg>
+        </span>
+        <span class="title" data-tauri-drag-region>Sotto — Settings</span>
+      </div>
+      <div class="titlebar-controls">
+        <button class="winbtn" id="win-min" title="Minimize" aria-label="Minimize"><svg width="10" height="10"><line x1="1" y1="5" x2="9" y2="5" /></svg></button>
+        <button class="winbtn" id="win-max" title="Maximize" aria-label="Maximize"><svg width="10" height="10"><rect x="1" y="1" width="8" height="8" fill="none" /></svg></button>
+        <button class="winbtn close" id="win-close" title="Close" aria-label="Close"><svg width="10" height="10"><line x1="1" y1="1" x2="9" y2="9" /><line x1="9" y1="1" x2="1" y2="9" /></svg></button>
+      </div>
+    </header>
+
+    <main class="body">
+      <!-- HOTKEY -->
+      <section>
+        <div class="section-head"><span class="section-title">Hotkey</span></div>
+        <div class="card row">
+          <div class="row-label">
+            <div class="label">Dictation key</div>
+            <div class="sub">Hold to talk — release to transcribe</div>
+          </div>
+          <div class="row-control" id="hotkey-control">
+            <span class="keycap" id="hotkey-keycap">Right Ctrl</span>
+            <button class="btn" id="hotkey-rebind">Rebind</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- ACTIVATION -->
+      <section>
+        <div class="section-head"><span class="section-title">Activation</span></div>
+        <div class="card row">
+          <div class="row-label">
+            <div class="label">Mode</div>
+            <div class="sub">Hold the key while speaking, or tap to start &amp; stop</div>
+          </div>
+          <div class="segmented" id="activation" data-value="hold">
+            <button data-value="hold">Hold</button>
+            <button data-value="toggle">Toggle</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- SPEECH MODEL -->
+      <section>
+        <div class="section-head"><span class="section-title">Speech model</span></div>
+        <div class="card list" id="model-list">
+          <!-- rows injected by settings.js -->
+        </div>
+      </section>
+
+      <!-- POLISH -->
+      <section>
+        <div class="section-head"><span class="section-title">Polish</span></div>
+        <div class="card">
+          <div class="row bare">
+            <div class="row-label">
+              <div class="label">Cleanup</div>
+              <div class="sub">Off · Rules (instant, local) · AI (local LLM rewrite)</div>
+            </div>
+            <div class="segmented" id="polish" data-value="ai">
+              <button data-value="off">Off</button>
+              <button data-value="rules">Rules</button>
+              <button data-value="ai">AI</button>
+            </div>
+          </div>
+          <div class="divider"></div>
+          <div class="row bare">
+            <div class="row-label nowrap">
+              <div class="label">Use AI past</div>
+              <div class="sub">shorter clips stay on instant rules</div>
+            </div>
+            <div class="slider-wrap">
+              <input type="range" id="threshold" min="0" max="60" value="18" />
+              <span class="mono" id="threshold-val">18 words</span>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- DICTIONARY -->
+      <section>
+        <div class="section-head"><span class="section-title">Dictionary &amp; snippets</span></div>
+        <div class="card">
+          <div class="dict-rows" id="dict-rows"></div>
+          <button class="link-add" id="dict-add">+ Add entry</button>
+        </div>
+      </section>
+
+      <!-- HISTORY -->
+      <section>
+        <div class="section-head">
+          <span class="section-title">History</span>
+          <span class="section-hint">Click an entry to copy it again</span>
+        </div>
+        <div class="card list" id="history-list"></div>
+      </section>
+
+      <!-- STARTUP -->
+      <section>
+        <div class="section-head"><span class="section-title">Startup</span></div>
+        <div class="card list">
+          <div class="row toggle-row">
+            <span class="label">Launch Sotto at login</span>
+            <button class="switch" id="launch-login" role="switch" aria-checked="true"><span class="knob"></span></button>
+          </div>
+          <div class="divider"></div>
+          <div class="row toggle-row">
+            <span class="label">Start hidden in the tray</span>
+            <button class="switch" id="start-hidden" role="switch" aria-checked="true"><span class="knob"></span></button>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <script src="./settings.js"></script>
+  </body>
+</html>

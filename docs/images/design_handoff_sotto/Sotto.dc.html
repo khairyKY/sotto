@@ -1,0 +1,892 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet data-dc-atomics>
+<meta name="design_doc_mode" content="canvas">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  html,body{margin:0;padding:0}
+  body{background:#EAE8E2;font-family:Inter,system-ui,sans-serif;color:#2A2824;-webkit-font-smoothing:antialiased}
+  *{box-sizing:border-box}
+  a{color:#1B93A1;text-decoration:none}
+  a:hover{color:#157e8a}
+  ::selection{background:rgba(79,207,219,.28)}
+  .navbtn{transition:background .12s ease,color .12s ease}
+  .navbtn:hover{background:rgba(255,255,255,.05)}
+  @keyframes sottoCap{0%,100%{opacity:1}50%{opacity:.28}}
+  @keyframes sottoPulse{0%{transform:scale(1);opacity:.55}70%{transform:scale(1.7);opacity:0}100%{opacity:0}}
+</style>
+</helmet>
+<div style="display:flex;min-height:100vh;align-items:stretch">
+
+  <aside style="width:212px;flex:none;background:#1B1A17;color:#E9E6DF;position:sticky;top:0;height:100vh;display:flex;flex-direction:column;padding:26px 18px 20px">
+    <div style="display:flex;align-items:center;gap:11px;padding:0 6px 26px">
+      <div style="width:30px;height:30px;flex:none;border-radius:8px;background:#111017;display:flex;align-items:center;justify-content:center;box-shadow:inset 0 0 0 1px rgba(255,255,255,.07)">
+        <span style="font:600 17px Inter;color:#4FCFDB;letter-spacing:-.02em;transform:translateY(-.5px)"><svg viewBox="0 0 16 16" width="1em" height="1em" style="display:block" xmlns="http://www.w3.org/2000/svg"><path d="M11.3 4.4C11.3 4.4 5.2 3.6 5.2 6.5C5.2 9.2 11.4 8 11.4 10.8C11.4 13.6 5.4 12.8 5.4 12.8" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/></svg></span>
+      </div>
+      <div style="line-height:1.15">
+        <div style="font:600 14px Inter;letter-spacing:-.01em">Sotto</div>
+        <div style="font:500 10.5px 'JetBrains Mono';color:#7C786F;letter-spacing:.02em">visual system</div>
+      </div>
+    </div>
+
+    <nav style="display:flex;flex-direction:column;gap:2px">
+      <div class="navbtn" onClick="{{ nav.states.go }}" style="display:flex;align-items:center;gap:9px;padding:9px 11px;border-radius:8px;cursor:pointer;font:500 13px Inter;{{ nav.states.css }}"><span style="font:500 10px 'JetBrains Mono';opacity:.55;width:14px">01</span>Overlay states</div>
+      <div class="navbtn" onClick="{{ nav.directions.go }}" style="display:flex;align-items:center;gap:9px;padding:9px 11px;border-radius:8px;cursor:pointer;font:500 13px Inter;{{ nav.directions.css }}"><span style="font:500 10px 'JetBrains Mono';opacity:.55;width:14px">02</span>Directions</div>
+      <div class="navbtn" onClick="{{ nav.motion.go }}" style="display:flex;align-items:center;gap:9px;padding:9px 11px;border-radius:8px;cursor:pointer;font:500 13px Inter;{{ nav.motion.css }}"><span style="font:500 10px 'JetBrains Mono';opacity:.55;width:14px">03</span>Motion spec</div>
+      <div class="navbtn" onClick="{{ nav.settings.go }}" style="display:flex;align-items:center;gap:9px;padding:9px 11px;border-radius:8px;cursor:pointer;font:500 13px Inter;{{ nav.settings.css }}"><span style="font:500 10px 'JetBrains Mono';opacity:.55;width:14px">04</span>Settings</div>
+      <div class="navbtn" onClick="{{ nav.tray.go }}" style="display:flex;align-items:center;gap:9px;padding:9px 11px;border-radius:8px;cursor:pointer;font:500 13px Inter;{{ nav.tray.css }}"><span style="font:500 10px 'JetBrains Mono';opacity:.55;width:14px">05</span>Tray &amp; menu</div>
+      <div class="navbtn" onClick="{{ nav.spec.go }}" style="display:flex;align-items:center;gap:9px;padding:9px 11px;border-radius:8px;cursor:pointer;font:500 13px Inter;{{ nav.spec.css }}"><span style="font:500 10px 'JetBrains Mono';opacity:.55;width:14px">06</span>Implementation</div>
+    </nav>
+
+    <div style="margin-top:auto;padding:14px 8px 0;border-top:1px solid rgba(255,255,255,.07)">
+      <div style="font:500 10.5px 'JetBrains Mono';color:#6E6A61;line-height:1.7">egui / immediate-mode<br>flat fills · alpha · gradients<br>procedural motion only</div>
+    </div>
+  </aside>
+
+  <main style="flex:1;min-width:0;padding:44px 52px 80px">
+
+    <sc-if value="{{ isStates }}" hint-placeholder-val="{{ true }}">
+      <div>
+        <div style="max-width:720px;margin-bottom:34px">
+          <div style="font:500 11px 'JetBrains Mono';color:#9B968C;letter-spacing:.08em;text-transform:uppercase;margin-bottom:9px">Deliverable 01 · Active-state overlay</div>
+          <h1 style="font:600 27px Inter;letter-spacing:-.02em;margin:0 0 12px">The pill that lives at the edge of attention</h1>
+          <p style="font:400 14.5px/1.65 Inter;color:#57534B;margin:0">A 200&#215;56 always-on-top pill, bottom-center, visible only while Sotto works. Each canvas paints a desktop <em>then</em> the pill on top at 90% opacity &mdash; the real translucency stack, no blur. <strong>State is color</strong>, so status reads peripherally without reading a word. Every state is shown on a dark and a light desktop to prove contrast.</p>
+        </div>
+
+        <sc-for list="{{ states }}" as="s" hint-placeholder-count="5">
+          <div style="margin-bottom:30px">
+            <div style="display:flex;align-items:baseline;gap:10px;margin-bottom:11px">
+              <span style="width:9px;height:9px;border-radius:50%;background:{{ s.dot }};display:inline-block;transform:translateY(1px)"></span>
+              <span style="font:600 15px Inter;letter-spacing:-.01em">{{ s.cap }}</span>
+              <span style="font:400 13px Inter;color:#8A857B">{{ s.sub }}</span>
+            </div>
+            <div style="display:flex;gap:16px;flex-wrap:wrap">
+              <div>
+                <canvas data-ov="{{ s.ov }}" data-bg="dark" style="width:360px;height:150px;border-radius:12px;display:block;box-shadow:0 1px 2px rgba(0,0,0,.1)"></canvas>
+                <div style="font:500 10.5px 'JetBrains Mono';color:#9B968C;margin-top:7px">dark desktop</div>
+              </div>
+              <div>
+                <canvas data-ov="{{ s.ov }}" data-bg="light" style="width:360px;height:150px;border-radius:12px;display:block;box-shadow:0 1px 2px rgba(0,0,0,.1)"></canvas>
+                <div style="font:500 10.5px 'JetBrains Mono';color:#9B968C;margin-top:7px">light desktop</div>
+              </div>
+            </div>
+          </div>
+        </sc-for>
+      </div>
+    </sc-if>
+
+    <sc-if value="{{ isDirections }}" hint-placeholder-val="{{ true }}">
+      <div>
+        <div style="max-width:720px;margin-bottom:34px">
+          <div style="font:500 11px 'JetBrains Mono';color:#9B968C;letter-spacing:.08em;text-transform:uppercase;margin-bottom:9px">Overlay · three directions</div>
+          <h1 style="font:600 27px Inter;letter-spacing:-.02em;margin:0 0 12px">Same system, three temperaments</h1>
+          <p style="font:400 14.5px/1.65 Inter;color:#57534B;margin:0">All share the charcoal pill, the S mark and the cyan live-state. They differ in how much they say out loud. Shown in the <strong>Listening</strong> state. Reference them in chat as 1a / 1b / 1c.</p>
+        </div>
+
+        <sc-for list="{{ dirs }}" as="d" hint-placeholder-count="3">
+          <div style="margin-bottom:30px;max-width:760px">
+            <div style="display:flex;align-items:baseline;gap:10px;margin-bottom:5px">
+              <span style="font:600 11px 'JetBrains Mono';background:rgba(0,0,0,.08);padding:3px 7px;border-radius:5px">{{ d.id }}</span>
+              <span style="font:600 15px Inter;letter-spacing:-.01em">{{ d.cap }}</span>
+            </div>
+            <p style="font:400 13px/1.55 Inter;color:#6B665D;margin:0 0 11px;max-width:560px">{{ d.desc }}</p>
+            <div style="display:flex;gap:16px;flex-wrap:wrap">
+              <canvas data-ov="{{ d.ov }}" data-bg="dark" style="width:360px;height:150px;border-radius:12px;display:block;box-shadow:0 1px 2px rgba(0,0,0,.1)"></canvas>
+              <canvas data-ov="{{ d.ov }}" data-bg="light" style="width:360px;height:150px;border-radius:12px;display:block;box-shadow:0 1px 2px rgba(0,0,0,.1)"></canvas>
+            </div>
+          </div>
+        </sc-for>
+        <p style="font:400 12.5px/1.55 Inter;color:#8A857B;max-width:620px;margin-top:26px">Recommendation: <strong>1a</strong> as the default &mdash; quietest, most "edge of attention." 1b adds an explicit label + level meter for discoverability; 1c is the most expressive / pro-audio read.</p>
+      </div>
+    </sc-if>
+
+    <sc-if value="{{ isMotion }}" hint-placeholder-val="{{ true }}">
+      <div>
+        <div style="max-width:720px;margin-bottom:34px">
+          <div style="font:500 11px 'JetBrains Mono';color:#9B968C;letter-spacing:.08em;text-transform:uppercase;margin-bottom:9px">Deliverable 02 · Motion</div>
+          <h1 style="font:600 27px Inter;letter-spacing:-.02em;margin:0 0 12px">Motion that reassures, never demands</h1>
+          <p style="font:400 14.5px/1.65 Inter;color:#57534B;margin:0">Everything here is 60fps-cheap and built from primitives egui already has: moving points, a phase offset, a lerp toward a target, an alpha ramp. Nothing spins fast, nothing bounces. The demos below are live.</p>
+        </div>
+
+        <div style="display:flex;flex-direction:column;gap:14px;max-width:860px">
+
+          <div style="display:flex;gap:22px;align-items:center;background:#fff;border:1px solid rgba(0,0,0,.07);border-radius:12px;padding:18px 20px">
+            <canvas data-ov="listening" data-bg="dark" style="width:300px;height:104px;border-radius:10px;flex:none"></canvas>
+            <div style="flex:1">
+              <div style="font:600 15px Inter;margin-bottom:3px">Listening · waveform</div>
+              <div style="font:400 12.5px/1.5 Inter;color:#6B665D;margin-bottom:12px">A continuous wave whose amplitude tracks live mic level and whose phase drifts sideways. Tapered to zero at both ends so it never clips the pill.</div>
+              <div style="display:grid;grid-template-columns:auto 1fr;gap:5px 16px;font:500 11.5px 'JetBrains Mono';color:#4A463F">
+                <span style="color:#9B968C">moves</span><span>phase drift + per-frame amplitude envelope</span>
+                <span style="color:#9B968C">amplitude</span><span>&plusmn;12 px peak · sin-window taper to 0 at ends</span>
+                <span style="color:#9B968C">envelope</span><span>retarget every 110 ms · lerp k = 0.12 / frame</span>
+                <span style="color:#9B968C">phase loop</span><span>≈ 1260 ms · seamless</span>
+                <span style="color:#9B968C">stroke</span><span>2.4 px line + 5 px @ 22% underlay (bloom)</span>
+              </div>
+            </div>
+          </div>
+
+          <div style="display:flex;gap:22px;align-items:center;background:#fff;border:1px solid rgba(0,0,0,.07);border-radius:12px;padding:18px 20px">
+            <canvas data-ov="transcribing" data-bg="dark" style="width:300px;height:104px;border-radius:10px;flex:none"></canvas>
+            <div style="flex:1">
+              <div style="font:600 15px Inter;margin-bottom:3px">Transcribing · traveling dot</div>
+              <div style="font:400 12.5px/1.5 Inter;color:#6B665D;margin-bottom:12px">The wave collapses to a flat dim track. A single amber dot with a short leading trail sweeps across it — indeterminate, calm, clearly "working."</div>
+              <div style="display:grid;grid-template-columns:auto 1fr;gap:5px 16px;font:500 11.5px 'JetBrains Mono';color:#4A463F">
+                <span style="color:#9B968C">moves</span><span>dot + 22 px gradient trail, left → right</span>
+                <span style="color:#9B968C">easing</span><span>ease-in-out, both edges soft</span>
+                <span style="color:#9B968C">loop</span><span>1150 ms / pass · repeats</span>
+                <span style="color:#9B968C">track</span><span>2 px line, amber @ 30%</span>
+              </div>
+            </div>
+          </div>
+
+          <div style="display:flex;gap:22px;align-items:center;background:#fff;border:1px solid rgba(0,0,0,.07);border-radius:12px;padding:18px 20px">
+            <canvas data-ov="polishing" data-bg="dark" style="width:300px;height:104px;border-radius:10px;flex:none"></canvas>
+            <div style="flex:1">
+              <div style="font:600 15px Inter;margin-bottom:3px">Polishing · dot + sparkle</div>
+              <div style="font:400 12.5px/1.5 Inter;color:#6B665D;margin-bottom:12px">Same traveling dot, warmer gold, plus small 4-point sparkles twinkling above and below the track. The sparkle is the whole tell that intelligence is at work.</div>
+              <div style="display:grid;grid-template-columns:auto 1fr;gap:5px 16px;font:500 11.5px 'JetBrains Mono';color:#4A463F">
+                <span style="color:#9B968C">moves</span><span>dot (1250 ms) + spawned sparkles</span>
+                <span style="color:#9B968C">sparkle</span><span>spawn ~210 ms · scale 0→1→0 (sin)</span>
+                <span style="color:#9B968C">life</span><span>760 ms each · size 4–6.5 px</span>
+                <span style="color:#9B968C">accent</span><span>gold #F0C982 · spark #FCEBC6</span>
+              </div>
+            </div>
+          </div>
+
+          <div style="display:flex;gap:22px;align-items:center;background:#fff;border:1px solid rgba(0,0,0,.07);border-radius:12px;padding:18px 20px">
+            <canvas data-ov="done" data-bg="dark" style="width:300px;height:104px;border-radius:10px;flex:none"></canvas>
+            <div style="flex:1">
+              <div style="font:600 15px Inter;margin-bottom:3px">Done · tick &amp; dismiss</div>
+              <div style="font:400 12.5px/1.5 Inter;color:#6B665D;margin-bottom:12px">A cyan check strokes itself on, holds a beat, then the entire pill fades out and stops rendering. The blank you see in the loop is the pill genuinely gone.</div>
+              <div style="display:grid;grid-template-columns:auto 1fr;gap:5px 16px;font:500 11.5px 'JetBrains Mono';color:#4A463F">
+                <span style="color:#9B968C">draw</span><span>path length 0 → full over 260 ms, ease-out</span>
+                <span style="color:#9B968C">hold</span><span>140 ms at full</span>
+                <span style="color:#9B968C">fade</span><span>opacity + track → 0 over 400 ms</span>
+              </div>
+            </div>
+          </div>
+
+          <div style="display:flex;gap:22px;align-items:center;background:#fff;border:1px solid rgba(0,0,0,.07);border-radius:12px;padding:18px 20px">
+            <canvas data-ov="error" data-bg="dark" style="width:300px;height:104px;border-radius:10px;flex:none"></canvas>
+            <div style="flex:1">
+              <div style="font:600 15px Inter;margin-bottom:3px">Error · quiet notice</div>
+              <div style="font:400 12.5px/1.5 Inter;color:#6B665D;margin-bottom:12px">No shake, no flash, no red. The rose glyph and label simply appear, rest long enough to read, and fade. Failure should feel like a shrug, not an alarm.</div>
+              <div style="display:grid;grid-template-columns:auto 1fr;gap:5px 16px;font:500 11.5px 'JetBrains Mono';color:#4A463F">
+                <span style="color:#9B968C">appear</span><span>fade in 160 ms</span>
+                <span style="color:#9B968C">dwell</span><span>~2400 ms readable</span>
+                <span style="color:#9B968C">fade</span><span>300 ms out</span>
+              </div>
+            </div>
+          </div>
+
+          <div style="background:#F6F5F1;border:1px dashed rgba(0,0,0,.14);border-radius:12px;padding:16px 20px">
+            <div style="font:600 14px Inter;margin-bottom:8px">Enter / exit · the pill itself</div>
+            <div style="display:grid;grid-template-columns:auto 1fr;gap:5px 16px;font:500 11.5px 'JetBrains Mono';color:#4A463F;max-width:560px">
+              <span style="color:#9B968C">enter</span><span>opacity 0→1 · translateY 4→0 px · 180 ms ease-out</span>
+              <span style="color:#9B968C">exit</span><span>opacity 1→0 · translateY 0→4 px · 260 ms ease-out</span>
+              <span style="color:#9B968C">rule</span><span>never scale, never bounce, never overshoot</span>
+            </div>
+          </div>
+
+        </div>
+      </div>
+    </sc-if>
+    <sc-if value="{{ isSettings }}" hint-placeholder-val="{{ true }}">
+      <div>
+        <div style="max-width:720px;margin-bottom:30px">
+          <div style="font:500 11px 'JetBrains Mono';color:#9B968C;letter-spacing:.08em;text-transform:uppercase;margin-bottom:9px">Deliverable 03 · Settings window</div>
+          <h1 style="font:600 27px Inter;letter-spacing:-.02em;margin:0 0 12px">Dense, breathable, quiet</h1>
+          <p style="font:400 14.5px/1.65 Inter;color:#57534B;margin:0">A normal resizable desktop window opened from the tray, honoring the Windows light and dark themes. Every section on an 8&nbsp;px grid, one accent used only where it means "live." Shown at 548&nbsp;px wide &mdash; the natural minimum width.</p>
+        </div>
+
+        <div style="display:flex;gap:36px;flex-wrap:wrap;align-items:flex-start">
+
+          <div>
+            <div style="font:500 10.5px 'JetBrains Mono';color:#9B968C;margin-bottom:10px">WINDOWS · DARK</div>
+            <div style="width:548px;border-radius:10px;overflow:hidden;background:#201F22;box-shadow:0 10px 34px rgba(0,0,0,.22);border:1px solid rgba(255,255,255,.06)">
+
+              <div style="display:flex;align-items:center;justify-content:space-between;height:44px;padding:0 4px 0 15px;background:#26252A;border-bottom:1px solid rgba(255,255,255,.05)">
+                <div style="display:flex;align-items:center;gap:9px">
+                  <div style="width:18px;height:18px;border-radius:5px;background:#111017;display:flex;align-items:center;justify-content:center"><span style="font:600 11px Inter;color:#4FCFDB;transform:translateY(-.5px)"><svg viewBox="0 0 16 16" width="1em" height="1em" style="display:block" xmlns="http://www.w3.org/2000/svg"><path d="M11.3 4.4C11.3 4.4 5.2 3.6 5.2 6.5C5.2 9.2 11.4 8 11.4 10.8C11.4 13.6 5.4 12.8 5.4 12.8" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/></svg></span></div>
+                  <span style="font:500 13px Inter;color:#E8E5DF">Sotto</span>
+                  <span style="font:400 13px Inter;color:#7C786F">— Settings</span>
+                </div>
+                <div style="display:flex">
+                  <div style="width:44px;height:34px;display:flex;align-items:center;justify-content:center;color:#9E998E;font:400 13px Inter">&#9472;</div>
+                  <div style="width:44px;height:34px;display:flex;align-items:center;justify-content:center;color:#9E998E;font:400 11px Inter">&#9633;</div>
+                  <div style="width:44px;height:34px;display:flex;align-items:center;justify-content:center;color:#9E998E;font:400 13px Inter">&#10005;</div>
+                </div>
+              </div>
+
+              <div style="padding:20px 22px;display:flex;flex-direction:column;gap:22px">
+
+                <section>
+                  <div style="font:600 11px Inter;letter-spacing:.07em;text-transform:uppercase;color:#7C786F;margin-bottom:10px">Hotkey</div>
+                  <div style="background:#26252A;border:1px solid rgba(255,255,255,.07);border-radius:10px;padding:14px 16px;display:flex;align-items:center;justify-content:space-between;gap:16px">
+                    <div><div style="font:500 13px Inter;color:#E8E5DF">Dictation key</div><div style="font:400 12px Inter;color:#928E85;margin-top:3px">Hold to talk — release to transcribe</div></div>
+                    <div style="display:flex;align-items:center;gap:8px">
+                      <span style="display:inline-flex;align-items:center;background:#17161A;border:1px solid rgba(255,255,255,.14);border-bottom-width:2px;border-radius:6px;padding:5px 10px;font:500 12px 'JetBrains Mono';color:#DAD6CE">Right Ctrl</span>
+                      <span style="background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.12);border-radius:7px;padding:6px 12px;font:500 12px Inter;color:#DAD6CE;cursor:pointer">Rebind</span>
+                    </div>
+                  </div>
+                </section>
+
+                <section>
+                  <div style="font:600 11px Inter;letter-spacing:.07em;text-transform:uppercase;color:#7C786F;margin-bottom:10px">Activation</div>
+                  <div style="background:#26252A;border:1px solid rgba(255,255,255,.07);border-radius:10px;padding:14px 16px;display:flex;align-items:center;justify-content:space-between;gap:16px">
+                    <div><div style="font:500 13px Inter;color:#E8E5DF">Mode</div><div style="font:400 12px Inter;color:#928E85;margin-top:3px">Hold the key while speaking, or tap to start &amp; stop</div></div>
+                    <div style="display:inline-flex;background:#17161A;border:1px solid rgba(255,255,255,.08);border-radius:8px;padding:3px;gap:2px">
+                      <span style="background:#302F35;border-radius:6px;padding:6px 15px;font:500 12.5px Inter;color:#F0EDE6;box-shadow:inset 0 0 0 1px rgba(255,255,255,.06)">Hold</span>
+                      <span style="padding:6px 15px;font:500 12.5px Inter;color:#8B877E;cursor:pointer">Toggle</span>
+                    </div>
+                  </div>
+                </section>
+
+                <section>
+                  <div style="font:600 11px Inter;letter-spacing:.07em;text-transform:uppercase;color:#7C786F;margin-bottom:10px">Speech model</div>
+                  <div style="background:#26252A;border:1px solid rgba(255,255,255,.07);border-radius:10px;overflow:hidden">
+                    <div style="display:flex;align-items:center;gap:12px;padding:13px 16px">
+                      <span style="width:16px;height:16px;border-radius:50%;border:2px solid #4FCFDB;display:flex;align-items:center;justify-content:center;flex:none"><span style="width:6px;height:6px;border-radius:50%;background:#4FCFDB"></span></span>
+                      <div style="flex:1"><div style="font:500 13px Inter;color:#E8E5DF">Parakeet v3 <span style="color:#928E85;font-weight:400">· English</span></div><div style="font:400 12px Inter;color:#928E85;margin-top:2px">NVIDIA · int8 quantized</div></div>
+                      <span style="background:rgba(79,207,219,.14);color:#4FCFDB;font:500 10.5px Inter;padding:3px 9px;border-radius:20px">Installed</span>
+                      <span style="font:500 11px 'JetBrains Mono';color:#8B877E;width:52px;text-align:right">670 MB</span>
+                    </div>
+                    <div style="height:1px;background:rgba(255,255,255,.06)"></div>
+                    <div style="display:flex;align-items:center;gap:12px;padding:13px 16px">
+                      <span style="width:16px;height:16px;border-radius:50%;border:2px solid #4A4852;flex:none"></span>
+                      <div style="flex:1"><div style="font:500 13px Inter;color:#E8E5DF">Parakeet v3 <span style="color:#928E85;font-weight:400">· multilingual</span></div><div style="font:400 12px Inter;color:#928E85;margin-top:2px">25 languages · int8</div></div>
+                      <span style="background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.12);border-radius:7px;padding:5px 11px;font:500 11.5px Inter;color:#DAD6CE;cursor:pointer">Download</span>
+                      <span style="font:500 11px 'JetBrains Mono';color:#8B877E;width:52px;text-align:right">720 MB</span>
+                    </div>
+                    <div style="height:1px;background:rgba(255,255,255,.06)"></div>
+                    <div style="display:flex;align-items:center;gap:12px;padding:13px 16px">
+                      <span style="width:16px;height:16px;border-radius:50%;border:2px solid #4A4852;flex:none"></span>
+                      <div style="flex:1"><div style="font:500 13px Inter;color:#E8E5DF">Whisper large-v3</div>
+                        <div style="display:flex;align-items:center;gap:9px;margin-top:6px"><span style="display:block;width:150px;height:4px;border-radius:2px;background:#33323A;overflow:hidden"><span style="display:block;width:62%;height:100%;background:#4FCFDB;border-radius:2px"></span></span><span style="font:500 11px 'JetBrains Mono';color:#928E85">downloading · 62%</span></div>
+                      </div>
+                    </div>
+                  </div>
+                </section>
+
+                <section>
+                  <div style="font:600 11px Inter;letter-spacing:.07em;text-transform:uppercase;color:#7C786F;margin-bottom:10px">Polish</div>
+                  <div style="background:#26252A;border:1px solid rgba(255,255,255,.07);border-radius:10px;padding:14px 16px">
+                    <div style="display:flex;align-items:center;justify-content:space-between;gap:16px">
+                      <div><div style="font:500 13px Inter;color:#E8E5DF">Cleanup</div><div style="font:400 12px Inter;color:#928E85;margin-top:3px">Off · Rules (instant, local) · AI (local LLM rewrite)</div></div>
+                      <div style="display:inline-flex;background:#17161A;border:1px solid rgba(255,255,255,.08);border-radius:8px;padding:3px;gap:2px">
+                        <span style="padding:6px 13px;font:500 12.5px Inter;color:#8B877E;cursor:pointer">Off</span>
+                        <span style="padding:6px 13px;font:500 12.5px Inter;color:#8B877E;cursor:pointer">Rules</span>
+                        <span style="background:#302F35;border-radius:6px;padding:6px 13px;font:500 12.5px Inter;color:#F0EDE6;box-shadow:inset 0 0 0 1px rgba(255,255,255,.06)">AI</span>
+                      </div>
+                    </div>
+                    <div style="height:1px;background:rgba(255,255,255,.06);margin:14px 0"></div>
+                    <div style="display:flex;align-items:center;justify-content:space-between;gap:20px">
+                      <div style="flex:none"><div style="font:500 13px Inter;color:#E8E5DF">Use AI past</div><div style="font:400 12px Inter;color:#928E85;margin-top:3px">shorter clips stay on instant rules</div></div>
+                      <div style="flex:1;display:flex;align-items:center;gap:12px">
+                        <span style="position:relative;flex:1;height:4px;border-radius:2px;background:#33323A"><span style="position:absolute;left:0;top:0;height:100%;width:32%;background:#4FCFDB;border-radius:2px"></span><span style="position:absolute;left:32%;top:50%;transform:translate(-50%,-50%);width:14px;height:14px;border-radius:50%;background:#F0EDE6;box-shadow:0 0 0 2px #4FCFDB"></span></span>
+                        <span style="font:500 12px 'JetBrains Mono';color:#DAD6CE;white-space:nowrap;width:64px;text-align:right">18 words</span>
+                      </div>
+                    </div>
+                  </div>
+                </section>
+
+                <section>
+                  <div style="font:600 11px Inter;letter-spacing:.07em;text-transform:uppercase;color:#7C786F;margin-bottom:10px">Dictionary &amp; snippets</div>
+                  <div style="background:#26252A;border:1px solid rgba(255,255,255,.07);border-radius:10px;padding:12px 14px">
+                    <div style="display:flex;flex-direction:column;gap:8px">
+                      <div style="display:flex;align-items:center;gap:8px"><input readonly value="gee pee tee" style="flex:1;background:#17161A;border:1px solid rgba(255,255,255,.10);border-radius:6px;padding:6px 9px;font:400 12.5px Inter;color:#DAD6CE;outline:none"><span style="color:#6E6A61;font:400 13px Inter">&rarr;</span><input readonly value="GPT" style="flex:1;background:#17161A;border:1px solid rgba(255,255,255,.10);border-radius:6px;padding:6px 9px;font:400 12.5px Inter;color:#DAD6CE;outline:none"><span style="color:#6E6A61;font:400 13px Inter;cursor:pointer;padding:0 4px">&#10005;</span></div>
+                      <div style="display:flex;align-items:center;gap:8px"><input readonly value="my email" style="flex:1;background:#17161A;border:1px solid rgba(255,255,255,.10);border-radius:6px;padding:6px 9px;font:400 12.5px Inter;color:#DAD6CE;outline:none"><span style="color:#6E6A61;font:400 13px Inter">&rarr;</span><input readonly value="dev@sotto.app" style="flex:1;background:#17161A;border:1px solid rgba(255,255,255,.10);border-radius:6px;padding:6px 9px;font:400 12.5px Inter;color:#DAD6CE;outline:none"><span style="color:#6E6A61;font:400 13px Inter;cursor:pointer;padding:0 4px">&#10005;</span></div>
+                      <div style="display:flex;align-items:center;gap:8px"><input readonly value="arrow" style="flex:1;background:#17161A;border:1px solid rgba(255,255,255,.10);border-radius:6px;padding:6px 9px;font:400 12.5px Inter;color:#DAD6CE;outline:none"><span style="color:#6E6A61;font:400 13px Inter">&rarr;</span><input readonly value="&rarr;" style="flex:1;background:#17161A;border:1px solid rgba(255,255,255,.10);border-radius:6px;padding:6px 9px;font:400 12.5px Inter;color:#DAD6CE;outline:none"><span style="color:#6E6A61;font:400 13px Inter;cursor:pointer;padding:0 4px">&#10005;</span></div>
+                    </div>
+                    <div style="margin-top:11px;font:500 12.5px Inter;color:#4FCFDB;cursor:pointer">+ Add entry</div>
+                  </div>
+                </section>
+
+                <section>
+                  <div style="display:flex;align-items:baseline;justify-content:space-between;margin-bottom:10px"><span style="font:600 11px Inter;letter-spacing:.07em;text-transform:uppercase;color:#7C786F">History</span><span style="font:400 11px Inter;color:#7C786F">Click an entry to copy it again</span></div>
+                  <div style="background:#26252A;border:1px solid rgba(255,255,255,.07);border-radius:10px;overflow:hidden">
+                    <div style="display:flex;gap:12px;padding:11px 15px;align-items:flex-start;cursor:pointer"><span style="font:500 11px 'JetBrains Mono';color:#7C786F;width:58px;flex:none;padding-top:1px">2:14 PM</span><span style="flex:1;font:400 12.5px/1.45 Inter;color:#D6D2CA">Let's ship the overlay states first, then wire up the settings window.</span><span style="color:#6E6A61;flex:none;font:400 12px Inter">&#10697;</span></div>
+                    <div style="height:1px;background:rgba(255,255,255,.05)"></div>
+                    <div style="display:flex;gap:12px;padding:11px 15px;align-items:flex-start;cursor:pointer"><span style="font:500 11px 'JetBrains Mono';color:#7C786F;width:58px;flex:none;padding-top:1px">1:58 PM</span><span style="flex:1;font:400 12.5px/1.45 Inter;color:#D6D2CA">dev@sotto.app</span><span style="color:#6E6A61;flex:none;font:400 12px Inter">&#10697;</span></div>
+                    <div style="height:1px;background:rgba(255,255,255,.05)"></div>
+                    <div style="display:flex;gap:12px;padding:11px 15px;align-items:flex-start;cursor:pointer"><span style="font:500 11px 'JetBrains Mono';color:#7C786F;width:58px;flex:none;padding-top:1px">11:02 AM</span><span style="flex:1;font:400 12.5px/1.45 Inter;color:#D6D2CA">Refactor the polish tier so short clips skip the LLM round-trip.</span><span style="color:#6E6A61;flex:none;font:400 12px Inter">&#10697;</span></div>
+                  </div>
+                </section>
+
+                <section>
+                  <div style="font:600 11px Inter;letter-spacing:.07em;text-transform:uppercase;color:#7C786F;margin-bottom:10px">Startup</div>
+                  <div style="background:#26252A;border:1px solid rgba(255,255,255,.07);border-radius:10px;overflow:hidden">
+                    <div style="display:flex;align-items:center;justify-content:space-between;padding:13px 16px"><span style="font:500 13px Inter;color:#E8E5DF">Launch Sotto at login</span><span style="position:relative;width:38px;height:22px;border-radius:11px;background:#4FCFDB;flex:none"><span style="position:absolute;top:2px;left:18px;width:18px;height:18px;border-radius:50%;background:#fff"></span></span></div>
+                    <div style="height:1px;background:rgba(255,255,255,.06)"></div>
+                    <div style="display:flex;align-items:center;justify-content:space-between;padding:13px 16px"><span style="font:500 13px Inter;color:#E8E5DF">Start hidden in the tray</span><span style="position:relative;width:38px;height:22px;border-radius:11px;background:#4FCFDB;flex:none"><span style="position:absolute;top:2px;left:18px;width:18px;height:18px;border-radius:50%;background:#fff"></span></span></div>
+                  </div>
+                </section>
+
+              </div>
+            </div>
+          </div>
+
+          <div>
+            <div style="font:500 10.5px 'JetBrains Mono';color:#9B968C;margin-bottom:10px">WINDOWS · LIGHT</div>
+            <div style="width:548px;border-radius:10px;overflow:hidden;background:#FBFAF8;box-shadow:0 10px 34px rgba(0,0,0,.12);border:1px solid rgba(0,0,0,.10)">
+
+              <div style="display:flex;align-items:center;justify-content:space-between;height:44px;padding:0 4px 0 15px;background:#EFEDE8;border-bottom:1px solid rgba(0,0,0,.06)">
+                <div style="display:flex;align-items:center;gap:9px">
+                  <div style="width:18px;height:18px;border-radius:5px;background:#151319;display:flex;align-items:center;justify-content:center"><span style="font:600 11px Inter;color:#4FCFDB;transform:translateY(-.5px)"><svg viewBox="0 0 16 16" width="1em" height="1em" style="display:block" xmlns="http://www.w3.org/2000/svg"><path d="M11.3 4.4C11.3 4.4 5.2 3.6 5.2 6.5C5.2 9.2 11.4 8 11.4 10.8C11.4 13.6 5.4 12.8 5.4 12.8" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/></svg></span></div>
+                  <span style="font:500 13px Inter;color:#33302B">Sotto</span>
+                  <span style="font:400 13px Inter;color:#8A857B">— Settings</span>
+                </div>
+                <div style="display:flex">
+                  <div style="width:44px;height:34px;display:flex;align-items:center;justify-content:center;color:#6F6C64;font:400 13px Inter">&#9472;</div>
+                  <div style="width:44px;height:34px;display:flex;align-items:center;justify-content:center;color:#6F6C64;font:400 11px Inter">&#9633;</div>
+                  <div style="width:44px;height:34px;display:flex;align-items:center;justify-content:center;color:#6F6C64;font:400 13px Inter">&#10005;</div>
+                </div>
+              </div>
+
+              <div style="padding:20px 22px;display:flex;flex-direction:column;gap:22px">
+
+                <section>
+                  <div style="font:600 11px Inter;letter-spacing:.07em;text-transform:uppercase;color:#8A857B;margin-bottom:10px">Hotkey</div>
+                  <div style="background:#FFFFFF;border:1px solid rgba(0,0,0,.08);border-radius:10px;padding:14px 16px;display:flex;align-items:center;justify-content:space-between;gap:16px">
+                    <div><div style="font:500 13px Inter;color:#23221F">Dictation key</div><div style="font:400 12px Inter;color:#1B93A1;margin-top:3px">Listening for a key…</div></div>
+                    <div style="display:flex;align-items:center;gap:8px">
+                      <span style="display:inline-flex;align-items:center;gap:7px;background:rgba(27,147,161,.06);border:1.5px dashed #1B93A1;border-radius:7px;padding:5px 12px;font:500 12px Inter;color:#157e8a"><span style="width:6px;height:6px;border-radius:50%;background:#1B93A1;animation:sottoCap 1s ease-in-out infinite"></span>Press any key…</span>
+                      <span style="font:500 12px Inter;color:#8A857B;cursor:pointer">Cancel</span>
+                    </div>
+                  </div>
+                </section>
+
+                <section>
+                  <div style="font:600 11px Inter;letter-spacing:.07em;text-transform:uppercase;color:#8A857B;margin-bottom:10px">Activation</div>
+                  <div style="background:#FFFFFF;border:1px solid rgba(0,0,0,.08);border-radius:10px;padding:14px 16px;display:flex;align-items:center;justify-content:space-between;gap:16px">
+                    <div><div style="font:500 13px Inter;color:#23221F">Mode</div><div style="font:400 12px Inter;color:#6F6C64;margin-top:3px">Hold the key while speaking, or tap to start &amp; stop</div></div>
+                    <div style="display:inline-flex;background:#ECEAE4;border:1px solid rgba(0,0,0,.06);border-radius:8px;padding:3px;gap:2px">
+                      <span style="background:#FFFFFF;border-radius:6px;padding:6px 15px;font:500 12.5px Inter;color:#23221F;box-shadow:0 1px 2px rgba(0,0,0,.12)">Hold</span>
+                      <span style="padding:6px 15px;font:500 12.5px Inter;color:#8A857B;cursor:pointer">Toggle</span>
+                    </div>
+                  </div>
+                </section>
+
+                <section>
+                  <div style="font:600 11px Inter;letter-spacing:.07em;text-transform:uppercase;color:#8A857B;margin-bottom:10px">Speech model</div>
+                  <div style="background:#FFFFFF;border:1px solid rgba(0,0,0,.08);border-radius:10px;overflow:hidden">
+                    <div style="display:flex;align-items:center;gap:12px;padding:13px 16px">
+                      <span style="width:16px;height:16px;border-radius:50%;border:2px solid #1B93A1;display:flex;align-items:center;justify-content:center;flex:none"><span style="width:6px;height:6px;border-radius:50%;background:#1B93A1"></span></span>
+                      <div style="flex:1"><div style="font:500 13px Inter;color:#23221F">Parakeet v3 <span style="color:#8A857B;font-weight:400">· English</span></div><div style="font:400 12px Inter;color:#8A857B;margin-top:2px">NVIDIA · int8 quantized</div></div>
+                      <span style="background:rgba(27,147,161,.12);color:#157e8a;font:500 10.5px Inter;padding:3px 9px;border-radius:20px">Installed</span>
+                      <span style="font:500 11px 'JetBrains Mono';color:#8A857B;width:52px;text-align:right">670 MB</span>
+                    </div>
+                    <div style="height:1px;background:rgba(0,0,0,.06)"></div>
+                    <div style="display:flex;align-items:center;gap:12px;padding:13px 16px">
+                      <span style="width:16px;height:16px;border-radius:50%;border:2px solid #C4C0B8;flex:none"></span>
+                      <div style="flex:1"><div style="font:500 13px Inter;color:#23221F">Parakeet v3 <span style="color:#8A857B;font-weight:400">· multilingual</span></div><div style="font:400 12px Inter;color:#8A857B;margin-top:2px">25 languages · int8</div></div>
+                      <span style="background:#FFFFFF;border:1px solid rgba(0,0,0,.14);border-radius:7px;padding:5px 11px;font:500 11.5px Inter;color:#33302B;cursor:pointer">Download</span>
+                      <span style="font:500 11px 'JetBrains Mono';color:#8A857B;width:52px;text-align:right">720 MB</span>
+                    </div>
+                    <div style="height:1px;background:rgba(0,0,0,.06)"></div>
+                    <div style="display:flex;align-items:center;gap:12px;padding:13px 16px">
+                      <span style="width:16px;height:16px;border-radius:50%;border:2px solid #C4C0B8;flex:none"></span>
+                      <div style="flex:1"><div style="font:500 13px Inter;color:#23221F">Whisper large-v3</div>
+                        <div style="display:flex;align-items:center;gap:9px;margin-top:6px"><span style="display:block;width:150px;height:4px;border-radius:2px;background:#E4E1DA;overflow:hidden"><span style="display:block;width:62%;height:100%;background:#1B93A1;border-radius:2px"></span></span><span style="font:500 11px 'JetBrains Mono';color:#8A857B">downloading · 62%</span></div>
+                      </div>
+                    </div>
+                  </div>
+                </section>
+
+                <section>
+                  <div style="font:600 11px Inter;letter-spacing:.07em;text-transform:uppercase;color:#8A857B;margin-bottom:10px">Polish</div>
+                  <div style="background:#FFFFFF;border:1px solid rgba(0,0,0,.08);border-radius:10px;padding:14px 16px">
+                    <div style="display:flex;align-items:center;justify-content:space-between;gap:16px">
+                      <div><div style="font:500 13px Inter;color:#23221F">Cleanup</div><div style="font:400 12px Inter;color:#6F6C64;margin-top:3px">Off · Rules (instant, local) · AI (local LLM rewrite)</div></div>
+                      <div style="display:inline-flex;background:#ECEAE4;border:1px solid rgba(0,0,0,.06);border-radius:8px;padding:3px;gap:2px">
+                        <span style="padding:6px 13px;font:500 12.5px Inter;color:#8A857B;cursor:pointer">Off</span>
+                        <span style="padding:6px 13px;font:500 12.5px Inter;color:#8A857B;cursor:pointer">Rules</span>
+                        <span style="background:#FFFFFF;border-radius:6px;padding:6px 13px;font:500 12.5px Inter;color:#23221F;box-shadow:0 1px 2px rgba(0,0,0,.12)">AI</span>
+                      </div>
+                    </div>
+                    <div style="height:1px;background:rgba(0,0,0,.06);margin:14px 0"></div>
+                    <div style="display:flex;align-items:center;justify-content:space-between;gap:20px">
+                      <div style="flex:none"><div style="font:500 13px Inter;color:#23221F">Use AI past</div><div style="font:400 12px Inter;color:#6F6C64;margin-top:3px">shorter clips stay on instant rules</div></div>
+                      <div style="flex:1;display:flex;align-items:center;gap:12px">
+                        <span style="position:relative;flex:1;height:4px;border-radius:2px;background:#DCD9D2"><span style="position:absolute;left:0;top:0;height:100%;width:32%;background:#1B93A1;border-radius:2px"></span><span style="position:absolute;left:32%;top:50%;transform:translate(-50%,-50%);width:14px;height:14px;border-radius:50%;background:#fff;box-shadow:0 0 0 2px #1B93A1,0 1px 2px rgba(0,0,0,.2)"></span></span>
+                        <span style="font:500 12px 'JetBrains Mono';color:#33302B;white-space:nowrap;width:64px;text-align:right">18 words</span>
+                      </div>
+                    </div>
+                  </div>
+                </section>
+
+                <section>
+                  <div style="font:600 11px Inter;letter-spacing:.07em;text-transform:uppercase;color:#8A857B;margin-bottom:10px">Dictionary &amp; snippets</div>
+                  <div style="background:#FFFFFF;border:1px solid rgba(0,0,0,.08);border-radius:10px;padding:12px 14px">
+                    <div style="display:flex;flex-direction:column;gap:8px">
+                      <div style="display:flex;align-items:center;gap:8px"><input readonly value="gee pee tee" style="flex:1;background:#FBFAF8;border:1px solid rgba(0,0,0,.14);border-radius:6px;padding:6px 9px;font:400 12.5px Inter;color:#33302B;outline:none"><span style="color:#A8A49C;font:400 13px Inter">&rarr;</span><input readonly value="GPT" style="flex:1;background:#FBFAF8;border:1px solid rgba(0,0,0,.14);border-radius:6px;padding:6px 9px;font:400 12.5px Inter;color:#33302B;outline:none"><span style="color:#A8A49C;font:400 13px Inter;cursor:pointer;padding:0 4px">&#10005;</span></div>
+                      <div style="display:flex;align-items:center;gap:8px"><input readonly value="my email" style="flex:1;background:#FBFAF8;border:1px solid rgba(0,0,0,.14);border-radius:6px;padding:6px 9px;font:400 12.5px Inter;color:#33302B;outline:none"><span style="color:#A8A49C;font:400 13px Inter">&rarr;</span><input readonly value="dev@sotto.app" style="flex:1;background:#FBFAF8;border:1px solid rgba(0,0,0,.14);border-radius:6px;padding:6px 9px;font:400 12.5px Inter;color:#33302B;outline:none"><span style="color:#A8A49C;font:400 13px Inter;cursor:pointer;padding:0 4px">&#10005;</span></div>
+                      <div style="display:flex;align-items:center;gap:8px"><input readonly value="arrow" style="flex:1;background:#FBFAF8;border:1px solid rgba(0,0,0,.14);border-radius:6px;padding:6px 9px;font:400 12.5px Inter;color:#33302B;outline:none"><span style="color:#A8A49C;font:400 13px Inter">&rarr;</span><input readonly value="&rarr;" style="flex:1;background:#FBFAF8;border:1px solid rgba(0,0,0,.14);border-radius:6px;padding:6px 9px;font:400 12.5px Inter;color:#33302B;outline:none"><span style="color:#A8A49C;font:400 13px Inter;cursor:pointer;padding:0 4px">&#10005;</span></div>
+                    </div>
+                    <div style="margin-top:11px;font:500 12.5px Inter;color:#157e8a;cursor:pointer">+ Add entry</div>
+                  </div>
+                </section>
+
+                <section>
+                  <div style="display:flex;align-items:baseline;justify-content:space-between;margin-bottom:10px"><span style="font:600 11px Inter;letter-spacing:.07em;text-transform:uppercase;color:#8A857B">History</span><span style="font:400 11px Inter;color:#8A857B">Click an entry to copy it again</span></div>
+                  <div style="background:#FFFFFF;border:1px solid rgba(0,0,0,.08);border-radius:10px;overflow:hidden">
+                    <div style="display:flex;gap:12px;padding:11px 15px;align-items:flex-start;cursor:pointer"><span style="font:500 11px 'JetBrains Mono';color:#9A968C;width:58px;flex:none;padding-top:1px">2:14 PM</span><span style="flex:1;font:400 12.5px/1.45 Inter;color:#3C3A35">Let's ship the overlay states first, then wire up the settings window.</span><span style="color:#B4B0A8;flex:none;font:400 12px Inter">&#10697;</span></div>
+                    <div style="height:1px;background:rgba(0,0,0,.06)"></div>
+                    <div style="display:flex;gap:12px;padding:11px 15px;align-items:flex-start;cursor:pointer"><span style="font:500 11px 'JetBrains Mono';color:#9A968C;width:58px;flex:none;padding-top:1px">1:58 PM</span><span style="flex:1;font:400 12.5px/1.45 Inter;color:#3C3A35">dev@sotto.app</span><span style="color:#B4B0A8;flex:none;font:400 12px Inter">&#10697;</span></div>
+                    <div style="height:1px;background:rgba(0,0,0,.06)"></div>
+                    <div style="display:flex;gap:12px;padding:11px 15px;align-items:flex-start;cursor:pointer"><span style="font:500 11px 'JetBrains Mono';color:#9A968C;width:58px;flex:none;padding-top:1px">11:02 AM</span><span style="flex:1;font:400 12.5px/1.45 Inter;color:#3C3A35">Refactor the polish tier so short clips skip the LLM round-trip.</span><span style="color:#B4B0A8;flex:none;font:400 12px Inter">&#10697;</span></div>
+                  </div>
+                </section>
+
+                <section>
+                  <div style="font:600 11px Inter;letter-spacing:.07em;text-transform:uppercase;color:#8A857B;margin-bottom:10px">Startup</div>
+                  <div style="background:#FFFFFF;border:1px solid rgba(0,0,0,.08);border-radius:10px;overflow:hidden">
+                    <div style="display:flex;align-items:center;justify-content:space-between;padding:13px 16px"><span style="font:500 13px Inter;color:#23221F">Launch Sotto at login</span><span style="position:relative;width:38px;height:22px;border-radius:11px;background:#1B93A1;flex:none"><span style="position:absolute;top:2px;left:18px;width:18px;height:18px;border-radius:50%;background:#fff;box-shadow:0 1px 2px rgba(0,0,0,.2)"></span></span></div>
+                    <div style="height:1px;background:rgba(0,0,0,.06)"></div>
+                    <div style="display:flex;align-items:center;justify-content:space-between;padding:13px 16px"><span style="font:500 13px Inter;color:#23221F">Start hidden in the tray</span><span style="position:relative;width:38px;height:22px;border-radius:11px;background:#1B93A1;flex:none"><span style="position:absolute;top:2px;left:18px;width:18px;height:18px;border-radius:50%;background:#fff;box-shadow:0 1px 2px rgba(0,0,0,.2)"></span></span></div>
+                  </div>
+                </section>
+
+              </div>
+            </div>
+          </div>
+
+        </div>
+      </div>
+    </sc-if>
+    <sc-if value="{{ isTray }}" hint-placeholder-val="{{ true }}">
+      <div>
+        <div style="max-width:720px;margin-bottom:32px">
+          <div style="font:500 11px 'JetBrains Mono';color:#9B968C;letter-spacing:.08em;text-transform:uppercase;margin-bottom:9px">Deliverable 04 · System tray</div>
+          <h1 style="font:600 27px Inter;letter-spacing:-.02em;margin:0 0 12px">One mark, two moods</h1>
+          <p style="font:400 14.5px/1.65 Inter;color:#57534B;margin:0">The S mark sits in a charcoal tile so it reads on any taskbar color. <strong>Idle</strong> is a muted stone mark; <strong>active</strong> switches it to cyan and adds a soft pulse ring while Sotto is listening. Replaces the placeholder violet <span style="font:500 12px 'JetBrains Mono';color:#8A857B">#7C3AED</span> in <span style="font:500 12px 'JetBrains Mono';color:#8A857B">tray.rs</span>.</p>
+        </div>
+
+        <div style="display:flex;gap:22px;flex-wrap:wrap;margin-bottom:38px">
+          <div style="background:#14151A;border:1px solid rgba(255,255,255,.06);border-radius:12px;padding:22px 26px">
+            <div style="font:500 10.5px 'JetBrains Mono';color:#8A857B;margin-bottom:18px">ON DARK TASKBAR</div>
+            <div style="display:flex;gap:34px;align-items:flex-end">
+              <div style="text-align:center"><div style="display:flex;gap:20px;align-items:flex-end;margin-bottom:12px">
+                <span style="width:16px;height:16px;border-radius:4px;background:#1D1B18;display:flex;align-items:center;justify-content:center;box-shadow:inset 0 0 0 1px rgba(255,255,255,.08)"><span style="font:600 9px Inter;color:#9A968C"><svg viewBox="0 0 16 16" width="1em" height="1em" style="display:block" xmlns="http://www.w3.org/2000/svg"><path d="M11.3 4.4C11.3 4.4 5.2 3.6 5.2 6.5C5.2 9.2 11.4 8 11.4 10.8C11.4 13.6 5.4 12.8 5.4 12.8" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/></svg></span></span>
+                <span style="width:24px;height:24px;border-radius:6px;background:#1D1B18;display:flex;align-items:center;justify-content:center;box-shadow:inset 0 0 0 1px rgba(255,255,255,.08)"><span style="font:600 14px Inter;color:#9A968C"><svg viewBox="0 0 16 16" width="1em" height="1em" style="display:block" xmlns="http://www.w3.org/2000/svg"><path d="M11.3 4.4C11.3 4.4 5.2 3.6 5.2 6.5C5.2 9.2 11.4 8 11.4 10.8C11.4 13.6 5.4 12.8 5.4 12.8" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/></svg></span></span>
+                <span style="width:32px;height:32px;border-radius:8px;background:#1D1B18;display:flex;align-items:center;justify-content:center;box-shadow:inset 0 0 0 1px rgba(255,255,255,.08)"><span style="font:600 18px Inter;color:#9A968C"><svg viewBox="0 0 16 16" width="1em" height="1em" style="display:block" xmlns="http://www.w3.org/2000/svg"><path d="M11.3 4.4C11.3 4.4 5.2 3.6 5.2 6.5C5.2 9.2 11.4 8 11.4 10.8C11.4 13.6 5.4 12.8 5.4 12.8" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/></svg></span></span>
+              </div><div style="font:500 10.5px 'JetBrains Mono';color:#8A857B">idle · 16 / 24 / 32</div></div>
+              <div style="text-align:center"><div style="display:flex;gap:20px;align-items:flex-end;margin-bottom:12px">
+                <span style="position:relative;width:16px;height:16px;border-radius:4px;background:#1D1B18;display:flex;align-items:center;justify-content:center;box-shadow:inset 0 0 0 1px rgba(79,207,219,.3)"><span style="position:absolute;inset:0;border-radius:4px;background:transparent;border:1.3px solid #4FCFDB;box-sizing:border-box;animation:sottoPulse 1.8s ease-out infinite"></span><span style="font:600 9px Inter;color:#4FCFDB;position:relative"><svg viewBox="0 0 16 16" width="1em" height="1em" style="display:block" xmlns="http://www.w3.org/2000/svg"><path d="M11.3 4.4C11.3 4.4 5.2 3.6 5.2 6.5C5.2 9.2 11.4 8 11.4 10.8C11.4 13.6 5.4 12.8 5.4 12.8" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/></svg></span></span>
+                <span style="position:relative;width:24px;height:24px;border-radius:6px;background:#1D1B18;display:flex;align-items:center;justify-content:center;box-shadow:inset 0 0 0 1px rgba(79,207,219,.3)"><span style="position:absolute;inset:0;border-radius:6px;background:transparent;border:1.5px solid #4FCFDB;box-sizing:border-box;animation:sottoPulse 1.8s ease-out infinite"></span><span style="font:600 14px Inter;color:#4FCFDB;position:relative"><svg viewBox="0 0 16 16" width="1em" height="1em" style="display:block" xmlns="http://www.w3.org/2000/svg"><path d="M11.3 4.4C11.3 4.4 5.2 3.6 5.2 6.5C5.2 9.2 11.4 8 11.4 10.8C11.4 13.6 5.4 12.8 5.4 12.8" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/></svg></span></span>
+                <span style="position:relative;width:32px;height:32px;border-radius:8px;background:#1D1B18;display:flex;align-items:center;justify-content:center;box-shadow:inset 0 0 0 1px rgba(79,207,219,.3)"><span style="position:absolute;inset:0;border-radius:8px;background:transparent;border:1.7px solid #4FCFDB;box-sizing:border-box;animation:sottoPulse 1.8s ease-out infinite"></span><span style="font:600 18px Inter;color:#4FCFDB;position:relative"><svg viewBox="0 0 16 16" width="1em" height="1em" style="display:block" xmlns="http://www.w3.org/2000/svg"><path d="M11.3 4.4C11.3 4.4 5.2 3.6 5.2 6.5C5.2 9.2 11.4 8 11.4 10.8C11.4 13.6 5.4 12.8 5.4 12.8" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/></svg></span></span>
+              </div><div style="font:500 10.5px 'JetBrains Mono';color:#4FCFDB">active · listening</div></div>
+            </div>
+          </div>
+
+          <div style="background:#E7E5E0;border:1px solid rgba(0,0,0,.08);border-radius:12px;padding:22px 26px">
+            <div style="font:500 10.5px 'JetBrains Mono';color:#8A857B;margin-bottom:18px">ON LIGHT TASKBAR</div>
+            <div style="display:flex;gap:34px;align-items:flex-end">
+              <div style="text-align:center"><div style="display:flex;gap:20px;align-items:flex-end;margin-bottom:12px">
+                <span style="width:16px;height:16px;border-radius:4px;background:#1D1B18;display:flex;align-items:center;justify-content:center"><span style="font:600 9px Inter;color:#B7B2A8"><svg viewBox="0 0 16 16" width="1em" height="1em" style="display:block" xmlns="http://www.w3.org/2000/svg"><path d="M11.3 4.4C11.3 4.4 5.2 3.6 5.2 6.5C5.2 9.2 11.4 8 11.4 10.8C11.4 13.6 5.4 12.8 5.4 12.8" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/></svg></span></span>
+                <span style="width:24px;height:24px;border-radius:6px;background:#1D1B18;display:flex;align-items:center;justify-content:center"><span style="font:600 14px Inter;color:#B7B2A8"><svg viewBox="0 0 16 16" width="1em" height="1em" style="display:block" xmlns="http://www.w3.org/2000/svg"><path d="M11.3 4.4C11.3 4.4 5.2 3.6 5.2 6.5C5.2 9.2 11.4 8 11.4 10.8C11.4 13.6 5.4 12.8 5.4 12.8" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/></svg></span></span>
+                <span style="width:32px;height:32px;border-radius:8px;background:#1D1B18;display:flex;align-items:center;justify-content:center"><span style="font:600 18px Inter;color:#B7B2A8"><svg viewBox="0 0 16 16" width="1em" height="1em" style="display:block" xmlns="http://www.w3.org/2000/svg"><path d="M11.3 4.4C11.3 4.4 5.2 3.6 5.2 6.5C5.2 9.2 11.4 8 11.4 10.8C11.4 13.6 5.4 12.8 5.4 12.8" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/></svg></span></span>
+              </div><div style="font:500 10.5px 'JetBrains Mono';color:#8A857B">idle · 16 / 24 / 32</div></div>
+              <div style="text-align:center"><div style="display:flex;gap:20px;align-items:flex-end;margin-bottom:12px">
+                <span style="position:relative;width:16px;height:16px;border-radius:4px;background:#1D1B18;display:flex;align-items:center;justify-content:center"><span style="position:absolute;inset:0;border-radius:4px;background:transparent;border:1.3px solid #4FCFDB;box-sizing:border-box;animation:sottoPulse 1.8s ease-out infinite"></span><span style="font:600 9px Inter;color:#4FCFDB;position:relative"><svg viewBox="0 0 16 16" width="1em" height="1em" style="display:block" xmlns="http://www.w3.org/2000/svg"><path d="M11.3 4.4C11.3 4.4 5.2 3.6 5.2 6.5C5.2 9.2 11.4 8 11.4 10.8C11.4 13.6 5.4 12.8 5.4 12.8" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/></svg></span></span>
+                <span style="position:relative;width:24px;height:24px;border-radius:6px;background:#1D1B18;display:flex;align-items:center;justify-content:center"><span style="position:absolute;inset:0;border-radius:6px;background:transparent;border:1.5px solid #4FCFDB;box-sizing:border-box;animation:sottoPulse 1.8s ease-out infinite"></span><span style="font:600 14px Inter;color:#4FCFDB;position:relative"><svg viewBox="0 0 16 16" width="1em" height="1em" style="display:block" xmlns="http://www.w3.org/2000/svg"><path d="M11.3 4.4C11.3 4.4 5.2 3.6 5.2 6.5C5.2 9.2 11.4 8 11.4 10.8C11.4 13.6 5.4 12.8 5.4 12.8" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/></svg></span></span>
+                <span style="position:relative;width:32px;height:32px;border-radius:8px;background:#1D1B18;display:flex;align-items:center;justify-content:center"><span style="position:absolute;inset:0;border-radius:8px;background:transparent;border:1.7px solid #4FCFDB;box-sizing:border-box;animation:sottoPulse 1.8s ease-out infinite"></span><span style="font:600 18px Inter;color:#4FCFDB;position:relative"><svg viewBox="0 0 16 16" width="1em" height="1em" style="display:block" xmlns="http://www.w3.org/2000/svg"><path d="M11.3 4.4C11.3 4.4 5.2 3.6 5.2 6.5C5.2 9.2 11.4 8 11.4 10.8C11.4 13.6 5.4 12.8 5.4 12.8" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/></svg></span></span>
+              </div><div style="font:500 10.5px 'JetBrains Mono';color:#157e8a">active · listening</div></div>
+            </div>
+          </div>
+        </div>
+
+        <div style="display:flex;gap:40px;flex-wrap:wrap;align-items:flex-start">
+          <div>
+            <div style="font:500 10.5px 'JetBrains Mono';color:#9B968C;margin-bottom:10px">RIGHT-CLICK MENU · DARK</div>
+            <div style="width:236px;background:#232227;border:1px solid rgba(255,255,255,.09);border-radius:9px;padding:5px;box-shadow:0 12px 30px rgba(0,0,0,.35)">
+              <div style="padding:8px 12px 9px;display:flex;align-items:center;gap:9px"><span style="width:16px;height:16px;border-radius:4px;background:#111017;display:flex;align-items:center;justify-content:center"><span style="font:600 9px Inter;color:#4FCFDB"><svg viewBox="0 0 16 16" width="1em" height="1em" style="display:block" xmlns="http://www.w3.org/2000/svg"><path d="M11.3 4.4C11.3 4.4 5.2 3.6 5.2 6.5C5.2 9.2 11.4 8 11.4 10.8C11.4 13.6 5.4 12.8 5.4 12.8" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/></svg></span></span><span style="font:500 12.5px Inter;color:#E8E5DF">Sotto</span><span style="margin-left:auto;font:400 11.5px Inter;color:#4FCFDB">Ready</span></div>
+              <div style="height:1px;background:rgba(255,255,255,.07);margin:3px 6px"></div>
+              <div style="padding:8px 12px;border-radius:5px;font:400 12.5px Inter;color:#DAD6CE;display:flex;align-items:center;gap:10px"><span style="width:14px;color:#8A857B;font-size:11px">&#10073;&#10073;</span>Pause dictation</div>
+              <div style="padding:8px 12px;border-radius:5px;font:400 12.5px Inter;color:#F0EDE6;display:flex;align-items:center;gap:10px;background:rgba(79,207,219,.13)"><span style="width:14px;color:#4FCFDB;font-size:12px">&#10003;</span>Polish <span style="color:#8A857B;margin-left:auto;font-size:11.5px">AI</span></div>
+              <div style="height:1px;background:rgba(255,255,255,.07);margin:3px 6px"></div>
+              <div style="padding:8px 12px;border-radius:5px;font:400 12.5px Inter;color:#DAD6CE;display:flex;align-items:center;gap:10px"><span style="width:14px"></span>Settings…</div>
+              <div style="height:1px;background:rgba(255,255,255,.07);margin:3px 6px"></div>
+              <div style="padding:8px 12px;border-radius:5px;font:400 12.5px Inter;color:#DAD6CE;display:flex;align-items:center;gap:10px"><span style="width:14px"></span>Quit Sotto</div>
+            </div>
+          </div>
+          <div>
+            <div style="font:500 10.5px 'JetBrains Mono';color:#9B968C;margin-bottom:10px">RIGHT-CLICK MENU · LIGHT</div>
+            <div style="width:236px;background:#FBFAF8;border:1px solid rgba(0,0,0,.10);border-radius:9px;padding:5px;box-shadow:0 12px 30px rgba(0,0,0,.16)">
+              <div style="padding:8px 12px 9px;display:flex;align-items:center;gap:9px"><span style="width:16px;height:16px;border-radius:4px;background:#151319;display:flex;align-items:center;justify-content:center"><span style="font:600 9px Inter;color:#4FCFDB"><svg viewBox="0 0 16 16" width="1em" height="1em" style="display:block" xmlns="http://www.w3.org/2000/svg"><path d="M11.3 4.4C11.3 4.4 5.2 3.6 5.2 6.5C5.2 9.2 11.4 8 11.4 10.8C11.4 13.6 5.4 12.8 5.4 12.8" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/></svg></span></span><span style="font:500 12.5px Inter;color:#23221F">Sotto</span><span style="margin-left:auto;font:400 11.5px Inter;color:#157e8a">Ready</span></div>
+              <div style="height:1px;background:rgba(0,0,0,.08);margin:3px 6px"></div>
+              <div style="padding:8px 12px;border-radius:5px;font:400 12.5px Inter;color:#33302B;display:flex;align-items:center;gap:10px"><span style="width:14px;color:#9A968C;font-size:11px">&#10073;&#10073;</span>Pause dictation</div>
+              <div style="padding:8px 12px;border-radius:5px;font:400 12.5px Inter;color:#23221F;display:flex;align-items:center;gap:10px;background:rgba(27,147,161,.12)"><span style="width:14px;color:#157e8a;font-size:12px">&#10003;</span>Polish <span style="color:#9A968C;margin-left:auto;font-size:11.5px">AI</span></div>
+              <div style="height:1px;background:rgba(0,0,0,.08);margin:3px 6px"></div>
+              <div style="padding:8px 12px;border-radius:5px;font:400 12.5px Inter;color:#33302B;display:flex;align-items:center;gap:10px"><span style="width:14px"></span>Settings…</div>
+              <div style="height:1px;background:rgba(0,0,0,.08);margin:3px 6px"></div>
+              <div style="padding:8px 12px;border-radius:5px;font:400 12.5px Inter;color:#33302B;display:flex;align-items:center;gap:10px"><span style="width:14px"></span>Quit Sotto</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </sc-if>
+    <sc-if value="{{ isSpec }}" hint-placeholder-val="{{ true }}">
+      <div>
+        <div style="max-width:720px;margin-bottom:30px">
+          <div style="font:500 11px 'JetBrains Mono';color:#9B968C;letter-spacing:.08em;text-transform:uppercase;margin-bottom:9px">Implementation spec · for egui</div>
+          <h1 style="font:600 27px Inter;letter-spacing:-.02em;margin:0 0 12px">Every value, ready to type in</h1>
+          <p style="font:400 14.5px/1.65 Inter;color:#57534B;margin:0">Exact tokens so the mockups reproduce faithfully. All colors are sRGB hex; alpha noted separately where the overlay needs it.</p>
+        </div>
+
+        <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:16px;max-width:960px">
+
+          <div style="background:#fff;border:1px solid rgba(0,0,0,.07);border-radius:12px;padding:18px 20px">
+            <div style="font:600 13px Inter;margin-bottom:14px">State accents</div>
+            <div style="display:flex;flex-direction:column;gap:10px;font:500 12px 'JetBrains Mono';color:#4A463F">
+              <div style="display:flex;align-items:center;gap:11px"><span style="width:22px;height:22px;border-radius:6px;background:#4FCFDB;flex:none"></span>Listening / Done<span style="margin-left:auto;color:#8A857B">#4FCFDB</span></div>
+              <div style="display:flex;align-items:center;gap:11px"><span style="width:22px;height:22px;border-radius:6px;background:#E3A857;flex:none"></span>Transcribing<span style="margin-left:auto;color:#8A857B">#E3A857</span></div>
+              <div style="display:flex;align-items:center;gap:11px"><span style="width:22px;height:22px;border-radius:6px;background:#F0C982;flex:none"></span>Polishing<span style="margin-left:auto;color:#8A857B">#F0C982</span></div>
+              <div style="display:flex;align-items:center;gap:11px"><span style="width:22px;height:22px;border-radius:6px;background:#FCEBC6;flex:none;box-shadow:inset 0 0 0 1px rgba(0,0,0,.08)"></span>Polish sparkle<span style="margin-left:auto;color:#8A857B">#FCEBC6</span></div>
+              <div style="display:flex;align-items:center;gap:11px"><span style="width:22px;height:22px;border-radius:6px;background:#D0959C;flex:none"></span>Error<span style="margin-left:auto;color:#8A857B">#D0959C</span></div>
+            </div>
+          </div>
+
+          <div style="background:#fff;border:1px solid rgba(0,0,0,.07);border-radius:12px;padding:18px 20px">
+            <div style="font:600 13px Inter;margin-bottom:14px">Overlay / charcoal</div>
+            <div style="display:flex;flex-direction:column;gap:10px;font:500 12px 'JetBrains Mono';color:#4A463F">
+              <div style="display:flex;align-items:center;gap:11px"><span style="width:22px;height:22px;border-radius:6px;background:#1D1B18;flex:none"></span>Pill fill<span style="margin-left:auto;color:#8A857B">#1D1B18</span></div>
+              <div style="display:flex;align-items:center;gap:11px"><span style="width:22px;height:22px;border-radius:6px;background:#1D1B18;opacity:.9;flex:none;box-shadow:inset 0 0 0 1px rgba(0,0,0,.1)"></span>Pill alpha<span style="margin-left:auto;color:#8A857B">0.90</span></div>
+              <div style="display:flex;align-items:center;gap:11px"><span style="width:22px;height:22px;border-radius:6px;background:#1D1B18;flex:none;box-shadow:inset 0 0 0 1px rgba(255,255,255,.11)"></span>Border<span style="margin-left:auto;color:#8A857B">#FFF · 11%</span></div>
+              <div style="display:flex;align-items:center;gap:11px"><span style="width:22px;height:22px;border-radius:6px;background:#ECE8E1;flex:none;box-shadow:inset 0 0 0 1px rgba(0,0,0,.08)"></span>Label<span style="margin-left:auto;color:#8A857B">#ECE8E1</span></div>
+              <div style="display:flex;align-items:center;gap:11px"><span style="width:22px;height:22px;border-radius:6px;background:#9E998E;flex:none"></span>Label muted<span style="margin-left:auto;color:#8A857B">#9E998E</span></div>
+            </div>
+          </div>
+
+          <div style="background:#fff;border:1px solid rgba(0,0,0,.07);border-radius:12px;padding:18px 20px">
+            <div style="font:600 13px Inter;margin-bottom:14px">Settings · dark</div>
+            <div style="display:flex;flex-direction:column;gap:9px;font:500 11.5px 'JetBrains Mono';color:#4A463F">
+              <div style="display:flex;align-items:center;gap:10px"><span style="width:20px;height:20px;border-radius:5px;background:#201F22;flex:none"></span>Window<span style="margin-left:auto;color:#8A857B">#201F22</span></div>
+              <div style="display:flex;align-items:center;gap:10px"><span style="width:20px;height:20px;border-radius:5px;background:#26252A;flex:none"></span>Card<span style="margin-left:auto;color:#8A857B">#26252A</span></div>
+              <div style="display:flex;align-items:center;gap:10px"><span style="width:20px;height:20px;border-radius:5px;background:#17161A;flex:none"></span>Input<span style="margin-left:auto;color:#8A857B">#17161A</span></div>
+              <div style="display:flex;align-items:center;gap:10px"><span style="width:20px;height:20px;border-radius:5px;background:#E8E5DF;flex:none;box-shadow:inset 0 0 0 1px rgba(0,0,0,.08)"></span>Text<span style="margin-left:auto;color:#8A857B">#E8E5DF</span></div>
+            </div>
+          </div>
+
+          <div style="background:#fff;border:1px solid rgba(0,0,0,.07);border-radius:12px;padding:18px 20px">
+            <div style="font:600 13px Inter;margin-bottom:14px">Settings · light</div>
+            <div style="display:flex;flex-direction:column;gap:9px;font:500 11.5px 'JetBrains Mono';color:#4A463F">
+              <div style="display:flex;align-items:center;gap:10px"><span style="width:20px;height:20px;border-radius:5px;background:#FBFAF8;flex:none;box-shadow:inset 0 0 0 1px rgba(0,0,0,.08)"></span>Window<span style="margin-left:auto;color:#8A857B">#FBFAF8</span></div>
+              <div style="display:flex;align-items:center;gap:10px"><span style="width:20px;height:20px;border-radius:5px;background:#fff;flex:none;box-shadow:inset 0 0 0 1px rgba(0,0,0,.08)"></span>Card<span style="margin-left:auto;color:#8A857B">#FFFFFF</span></div>
+              <div style="display:flex;align-items:center;gap:10px"><span style="width:20px;height:20px;border-radius:5px;background:#1B93A1;flex:none"></span>Accent<span style="margin-left:auto;color:#8A857B">#1B93A1</span></div>
+              <div style="display:flex;align-items:center;gap:10px"><span style="width:20px;height:20px;border-radius:5px;background:#23221F;flex:none"></span>Text<span style="margin-left:auto;color:#8A857B">#23221F</span></div>
+            </div>
+          </div>
+
+          <div style="background:#fff;border:1px solid rgba(0,0,0,.07);border-radius:12px;padding:18px 20px">
+            <div style="font:600 13px Inter;margin-bottom:14px">Type &amp; dimensions</div>
+            <div style="display:grid;grid-template-columns:auto 1fr;gap:7px 14px;font:500 11.5px 'JetBrains Mono';color:#4A463F">
+              <span style="color:#9B968C">family</span><span>Inter · 400 / 500 / 600</span>
+              <span style="color:#9B968C">mono</span><span>JetBrains Mono · 400 / 500</span>
+              <span style="color:#9B968C">overlay label</span><span>13 px / 500 · monogram 15 / 600</span>
+              <span style="color:#9B968C">settings body</span><span>13 px · desc 12 · header 11 caps</span>
+              <span style="color:#9B968C">overlay</span><span>200 × 56 px · radius 28 (full)</span>
+              <span style="color:#9B968C">position</span><span>bottom-center · 22 px above edge</span>
+              <span style="color:#9B968C">radii</span><span>card 10 · input/btn 8 · keycap 6</span>
+            </div>
+          </div>
+
+          <div style="background:#fff;border:1px solid rgba(0,0,0,.07);border-radius:12px;padding:18px 20px">
+            <div style="font:600 13px Inter;margin-bottom:14px">Motion durations</div>
+            <div style="display:grid;grid-template-columns:auto 1fr;gap:7px 14px;font:500 11.5px 'JetBrains Mono';color:#4A463F">
+              <span style="color:#9B968C">enter</span><span>180 ms · fade + rise 4 px · ease-out</span>
+              <span style="color:#9B968C">exit</span><span>260 ms · fade + sink 4 px</span>
+              <span style="color:#9B968C">wave loop</span><span>≈ 1260 ms · env retarget 110 ms</span>
+              <span style="color:#9B968C">transcribe</span><span>1150 ms / pass · ease-in-out</span>
+              <span style="color:#9B968C">polish</span><span>1250 ms + sparkle 760 ms</span>
+              <span style="color:#9B968C">done</span><span>tick 260 · hold 140 · fade 400</span>
+              <span style="color:#9B968C">error</span><span>in 160 · dwell 2400 · out 300</span>
+              <span style="color:#9B968C">tray pulse</span><span>1800 ms · scale + fade ring</span>
+            </div>
+          </div>
+
+        </div>
+      </div>
+    </sc-if>
+
+  </main>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;:{&quot;width&quot;:1180,&quot;height&quot;:820}}">
+const CL = {
+  cyan:'#4FCFDB', cyanHi:'#8FE6EE',
+  amber:'#E3A857', amberDim:'rgba(227,168,87,.30)',
+  gold:'#F0C982', goldSpark:'#FCEBC6', goldDim:'rgba(240,201,130,.30)',
+  rose:'#D0959C', roseTxt:'#CBA0A5',
+  txt:'#ECE8E1', muted:'#9E998E'
+};
+
+class Component extends DCLogic {
+  state = { screen: 'states' };
+  insts = new WeakMap();
+
+  componentDidMount(){
+    window.__ovDrawOnce = (now) => { document.querySelectorAll('canvas[data-ov]').forEach(c=>this.drawCanvas(c, now||performance.now())); };
+    this._raf = requestAnimationFrame(this.loop);
+  }
+  componentWillUnmount(){ cancelAnimationFrame(this._raf); }
+
+  loop = (now) => {
+    document.querySelectorAll('canvas[data-ov]').forEach(c => {
+      try { this.drawCanvas(c, now); } catch(e){ if(!window.__ovErr){ window.__ovErr=String(e&&e.stack||e); console.error('overlay draw error', e); } }
+    });
+    window.__ovFrames=(window.__ovFrames||0)+1;
+    this._raf = requestAnimationFrame(this.loop);
+  };
+
+  getInst(c){
+    let i = this.insts.get(c);
+    if(!i){ i = { env:.4, envTarget:.6, lastEnv:0, sparkles:[], lastSpark:0 }; this.insts.set(c,i); }
+    return i;
+  }
+
+  rr(ctx,x,y,w,h,r){
+    ctx.beginPath();
+    if(ctx.roundRect){ ctx.roundRect(x,y,w,h,r); return; }
+    ctx.moveTo(x+r,y);ctx.arcTo(x+w,y,x+w,y+h,r);ctx.arcTo(x+w,y+h,x,y+h,r);
+    ctx.arcTo(x,y+h,x,y,r);ctx.arcTo(x,y,x+w,y,r);ctx.closePath();
+  }
+  easeInOut(t){ return t<.5 ? 2*t*t : 1-Math.pow(-2*t+2,2)/2; }
+  easeOut(t){ return 1-Math.pow(1-t,3); }
+
+  drawCanvas(c, now){
+    const dpr = Math.min(window.devicePixelRatio||1, 2);
+    const cw = c.clientWidth, ch = c.clientHeight;
+    if(!cw||!ch) return;
+    if(c.width!==Math.round(cw*dpr)||c.height!==Math.round(ch*dpr)){ c.width=Math.round(cw*dpr); c.height=Math.round(ch*dpr); }
+    const ctx = c.getContext('2d');
+    ctx.setTransform(dpr,0,0,dpr,0,0);
+    ctx.clearRect(0,0,cw,ch);
+    const bg = c.dataset.bg||'dark';
+    this.drawDesktop(ctx,cw,ch,bg);
+    const pw=200, ph=56;
+    const px=Math.round((cw-pw)/2), py=Math.round(ch-ph-22);
+    this.drawState(ctx,px,py,pw,ph,c.dataset.ov,bg,now,this.getInst(c));
+  }
+
+  drawDesktop(ctx,cw,ch,bg){
+    const g=ctx.createLinearGradient(0,0,cw*.7,ch);
+    if(bg==='dark'){ g.addColorStop(0,'#14151A'); g.addColorStop(1,'#1F2530'); }
+    else { g.addColorStop(0,'#FBFAF7'); g.addColorStop(1,'#E6E4DE'); }
+    ctx.fillStyle=g; ctx.fillRect(0,0,cw,ch);
+    this.fauxWin(ctx,26,16,150,70,bg,bg==='dark'?'#3A5A8C':'#9CC0E8');
+    this.fauxWin(ctx,cw-132,30,120,62,bg,bg==='dark'?'#7A5A3C':'#E0B98A');
+  }
+  fauxWin(ctx,x,y,w,h,bg,accent){
+    ctx.save();
+    this.rr(ctx,x,y,w,h,7);
+    ctx.fillStyle = bg==='dark' ? 'rgba(255,255,255,.045)' : '#FFFFFF';
+    ctx.fill();
+    ctx.lineWidth=1; ctx.strokeStyle = bg==='dark' ? 'rgba(255,255,255,.07)' : 'rgba(0,0,0,.08)';
+    this.rr(ctx,x+.5,y+.5,w-1,h-1,6.5); ctx.stroke();
+    this.rr(ctx,x,y,w,h,7); ctx.clip();
+    ctx.fillStyle=accent; ctx.globalAlpha=.7; this.rr(ctx,x+10,y+11,12,12,3); ctx.fill(); ctx.globalAlpha=1;
+    ctx.fillStyle = bg==='dark' ? 'rgba(255,255,255,.08)' : 'rgba(0,0,0,.09)';
+    ctx.fillRect(x+30,y+13,w*.42,4);
+    ctx.fillStyle = bg==='dark' ? 'rgba(255,255,255,.05)' : 'rgba(0,0,0,.055)';
+    ctx.fillRect(x+12,y+34,w-24,3.5); ctx.fillRect(x+12,y+44,w-24,3.5); ctx.fillRect(x+12,y+54,(w-24)*.6,3.5);
+    ctx.restore();
+  }
+
+  pillBase(ctx,x,y,w,h,alpha){
+    ctx.save();
+    this.rr(ctx,x,y,w,h,h/2);
+    ctx.fillStyle=`rgba(29,27,24,${.90*alpha})`; ctx.fill();
+    this.rr(ctx,x,y,w,h,h/2); ctx.save(); ctx.clip();
+    const hg=ctx.createLinearGradient(0,y,0,y+h*.55);
+    hg.addColorStop(0,`rgba(255,255,255,${.07*alpha})`); hg.addColorStop(1,'rgba(255,255,255,0)');
+    ctx.fillStyle=hg; ctx.fillRect(x,y,w,h*.55); ctx.restore();
+    ctx.lineWidth=1; ctx.strokeStyle=`rgba(255,255,255,${.11*alpha})`;
+    this.rr(ctx,x+.5,y+.5,w-1,h-1,(h-1)/2); ctx.stroke();
+    ctx.restore();
+  }
+
+  sMark(ctx,ox,oy,scale,color,alpha,lw){
+    ctx.save();
+    ctx.globalAlpha=alpha;
+    ctx.strokeStyle=color;
+    ctx.lineWidth=lw;
+    ctx.lineCap='round'; ctx.lineJoin='round';
+    const s=scale;
+    ctx.beginPath();
+    ctx.moveTo(ox+3.8*s, oy-4.83*s);
+    ctx.bezierCurveTo(ox+3.8*s,oy-4.83*s, ox-3.2*s,oy-5.75*s, ox-3.2*s,oy-2.42*s);
+    ctx.bezierCurveTo(ox-3.2*s,oy+0.69*s, ox+3.91*s,oy-0.69*s, ox+3.91*s,oy+2.53*s);
+    ctx.bezierCurveTo(ox+3.91*s,oy+5.75*s, ox-2.99*s,oy+4.83*s, ox-2.99*s,oy+4.83*s);
+    ctx.stroke();
+    ctx.restore();
+  }
+  monogram(ctx,x,y,h,color,alpha){
+    const ox=x+17, oy=y+h/2;
+    this.sMark(ctx, ox, oy, 1, color, alpha, 2.1);
+    return ox+8;
+  }
+
+  wave(ctx,x0,x1,yc,amp,env,phase,color,glow){
+    ctx.lineJoin='round'; ctx.lineCap='round';
+    const passes = glow ? [[5,glow],[2.4,color]] : [[2.4,color]];
+    for(const [lw,col] of passes){
+      ctx.beginPath();
+      const steps=56;
+      for(let s=0;s<=steps;s++){
+        const u=s/steps, fx=x0+(x1-x0)*u;
+        const taper=Math.sin(u*Math.PI);
+        const val=Math.sin(u*7*Math.PI-phase*2)*.58 + Math.sin(u*2.6*Math.PI+phase)*.42;
+        const fy=yc+val*amp*env*taper;
+        s?ctx.lineTo(fx,fy):ctx.moveTo(fx,fy);
+      }
+      ctx.strokeStyle=col; ctx.lineWidth=lw; ctx.stroke();
+    }
+  }
+
+  drawState(ctx,x,y,w,h,state,bg,now,inst){
+    let alpha=1;
+    if(state==='done'){ const c=now%1900; alpha = c<1400?1 : c<1700?1-(c-1400)/300 : 0; }
+    if(state==='error'){ const c=now%3000; alpha = c<2400?1 : c<2700?1-(c-2400)/300 : 0; }
+    if(alpha<=0.02) return;
+    this.pillBase(ctx,x,y,w,h,alpha);
+    ctx.globalAlpha=alpha;
+    const yc=y+h/2;
+
+    if(now-inst.lastEnv>110){ inst.envTarget=.22+Math.random()*.75; inst.lastEnv=now; }
+    inst.env += (inst.envTarget-inst.env)*.12;
+    const phase=now*.005;
+
+    if(state==='listening' || state==='dir1'){
+      const mr=this.monogram(ctx,x,y,h,CL.cyan,alpha);
+      this.wave(ctx, mr+14, x+w-18, yc, 12, inst.env, phase, CL.cyan, 'rgba(79,207,219,.22)');
+    }
+    else if(state==='dir2'){
+      const mr=this.monogram(ctx,x,y,h,CL.cyan,alpha);
+      ctx.font='500 12px Inter'; ctx.textAlign='left'; ctx.textBaseline='middle';
+      const lbl='Listening', lw=ctx.measureText(lbl).width, lx=x+w-18-lw;
+      ctx.fillStyle=CL.muted; ctx.fillText(lbl,lx,y+h/2-6);
+      this.wave(ctx, mr+14, lx-12, y+h/2-6, 9, inst.env, phase, CL.cyan, 'rgba(79,207,219,.22)');
+      // level meter along bottom
+      const m0=mr+14, m1=x+w-18, my=y+h-13;
+      ctx.lineCap='round'; ctx.lineWidth=2.5;
+      ctx.strokeStyle='rgba(79,207,219,.20)'; ctx.beginPath(); ctx.moveTo(m0,my); ctx.lineTo(m1,my); ctx.stroke();
+      ctx.strokeStyle=CL.cyan; ctx.beginPath(); ctx.moveTo(m0,my); ctx.lineTo(m0+(m1-m0)*Math.min(1,inst.env),my); ctx.stroke();
+    }
+    else if(state==='dir3'){
+      // monogram in a ring
+      const gx=x+26;
+      ctx.strokeStyle='rgba(79,207,219,.45)'; ctx.lineWidth=1.5;
+      ctx.beginPath(); ctx.arc(gx,yc,13,0,Math.PI*2); ctx.stroke();
+      this.sMark(ctx, gx, yc, 0.82, CL.cyan, alpha, 1.9);
+      // mirrored wave fill
+      const x0=gx+22, x1=x+w-18, steps=56;
+      const top=[], bot=[];
+      for(let s=0;s<=steps;s++){
+        const u=s/steps, fx=x0+(x1-x0)*u, taper=Math.sin(u*Math.PI);
+        const val=(Math.sin(u*7*Math.PI-phase*2)*.58 + Math.sin(u*2.6*Math.PI+phase)*.42);
+        const d=Math.abs(val)*11*inst.env*taper+1.2;
+        top.push([fx,yc-d]); bot.push([fx,yc+d]);
+      }
+      ctx.beginPath(); ctx.moveTo(top[0][0],top[0][1]);
+      top.forEach(p=>ctx.lineTo(p[0],p[1]));
+      for(let i=bot.length-1;i>=0;i--) ctx.lineTo(bot[i][0],bot[i][1]);
+      ctx.closePath(); ctx.fillStyle='rgba(79,207,219,.16)'; ctx.fill();
+      ctx.strokeStyle=CL.cyan; ctx.lineWidth=1.6; ctx.lineJoin='round';
+      ctx.beginPath(); top.forEach((p,i)=>i?ctx.lineTo(p[0],p[1]):ctx.moveTo(p[0],p[1])); ctx.stroke();
+      ctx.beginPath(); bot.forEach((p,i)=>i?ctx.lineTo(p[0],p[1]):ctx.moveTo(p[0],p[1])); ctx.stroke();
+    }
+    else if(state==='transcribing' || state==='polishing'){
+      const poly = state==='polishing';
+      const accent = poly?CL.gold:CL.amber;
+      const dimc = poly?CL.goldDim:CL.amberDim;
+      const mr=this.monogram(ctx,x,y,h,accent,alpha);
+      ctx.font='500 12.5px Inter'; ctx.textAlign='left'; ctx.textBaseline='middle';
+      const lbl = poly?'Polishing':'Transcribing', lw=ctx.measureText(lbl).width, lx=x+w-18-lw;
+      ctx.fillStyle=CL.muted; ctx.fillText(lbl,lx,yc);
+      const t0=mr+14, t1=lx-14;
+      ctx.lineCap='round'; ctx.lineWidth=2; ctx.strokeStyle=dimc;
+      ctx.beginPath(); ctx.moveTo(t0,yc); ctx.lineTo(t1,yc); ctx.stroke();
+      const dur = poly?1250:1150;
+      const p=this.easeInOut((now%dur)/dur), dx=t0+(t1-t0)*p;
+      const grad=ctx.createLinearGradient(dx-22,0,dx,0);
+      grad.addColorStop(0,'rgba(0,0,0,0)'); grad.addColorStop(1,accent);
+      ctx.strokeStyle=grad; ctx.lineWidth=2.4;
+      ctx.beginPath(); ctx.moveTo(Math.max(t0,dx-22),yc); ctx.lineTo(dx,yc); ctx.stroke();
+      ctx.fillStyle=accent; ctx.beginPath(); ctx.arc(dx,yc,3,0,Math.PI*2); ctx.fill();
+      if(poly){
+        if(now-inst.lastSpark>210){ inst.sparkles.push({x:t0+8+Math.random()*(t1-t0-16), y:yc+(Math.random()*22-11), born:now, r:4+Math.random()*2.5}); inst.lastSpark=now; }
+        inst.sparkles=inst.sparkles.filter(s=>now-s.born<760);
+        for(const sp of inst.sparkles){
+          const age=(now-sp.born)/760, env=Math.sin(age*Math.PI), sc=sp.r*env, d=sc*.62;
+          ctx.globalAlpha=alpha*env; ctx.strokeStyle=CL.goldSpark; ctx.lineWidth=1.4; ctx.lineCap='round';
+          ctx.beginPath();
+          ctx.moveTo(sp.x-sc,sp.y); ctx.lineTo(sp.x+sc,sp.y);
+          ctx.moveTo(sp.x,sp.y-sc); ctx.lineTo(sp.x,sp.y+sc);
+          ctx.moveTo(sp.x-d,sp.y-d); ctx.lineTo(sp.x+d,sp.y+d);
+          ctx.moveTo(sp.x-d,sp.y+d); ctx.lineTo(sp.x+d,sp.y-d);
+          ctx.stroke();
+        }
+        ctx.globalAlpha=alpha;
+      }
+    }
+    else if(state==='done'){
+      const mr=this.monogram(ctx,x,y,h,CL.cyan,alpha);
+      const cyc=now%1900, prog=this.easeOut(Math.min(cyc,300)/300);
+      const cx=(mr+14 + (x+w-18))/2;
+      const p1=[cx-11,yc+1], p2=[cx-3,yc+8], p3=[cx+13,yc-9];
+      const L1=Math.hypot(p2[0]-p1[0],p2[1]-p1[1]), L2=Math.hypot(p3[0]-p2[0],p3[1]-p2[1]);
+      const d=prog*(L1+L2);
+      ctx.strokeStyle=`rgba(79,207,219,${alpha})`; ctx.lineWidth=3; ctx.lineCap='round'; ctx.lineJoin='round';
+      ctx.beginPath(); ctx.moveTo(p1[0],p1[1]);
+      if(d<=L1){ const t=d/L1; ctx.lineTo(p1[0]+(p2[0]-p1[0])*t,p1[1]+(p2[1]-p1[1])*t); }
+      else { ctx.lineTo(p2[0],p2[1]); const t=(d-L1)/L2; ctx.lineTo(p2[0]+(p3[0]-p2[0])*t,p2[1]+(p3[1]-p2[1])*t); }
+      ctx.stroke();
+    }
+    else if(state==='error'){
+      const mr=this.monogram(ctx,x,y,h,CL.rose,alpha);
+      const gx=mr+16;
+      ctx.strokeStyle=CL.rose; ctx.lineWidth=2.4; ctx.lineCap='round';
+      ctx.beginPath(); ctx.moveTo(gx,yc-8); ctx.lineTo(gx,yc+2); ctx.stroke();
+      ctx.fillStyle=CL.rose; ctx.beginPath(); ctx.arc(gx,yc+8,1.5,0,Math.PI*2); ctx.fill();
+      ctx.font='500 13px Inter'; ctx.textAlign='left'; ctx.textBaseline='middle';
+      ctx.fillStyle=CL.roseTxt; ctx.fillText('Didn\u2019t catch that', gx+14, yc);
+    }
+    ctx.globalAlpha=1;
+  }
+
+  renderVals(){
+    const scr = this.state.screen;
+    const set = k => () => this.setState({screen:k});
+    const mk = k => ({ go:set(k), css: scr===k ? 'background:rgba(255,255,255,.07);color:#F3F0EA;box-shadow:inset 2px 0 0 #4FCFDB' : 'color:#8B877E' });
+    return {
+      isStates:scr==='states', isDirections:scr==='directions', isMotion:scr==='motion',
+      isSettings:scr==='settings', isTray:scr==='tray', isSpec:scr==='spec',
+      nav:{ states:mk('states'), directions:mk('directions'), motion:mk('motion'), settings:mk('settings'), tray:mk('tray'), spec:mk('spec') },
+      states:[
+        {ov:'listening', cap:'Listening', sub:'recording · hotkey held', dot:'#4FCFDB'},
+        {ov:'transcribing', cap:'Transcribing', sub:'key released · model running', dot:'#E3A857'},
+        {ov:'polishing', cap:'Polishing', sub:'AI cleanup pass', dot:'#F0C982'},
+        {ov:'done', cap:'Done', sub:'tick flashes, then fades (~400ms)', dot:'#4FCFDB'},
+        {ov:'error', cap:'Error / timeout', sub:'restrained, never alarming', dot:'#D0959C'}
+      ],
+      dirs:[
+        {id:'1a', ov:'dir1', cap:'Quiet', desc:'Monogram + bare waveform, no label. State is read purely by color. The least it can possibly be \u2014 recommended default.'},
+        {id:'1b', ov:'dir2', cap:'Labeled', desc:'Adds a small \u201cListening\u201d label and a level meter along the bottom edge. More discoverable for first-run users.'},
+        {id:'1c', ov:'dir3', cap:'Expressive', desc:'Monogram in a live ring, symmetric mirrored waveform with a soft fill. The most \u201cpro-audio\u201d read of the three.'}
+      ]
+    };
+  }
+}
+</script>
+</body>
+</html>

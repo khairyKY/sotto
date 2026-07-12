@@ -1,0 +1,27 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Sotto overlay</title>
+    <link rel="stylesheet" href="./fonts.css" />
+    <style>
+      html, body {
+        margin: 0;
+        padding: 0;
+        width: 100%;
+        height: 100%;
+        overflow: hidden;
+        background: transparent;
+        /* The whole window is click-through at the OS level; belt-and-suspenders here too. */
+        pointer-events: none;
+        user-select: none;
+      }
+      #pill { display: block; width: 100%; height: 100%; }
+    </style>
+  </head>
+  <body>
+    <canvas id="pill"></canvas>
+    <script src="./overlay.js"></script>
+  </body>
+</html>

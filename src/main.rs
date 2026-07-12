@@ -1,44 +1,51 @@
+// Sotto — local offline voice dictation for Windows. Tauri v2 shell around a
+// UI-agnostic Rust core (asr, audio, inject, hotkey, llm, polish).
+//
+// DRAFT (Tauri migration): written before the MSVC toolchain was available, so
+// it has not been compiled yet — expect a compile-fix pass. The core modules
+// and the frontend (ui/) are done; this file wires them to Tauri windows,
+// events, commands, and the tray. See docs/msvc-setup.md.
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
 mod asr;
 mod audio;
 mod config;
+mod history;
 mod hotkey;
 mod inject;
-mod history;
 mod job;
 mod llm;
-mod overlay;
 mod polish;
-mod settings;
 mod single_instance;
 mod startup;
 mod tray;
 
-use config::Config;
+use config::{ActivationMode, Config, DictEntry, PolishMode};
 use hotkey::DictationEvent;
 use single_instance::SingleInstanceGuard;
-use std::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU8, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::time::{Duration, Instant};
+use tauri::{Emitter, Manager};
 
-/// Runtime controls shared between the tray (and later the settings window),
-/// the hotkey listener, and the polisher — the live, mutable knobs that aren't
-/// captured at startup. Cheap to clone (just `Arc`s).
+/// Ignore captured clips shorter than this — almost always an accidental tap.
+const MIN_CLIP_SAMPLES: usize = 16_000 / 2; // 0.5s at 16 kHz
+
+// ── shared runtime state ───────────────────────────────────────────────
 #[derive(Clone)]
 pub struct Controls {
-    /// When set, the hotkey listener ignores requests to *start* a dictation.
     pub paused: Arc<AtomicBool>,
-    /// Live polish tier (`PolishMode` as u8), read per-dictation by the polisher.
     pub polish_mode: Arc<AtomicU8>,
-    /// Live activation mode (`ActivationMode` as u8), read by the hotkey listener.
     pub activation: Arc<AtomicU8>,
-    /// Live index into `hotkey::SUPPORTED_HOTKEYS`, read by the hotkey listener.
     pub hotkey_idx: Arc<AtomicUsize>,
-    /// Live AI-tier word threshold, read by the polisher.
     pub ai_min_words: Arc<AtomicUsize>,
-    /// Live dictionary/snippet replacements, applied by the polisher.
     pub dictionary: Arc<Mutex<Vec<(String, String)>>>,
-    /// Recent dictations, appended by the worker, read by the settings window.
     pub history: history::History,
+    /// Live mic RMS (f32 bits), written by the audio callback.
+    pub level: Arc<AtomicU32>,
+    /// True while recording — gates the level-event emitter.
+    pub listening: Arc<AtomicBool>,
 }
 
 impl Controls {
@@ -50,55 +57,170 @@ impl Controls {
             hotkey_idx: Arc::new(AtomicUsize::new(hotkey::index_of(&cfg.hotkey))),
             ai_min_words: Arc::new(AtomicUsize::new(cfg.polish.ai_min_words)),
             dictionary: Arc::new(Mutex::new(
-                cfg.dictionary
-                    .iter()
-                    .map(|e| (e.spoken.clone(), e.replacement.clone()))
-                    .collect(),
+                cfg.dictionary.iter().map(|e| (e.spoken.clone(), e.replacement.clone())).collect(),
             )),
             history: history::History::new(),
+            level: Arc::new(AtomicU32::new(0)),
+            listening: Arc::new(AtomicBool::new(false)),
         }
     }
 }
 
-/// Ignore captured clips shorter than this — almost always an accidental tap
-/// of the hotkey rather than real speech.
-const MIN_CLIP_SAMPLES: usize = 16_000 / 2; // 0.5s at 16 kHz
+/// Tauri-managed state: live controls + the on-disk config (for persistence).
+struct AppState {
+    controls: Controls,
+    cfg: Mutex<Config>,
+}
 
+// ── IPC payloads ───────────────────────────────────────────────────────
+#[derive(serde::Serialize, serde::Deserialize)]
+struct DictEntryDto {
+    spoken: String,
+    replacement: String,
+}
+#[derive(serde::Serialize, Clone)]
+struct HistoryDto {
+    time: String,
+    text: String,
+}
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ModelDto {
+    name: String,
+    variant: String,
+    meta: String,
+    state: String,
+    size: String,
+    selected: bool,
+}
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SettingsPayload {
+    hotkey: String,
+    activation: String,
+    polish: String,
+    threshold: usize,
+    launch_login: bool,
+    start_hidden: bool,
+    dictionary: Vec<DictEntryDto>,
+    history: Vec<HistoryDto>,
+    models: Vec<ModelDto>,
+}
+
+// ── commands ───────────────────────────────────────────────────────────
+#[tauri::command]
+fn get_settings(state: tauri::State<'_, AppState>) -> SettingsPayload {
+    let cfg = state.cfg.lock().unwrap();
+    let c = &state.controls;
+    let idx = c.hotkey_idx.load(Ordering::Relaxed).min(hotkey::SUPPORTED_HOTKEYS.len() - 1);
+    let activation = match ActivationMode::from_u8(c.activation.load(Ordering::Relaxed)) {
+        ActivationMode::Toggle => "toggle",
+        ActivationMode::Hold => "hold",
+    };
+    let polish = match PolishMode::from_u8(c.polish_mode.load(Ordering::Relaxed)) {
+        PolishMode::Off => "off",
+        PolishMode::Rules => "rules",
+        PolishMode::Ai => "ai",
+    };
+    let installed = config::model_dir().exists();
+    let size = dir_size_mb(config::model_dir()).map(|mb| format!("{mb} MB")).unwrap_or_default();
+    SettingsPayload {
+        hotkey: hotkey::SUPPORTED_HOTKEYS[idx].1.to_string(),
+        activation: activation.to_string(),
+        polish: polish.to_string(),
+        threshold: c.ai_min_words.load(Ordering::Relaxed),
+        launch_login: startup::is_enabled(),
+        start_hidden: cfg.start_hidden,
+        dictionary: c.dictionary.lock().unwrap().iter().map(|(s, r)| DictEntryDto { spoken: s.clone(), replacement: r.clone() }).collect(),
+        history: c.history.snapshot().into_iter().map(|e| HistoryDto { time: e.time, text: e.text }).collect(),
+        models: vec![ModelDto {
+            name: "Parakeet v3".into(),
+            variant: "· English".into(),
+            meta: "NVIDIA · int8 quantized".into(),
+            state: if installed { "installed" } else { "download" }.into(),
+            size,
+            selected: installed,
+        }],
+    }
+}
+
+#[tauri::command]
+fn set_hotkey(key: String, state: tauri::State<'_, AppState>) {
+    state.controls.hotkey_idx.store(hotkey::index_of(&key), Ordering::Relaxed);
+    let mut cfg = state.cfg.lock().unwrap();
+    cfg.hotkey = key;
+    let _ = cfg.save();
+}
+#[tauri::command]
+fn set_activation(mode: String, state: tauri::State<'_, AppState>) {
+    let m = if mode == "toggle" { ActivationMode::Toggle } else { ActivationMode::Hold };
+    state.controls.activation.store(m.as_u8(), Ordering::Relaxed);
+    let mut cfg = state.cfg.lock().unwrap();
+    cfg.activation_mode = m;
+    let _ = cfg.save();
+}
+#[tauri::command]
+fn set_polish(mode: String, state: tauri::State<'_, AppState>) {
+    let m = match mode.as_str() {
+        "off" => PolishMode::Off,
+        "rules" => PolishMode::Rules,
+        _ => PolishMode::Ai,
+    };
+    state.controls.polish_mode.store(m.as_u8(), Ordering::Relaxed);
+    let mut cfg = state.cfg.lock().unwrap();
+    cfg.polish.mode = m;
+    let _ = cfg.save();
+}
+#[tauri::command]
+fn set_threshold(words: usize, state: tauri::State<'_, AppState>) {
+    state.controls.ai_min_words.store(words, Ordering::Relaxed);
+    let mut cfg = state.cfg.lock().unwrap();
+    cfg.polish.ai_min_words = words;
+    let _ = cfg.save();
+}
+#[tauri::command]
+fn set_dictionary(entries: Vec<DictEntryDto>, state: tauri::State<'_, AppState>) {
+    let pairs: Vec<(String, String)> = entries
+        .into_iter()
+        .filter(|e| !e.spoken.trim().is_empty())
+        .map(|e| (e.spoken, e.replacement))
+        .collect();
+    *state.controls.dictionary.lock().unwrap() = pairs.clone();
+    let mut cfg = state.cfg.lock().unwrap();
+    cfg.dictionary = pairs.into_iter().map(|(spoken, replacement)| DictEntry { spoken, replacement }).collect();
+    let _ = cfg.save();
+}
+#[tauri::command]
+fn set_launch_login(enabled: bool) {
+    if let Err(err) = startup::set_enabled(enabled) {
+        tracing::error!(?err, "failed to set launch-at-login");
+    }
+}
+#[tauri::command]
+fn set_start_hidden(enabled: bool, state: tauri::State<'_, AppState>) {
+    let mut cfg = state.cfg.lock().unwrap();
+    cfg.start_hidden = enabled;
+    let _ = cfg.save();
+}
+#[tauri::command]
+fn copy_text(text: String) {
+    if let Ok(mut cb) = arboard::Clipboard::new() {
+        let _ = cb.set_text(text);
+    }
+}
+
+// ── main ───────────────────────────────────────────────────────────────
 fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(std::env::var("SOTTO_LOG").unwrap_or_else(|_| "info".into()))
         .init();
-
     init_ort();
 
-    // Dev/debug one-shot: `sotto --transcribe <file.wav>` runs the real ASR
-    // path on a 16 kHz mono WAV and exits. Placed before the single-instance
-    // guard so it works even while the tray app is already running.
     if let Some(path) = arg_value("--transcribe") {
         return run_transcribe_once(&path);
     }
-
-    // Dev/debug one-shot: `sotto --polish "<raw text>"` runs the AI polish
-    // path (spawns the llama.cpp sidecar, cleans the text) and exits.
     if let Some(text) = arg_value("--polish") {
         return run_polish_once(&text);
-    }
-
-    // Dev/debug: `sotto --overlay-demo` cycles the overlay pill through every
-    // state with a synthetic mic level, so the visuals + animation can be
-    // eyeballed without a mic, model, or hotkey. Runs the real overlay path.
-    if std::env::args().any(|a| a == "--overlay-demo") {
-        return run_overlay_demo();
-    }
-
-    // Dev/debug: `sotto --settings` opens the settings window immediately so it
-    // can be eyeballed without a mic or model.
-    if std::env::args().any(|a| a == "--settings") {
-        let cfg = Config::load_or_init().unwrap_or_default();
-        return overlay::Overlay::new(Controls::from_config(&cfg))
-            .open_settings_on_start()
-            .run()
-            .map_err(|e| anyhow::anyhow!("settings preview failed: {e}"));
     }
 
     let Some(_guard) = SingleInstanceGuard::acquire()? else {
@@ -108,131 +230,205 @@ fn main() -> anyhow::Result<()> {
 
     let cfg = Config::load_or_init()?;
     tracing::info!(?cfg, path = %Config::path().display(), "loaded config");
-
-    let (tx, rx) = crossbeam_channel::unbounded::<DictationEvent>();
-
-    // Set for the duration of our own text injection. The paste fallback
-    // synthesizes a real Ctrl+V via SendInput, which our own global hook
-    // would otherwise see as "the user pressed Ctrl" whenever the hotkey is
-    // itself a modifier key — silently re-triggering another dictation cycle.
-    let suppressed = Arc::new(AtomicBool::new(false));
-
-    // Live, mutable controls shared with the tray + settings window.
     let controls = Controls::from_config(&cfg);
 
-    let listener_suppressed = suppressed.clone();
-    let listener_hotkey_idx = controls.hotkey_idx.clone();
-    let listener_activation = controls.activation.clone();
-    let listener_paused = controls.paused.clone();
-    std::thread::spawn(move || {
-        hotkey::run_listener(
-            listener_hotkey_idx,
-            listener_activation,
-            tx,
-            listener_suppressed,
-            listener_paused,
-        );
-    });
+    let state = AppState { controls: controls.clone(), cfg: Mutex::new(cfg.clone()) };
+    tauri::Builder::default()
+        .manage(state)
+        .invoke_handler(tauri::generate_handler![
+            get_settings, set_hotkey, set_activation, set_polish, set_threshold,
+            set_dictionary, set_launch_login, set_start_hidden, copy_text
+        ])
+        .setup(move |app| {
+            build_tray(app)?;
+            if let Some(w) = app.get_webview_window("overlay") {
+                let _ = w.set_ignore_cursor_events(true);
+                position_overlay(&w);
+            }
+            if !cfg.start_hidden {
+                if let Some(w) = app.get_webview_window("settings") {
+                    let _ = w.show();
+                }
+            }
+            spawn_pipeline(app.handle().clone(), controls.clone(), cfg.clone());
+            tracing::info!("Sotto ready — hold the hotkey and speak");
+            Ok(())
+        })
+        .run(tauri::generate_context!())
+        .expect("error while running Sotto");
+    Ok(())
+}
 
-    // Dictation worker. Owns the microphone recorder and the ASR engine
-    // (both `!Send` / thread-affine), so it creates them here and never lets
-    // them cross threads.
+/// Builds the tray icon + menu and wires its actions.
+fn build_tray(app: &tauri::App) -> tauri::Result<()> {
+    use tauri::menu::{CheckMenuItemBuilder, MenuBuilder, MenuItemBuilder, SubmenuBuilder};
+    use tauri::tray::TrayIconBuilder;
+
+    let cur = PolishMode::from_u8(app.state::<AppState>().controls.polish_mode.load(Ordering::Relaxed));
+    let pause = CheckMenuItemBuilder::with_id("pause", "Pause dictation").checked(false).build(app)?;
+    let p_off = CheckMenuItemBuilder::with_id("polish_off", "Off").checked(cur == PolishMode::Off).build(app)?;
+    let p_rules = CheckMenuItemBuilder::with_id("polish_rules", "Rules only").checked(cur == PolishMode::Rules).build(app)?;
+    let p_ai = CheckMenuItemBuilder::with_id("polish_ai", "AI").checked(cur == PolishMode::Ai).build(app)?;
+    let polish = SubmenuBuilder::new(app, "Polish").item(&p_off).item(&p_rules).item(&p_ai).build()?;
+    let settings = MenuItemBuilder::with_id("settings", "Settings…").build(app)?;
+    let quit = MenuItemBuilder::with_id("quit", "Quit Sotto").build(app)?;
+    let menu = MenuBuilder::new(app)
+        .item(&pause)
+        .item(&polish)
+        .separator()
+        .item(&settings)
+        .separator()
+        .item(&quit)
+        .build()?;
+
+    TrayIconBuilder::with_id("main")
+        .icon(tray::idle_icon())
+        .tooltip("Sotto")
+        .menu(&menu)
+        .on_menu_event(|app, event| match event.id().as_ref() {
+            "settings" => {
+                if let Some(w) = app.get_webview_window("settings") {
+                    let _ = w.show();
+                    let _ = w.set_focus();
+                }
+            }
+            "quit" => app.exit(0),
+            "pause" => {
+                let c = &app.state::<AppState>().controls;
+                let paused = !c.paused.load(Ordering::Relaxed);
+                c.paused.store(paused, Ordering::Relaxed);
+                tracing::info!(paused, "pause toggled from tray");
+            }
+            "polish_off" => set_polish_runtime(app, PolishMode::Off),
+            "polish_rules" => set_polish_runtime(app, PolishMode::Rules),
+            "polish_ai" => set_polish_runtime(app, PolishMode::Ai),
+            _ => {}
+        })
+        .build(app)?;
+    Ok(())
+}
+
+fn set_polish_runtime(app: &tauri::AppHandle, mode: PolishMode) {
+    let st = app.state::<AppState>();
+    st.controls.polish_mode.store(mode.as_u8(), Ordering::Relaxed);
+    let mut cfg = st.cfg.lock().unwrap();
+    cfg.polish.mode = mode;
+    let _ = cfg.save();
+}
+
+/// Position the (always-on-top, transparent) overlay window bottom-center.
+fn position_overlay(w: &tauri::WebviewWindow) {
+    if let Ok(Some(mon)) = w.current_monitor() {
+        let sz = mon.size();
+        let scale = mon.scale_factor();
+        let ww = 260.0 * scale;
+        let wh = 120.0 * scale;
+        let x = ((sz.width as f64 - ww) / 2.0) as i32;
+        let y = (sz.height as f64 - wh - 8.0 * scale) as i32;
+        let _ = w.set_position(tauri::PhysicalPosition::new(x, y));
+    }
+}
+
+/// Spawns the hotkey listener, the dictation worker, and the mic-level emitter.
+/// These own `!Send` resources (recorder, ASR) so each lives on its own thread.
+fn spawn_pipeline(app: tauri::AppHandle, controls: Controls, cfg: Config) {
+    let (tx, rx) = crossbeam_channel::unbounded::<DictationEvent>();
+    let suppressed = Arc::new(AtomicBool::new(false));
+
+    // Global hotkey listener.
+    {
+        let hotkey_idx = controls.hotkey_idx.clone();
+        let activation = controls.activation.clone();
+        let paused = controls.paused.clone();
+        let supp = suppressed.clone();
+        std::thread::spawn(move || hotkey::run_listener(hotkey_idx, activation, tx, supp, paused));
+    }
+
+    // Mic-level emitter (only while recording).
+    {
+        let app = app.clone();
+        let level = controls.level.clone();
+        let listening = controls.listening.clone();
+        std::thread::spawn(move || loop {
+            if listening.load(Ordering::Relaxed) {
+                let lv = f32::from_bits(level.load(Ordering::Relaxed));
+                let _ = app.emit("overlay-level", lv);
+            }
+            std::thread::sleep(Duration::from_millis(40));
+        });
+    }
+
+    // Dictation worker.
     let injection_mode = cfg.injection_mode;
     let polisher = polish::Polisher::new(controls.clone(), cfg.llm.clone());
-
-    // The overlay drives the on-screen pill; the worker publishes state to it
-    // and the audio recorder feeds it live mic level. `overlay` itself runs the
-    // event loop on the main thread at the end of `main`.
-    let overlay = overlay::Overlay::new(controls.clone());
-    let worker_ov = overlay.clone();
-    let level_slot = overlay.level_slot();
-    let worker_history = controls.history.clone();
-
+    let history = controls.history.clone();
+    let listening = controls.listening.clone();
+    let level = controls.level.clone();
     std::thread::spawn(move || {
-        let mut recorder = audio::Recorder::new(level_slot);
+        let mut recorder = audio::Recorder::new(level);
         let mut asr = asr::Asr::new();
 
         for event in rx {
             match event {
                 DictationEvent::Start => match recorder.start() {
                     Ok(()) => {
-                        worker_ov.set(overlay::OverlayState::Listening);
+                        listening.store(true, Ordering::Relaxed);
+                        show_overlay(&app);
+                        emit_state(&app, "listening");
                         tracing::info!("listening");
                     }
                     Err(err) => {
-                        worker_ov.set(overlay::OverlayState::Error);
+                        emit_state(&app, "error");
                         tracing::error!(?err, "failed to start capture");
                     }
                 },
                 DictationEvent::Stop => {
+                    listening.store(false, Ordering::Relaxed);
                     let samples = match recorder.stop() {
                         Ok(s) => s,
                         Err(err) => {
-                            worker_ov.set(overlay::OverlayState::Error);
+                            emit_state(&app, "error");
                             tracing::error!(?err, "failed to stop capture");
                             continue;
                         }
                     };
                     if samples.len() < MIN_CLIP_SAMPLES {
-                        // Accidental tap — just hide the pill, no error treatment.
-                        worker_ov.set(overlay::OverlayState::Idle);
-                        tracing::info!(
-                            secs = samples.len() as f32 / 16_000.0,
-                            "clip too short — ignoring"
-                        );
+                        emit_state(&app, "idle");
                         continue;
                     }
-
-                    let audio_s = samples.len() as f32 / 16_000.0;
-                    worker_ov.set(overlay::OverlayState::Transcribing);
-                    let t_asr = Instant::now();
+                    emit_state(&app, "transcribing");
                     let text = match asr.transcribe(&samples) {
                         Ok(t) => t,
                         Err(err) => {
-                            worker_ov.set(overlay::OverlayState::Error);
+                            emit_state(&app, "error");
                             tracing::error!(?err, "transcription failed");
                             continue;
                         }
                     };
-                    let asr_ms = t_asr.elapsed().as_millis();
-
                     if text.is_empty() {
-                        worker_ov.set(overlay::OverlayState::Error);
-                        tracing::info!(audio_s, asr_ms, "empty transcript");
+                        emit_state(&app, "error");
                         continue;
                     }
-
                     if polisher.uses_ai_tier(&text) {
-                        worker_ov.set(overlay::OverlayState::Polishing);
+                        emit_state(&app, "polishing");
                     }
-                    let t_polish = Instant::now();
                     let polished = polisher.polish(&text);
-                    let polish_ms = t_polish.elapsed().as_millis();
                     if polished.is_empty() {
-                        worker_ov.set(overlay::OverlayState::Error);
-                        tracing::info!(audio_s, asr_ms, raw = %text, "nothing left after polish");
+                        emit_state(&app, "error");
                         continue;
                     }
-
-                    let t_inject = Instant::now();
                     suppressed.store(true, Ordering::SeqCst);
                     let result = inject::inject_text(&polished, injection_mode);
                     suppressed.store(false, Ordering::SeqCst);
                     match result {
                         Ok(()) => {
-                            worker_ov.set(overlay::OverlayState::Done);
-                            worker_history.push(polished.clone());
-                            tracing::info!(
-                                audio_s,
-                                asr_ms,
-                                polish_ms,
-                                inject_ms = t_inject.elapsed().as_millis(),
-                                raw = %text,
-                                "injected: {polished:?}"
-                            );
+                            history.push(polished.clone());
+                            emit_state(&app, "done");
+                            emit_history(&app, &history);
+                            tracing::info!("injected: {polished:?}");
                         }
                         Err(err) => {
-                            worker_ov.set(overlay::OverlayState::Error);
+                            emit_state(&app, "error");
                             tracing::error!(?err, "injection failed");
                         }
                     }
@@ -240,75 +436,60 @@ fn main() -> anyhow::Result<()> {
             }
         }
     });
+}
 
-    tracing::info!(hotkey = %cfg.hotkey, mode = ?cfg.activation_mode, "Sotto ready — hold hotkey and speak");
-    overlay
-        .run()
-        .map_err(|e| anyhow::anyhow!("overlay/event loop failed: {e}"))
+fn emit_state(app: &tauri::AppHandle, s: &str) {
+    let _ = app.emit("overlay-state", s);
+    if let Some(tray) = app.tray_by_id("main") {
+        let icon = if s == "listening" { tray::active_icon() } else { tray::idle_icon() };
+        let _ = tray.set_icon(Some(icon));
+    }
+    if s != "idle" {
+        show_overlay(app);
+    }
+}
+
+fn show_overlay(app: &tauri::AppHandle) {
+    if let Some(w) = app.get_webview_window("overlay") {
+        let _ = w.show();
+    }
+}
+
+fn emit_history(app: &tauri::AppHandle, history: &history::History) {
+    let dto: Vec<HistoryDto> = history.snapshot().into_iter().map(|e| HistoryDto { time: e.time, text: e.text }).collect();
+    let _ = app.emit("history-updated", dto);
+}
+
+/// Sum of file sizes in `dir`, in MB (whole number). None if unreadable.
+fn dir_size_mb(dir: PathBuf) -> Option<u64> {
+    let mut total = 0u64;
+    for entry in std::fs::read_dir(dir).ok()?.flatten() {
+        if let Ok(meta) = entry.metadata() {
+            if meta.is_file() {
+                total += meta.len();
+            }
+        }
+    }
+    Some(total / 1_000_000)
 }
 
 /// Returns the value following `flag` in the process args, if present.
 fn arg_value(flag: &str) -> Option<String> {
     let args: Vec<String> = std::env::args().collect();
-    args.iter()
-        .position(|a| a == flag)
-        .and_then(|i| args.get(i + 1).cloned())
+    args.iter().position(|a| a == flag).and_then(|i| args.get(i + 1).cloned())
 }
 
-/// Dev one-shot for the AI polish path: forces AI mode (any length) and prints
-/// raw vs. polished with timing. Exercises the real `llm.rs` + `polish.rs`.
 fn run_polish_once(raw: &str) -> anyhow::Result<()> {
     let cfg = Config::load_or_init().unwrap_or_default();
     let controls = Controls::from_config(&cfg);
-    controls
-        .polish_mode
-        .store(config::PolishMode::Ai.as_u8(), Ordering::Relaxed);
-    controls.ai_min_words.store(0, Ordering::Relaxed); // force the LLM regardless of length
+    controls.polish_mode.store(PolishMode::Ai.as_u8(), Ordering::Relaxed);
+    controls.ai_min_words.store(0, Ordering::Relaxed);
     let polisher = polish::Polisher::new(controls, cfg.llm.clone());
-
     let t = Instant::now();
     let out = polisher.polish(raw);
     println!("raw      => {raw:?}");
     println!("polished => {out:?}  ({} ms)", t.elapsed().as_millis());
     Ok(())
-}
-
-/// Dev one-shot: cycle the overlay through every state with a synthetic mic
-/// level so the pill + animations can be verified without a mic or model.
-fn run_overlay_demo() -> anyhow::Result<()> {
-    use overlay::OverlayState::*;
-    use std::sync::atomic::Ordering;
-    use std::time::Duration;
-
-    let overlay = overlay::Overlay::new(Controls::from_config(&Config::default()));
-    let ov = overlay.clone();
-    let level = overlay.level_slot();
-    std::thread::spawn(move || {
-        std::thread::sleep(Duration::from_millis(500));
-        loop {
-            // Listening — feed a wobbling level for ~3.2s so the wave looks alive.
-            ov.set(Listening);
-            let start = Instant::now();
-            while start.elapsed() < Duration::from_millis(3200) {
-                let t = start.elapsed().as_secs_f32();
-                let rms = 0.05 + 0.06 * (t * 6.0).sin().abs();
-                level.store(rms.to_bits(), Ordering::Relaxed);
-                std::thread::sleep(Duration::from_millis(60));
-            }
-            level.store(0f32.to_bits(), Ordering::Relaxed);
-            ov.set(Transcribing);
-            std::thread::sleep(Duration::from_millis(2600));
-            ov.set(Polishing);
-            std::thread::sleep(Duration::from_millis(3200));
-            ov.set(Done); // auto-hides after ~0.8s
-            std::thread::sleep(Duration::from_millis(1600));
-            ov.set(Error); // auto-hides after ~2.7s
-            std::thread::sleep(Duration::from_millis(3400));
-        }
-    });
-    overlay
-        .run()
-        .map_err(|e| anyhow::anyhow!("overlay demo failed: {e}"))
 }
 
 fn run_transcribe_once(path: &str) -> anyhow::Result<()> {
@@ -317,27 +498,17 @@ fn run_transcribe_once(path: &str) -> anyhow::Result<()> {
     let mut asr = asr::Asr::new();
     let t = Instant::now();
     let text = asr.transcribe(&samples)?;
-    println!(
-        "({} samples, {} ms) => {text:?}",
-        samples.len(),
-        t.elapsed().as_millis()
-    );
+    println!("({} samples, {} ms) => {text:?}", samples.len(), t.elapsed().as_millis());
     Ok(())
 }
 
-/// Point `ort` (load-dynamic) at our bundled ONNX Runtime dll. Loading a
-/// C-ABI dll at runtime works fine from a MinGW-built binary, which is why we
-/// can stay on the GNU toolchain despite `ort` shipping no gnu prebuilts.
+/// Point `ort` (load-dynamic) at our bundled ONNX Runtime dll.
 fn init_ort() {
     let dll = config::onnxruntime_dll();
     if dll.exists() {
-        // SAFETY: single-threaded startup, before any worker thread is spawned.
         unsafe { std::env::set_var("ORT_DYLIB_PATH", &dll) };
         tracing::info!(path = %dll.display(), "ORT_DYLIB_PATH set");
     } else {
-        tracing::warn!(
-            path = %dll.display(),
-            "onnxruntime.dll not found — dictation will fail until it and the model are installed"
-        );
+        tracing::warn!(path = %dll.display(), "onnxruntime.dll not found — dictation will fail until installed");
     }
 }

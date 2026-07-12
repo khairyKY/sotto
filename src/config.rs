@@ -140,6 +140,13 @@ pub struct Config {
     /// Dictation dictionary / snippet replacements, edited in the settings window.
     #[serde(default)]
     pub dictionary: Vec<DictEntry>,
+    /// Start minimized to the tray (no window shown on launch).
+    #[serde(default = "default_true")]
+    pub start_hidden: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 impl Default for Config {
@@ -153,6 +160,7 @@ impl Default for Config {
             polish: PolishConfig::default(),
             llm: LlmConfig::default(),
             dictionary: Vec::new(),
+            start_hidden: true,
         }
     }
 }
