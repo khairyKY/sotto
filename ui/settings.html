@@ -26,6 +26,21 @@
       </div>
     </header>
 
+    <!-- Update banner + first-run model download — hidden until relevant. -->
+    <div class="banner" id="update-banner" hidden>
+      <span class="banner-dot"></span>
+      <span class="banner-text" id="update-text">A new version of Sotto is available.</span>
+      <span class="banner-actions">
+        <button class="btn primary" id="update-install">Install &amp; restart</button>
+        <button class="btn ghost" id="update-dismiss">Later</button>
+      </span>
+    </div>
+    <div class="banner" id="assets-banner" hidden>
+      <span class="banner-dot amber"></span>
+      <span class="banner-text" id="assets-text">Downloading voice models…</span>
+      <span class="banner-bar"><span class="banner-fill" id="assets-fill"></span></span>
+    </div>
+
     <main class="body">
       <!-- HOTKEY -->
       <section>
@@ -125,6 +140,18 @@
             <span class="label">Start hidden in the tray</span>
             <button class="switch" id="start-hidden" role="switch" aria-checked="true"><span class="knob"></span></button>
           </div>
+        </div>
+      </section>
+
+      <!-- ABOUT / UPDATES -->
+      <section>
+        <div class="section-head"><span class="section-title">About</span></div>
+        <div class="card row">
+          <div class="row-label">
+            <div class="label">Sotto <span class="mono" id="app-version"></span></div>
+            <div class="sub" id="update-status">Checking for updates…</div>
+          </div>
+          <button class="btn" id="check-update">Check for updates</button>
         </div>
       </section>
     </main>

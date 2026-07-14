@@ -44,18 +44,22 @@
   "bundle": {
     "active": true,
     "targets": ["nsis"],
+    "createUpdaterArtifacts": true,
     "icon": ["icons/32x32.png", "icons/128x128.png", "icons/icon.ico"],
-    "resources": [
-      "D:/sotto/onnxruntime.dll",
-      "D:/sotto/models/parakeet-tdt-0.6b-v3-int8/**/*",
-      "D:/sotto/runtime/**/*"
-    ],
     "windows": {
       "nsis": {
         "installMode": "both",
         "displayLanguageSelector": false,
-        "compression": "none"
+        "installerHooks": "nsis/hooks.nsi"
       }
+    }
+  },
+  "plugins": {
+    "updater": {
+      "endpoints": [
+        "https://github.com/khairyKY/sotto/releases/latest/download/latest.json"
+      ],
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDI2MEI3OURGNDc5RjFEOTIKUldTU0haOUgzM2tMSmtLWndlQTJLTG9xUVVZWEdibVZZOUhWM3RpVXUxVmh2VSt2TFZlQXpDcFUK"
     }
   }
 }

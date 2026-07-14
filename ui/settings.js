@@ -229,5 +229,87 @@ async function boot() {
   if (hasTauri && T.event) {
     T.event.listen("history-updated", (e) => renderHistory(e.payload || []));
   }
+
+  initUpdates();
+  initAssets();
+}
+
+// ── app updates (toast + one-click install) ────────────────────
+async function initUpdates() {
+  const banner = $("update-banner");
+  const statusEl = $("update-status");
+  const verEl = $("app-version");
+  try {
+    const v = hasTauri && T.app ? await T.app.getVersion() : "0.1.0";
+    verEl.textContent = "v" + v;
+  } catch { verEl.textContent = ""; }
+
+  const showUpdate = (version) => {
+    $("update-text").textContent = `Sotto v${version} is available.`;
+    banner.hidden = false;
+  };
+  async function refresh(manual) {
+    statusEl.textContent = "Checking for updates…";
+    const latest = await invoke("check_update"); // undefined in browser preview
+    if (latest && latest.version) {
+      showUpdate(latest.version);
+      statusEl.textContent = `Update available: v${latest.version}`;
+    } else {
+      banner.hidden = true;
+      statusEl.textContent = manual ? "You're on the latest version" : "Up to date";
+    }
+  }
+
+  $("update-install").onclick = async () => {
+    $("update-install").disabled = true;
+    $("update-text").textContent = "Downloading update…";
+    try {
+      await invoke("install_update"); // app relaunches on success
+    } catch (e) {
+      $("update-text").textContent = "Update failed: " + e;
+      $("update-install").disabled = false;
+    }
+  };
+  $("update-dismiss").onclick = () => { banner.hidden = true; };
+  $("check-update").onclick = () => refresh(true);
+
+  if (hasTauri && T.event) {
+    T.event.listen("update-available", (e) => showUpdate(e.payload));
+    T.event.listen("update-progress", (e) => {
+      const [d, t] = e.payload || [0, 0];
+      const pct = t ? Math.round((d / t) * 100) : 0;
+      $("update-text").textContent = `Downloading update… ${pct}%`;
+    });
+  }
+  refresh(false);
+}
+
+// ── first-run model download ───────────────────────────────────
+async function initAssets() {
+  const banner = $("assets-banner");
+  const fill = $("assets-fill");
+  const text = $("assets-text");
+  const status = await invoke("assets_status"); // undefined in browser preview
+  if (!status || status.ready) { banner.hidden = true; return; }
+
+  banner.hidden = false;
+  text.textContent = "Downloading voice models… (first run)";
+
+  if (hasTauri && T.event) {
+    T.event.listen("asset-progress", (e) => {
+      const p = e.payload || {};
+      const pct = p.total ? Math.round((p.received / p.total) * 100) : 0;
+      fill.style.width = pct + "%";
+      text.textContent = `Downloading ${p.name}… ${pct}%`;
+    });
+    T.event.listen("assets-ready", () => {
+      fill.style.width = "100%";
+      text.textContent = "Models ready.";
+      setTimeout(() => (banner.hidden = true), 1500);
+    });
+    T.event.listen("asset-error", (e) => {
+      text.textContent = "Download failed: " + e.payload + " — restart Sotto to retry.";
+    });
+  }
 }
 boot();

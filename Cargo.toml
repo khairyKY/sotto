@@ -14,10 +14,14 @@ crossbeam-channel = "0.5.16"
 ort = { version = "=2.0.0-rc.12", default-features = false, features = ["load-dynamic"] }
 rdev = "0.5.3"
 serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1"
 tauri = { version = "2", features = ["tray-icon"] }
+tauri-plugin-updater = "2"
+tauri-plugin-notification = "2"
 toml = "1.1.2"
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 transcribe-rs = { git = "https://github.com/cjpais/transcribe-rs", version = "0.3.11", features = ["onnx"] }
 ureq = { version = "3.3.0", features = ["json"] }
+zip = { version = "2", default-features = false, features = ["deflate"] }
 windows = { version = "0.62.2", features = ["Win32_Foundation", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_WindowsAndMessaging", "Win32_System_Threading", "Win32_System_Diagnostics_Debug", "Win32_Security", "Win32_System_JobObjects", "Win32_System_SystemInformation"] }

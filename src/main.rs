@@ -8,6 +8,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod asr;
+mod assets;
 mod audio;
 mod config;
 mod history;
@@ -234,10 +235,14 @@ fn main() -> anyhow::Result<()> {
 
     let state = AppState { controls: controls.clone(), cfg: Mutex::new(cfg.clone()) };
     tauri::Builder::default()
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_notification::init())
         .manage(state)
         .invoke_handler(tauri::generate_handler![
             get_settings, set_hotkey, set_activation, set_polish, set_threshold,
-            set_dictionary, set_launch_login, set_start_hidden, copy_text
+            set_dictionary, set_launch_login, set_start_hidden, copy_text,
+            check_update, install_update,
+            assets::assets_status, assets::download_assets
         ])
         .setup(move |app| {
             build_tray(app)?;
@@ -251,6 +256,8 @@ fn main() -> anyhow::Result<()> {
                 }
             }
             spawn_pipeline(app.handle().clone(), controls.clone(), cfg.clone());
+            spawn_update_check(app.handle().clone());
+            assets::spawn_provision_if_missing(app.handle().clone());
             tracing::info!("Sotto ready — hold the hotkey and speak");
             Ok(())
         })
@@ -306,6 +313,86 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
         })
         .build(app)?;
     Ok(())
+}
+
+#[derive(serde::Serialize)]
+struct UpdateInfo {
+    version: String,
+    notes: Option<String>,
+}
+
+/// Ask GitHub whether a newer Sotto is published. Returns `None` when up to
+/// date or in a dev build (updater not configured). Called by the settings
+/// window on open and by the "Check for updates" button.
+#[tauri::command]
+async fn check_update(app: tauri::AppHandle) -> Option<UpdateInfo> {
+    use tauri_plugin_updater::UpdaterExt;
+    let updater = app.updater().ok()?;
+    match updater.check().await {
+        Ok(Some(u)) => Some(UpdateInfo { version: u.version, notes: u.body }),
+        _ => None,
+    }
+}
+
+/// Download the pending update (the small ~15 MB installer — models aren't
+/// bundled), verify its signature, install, and relaunch. Progress is emitted
+/// as `update-progress` (downloaded, total).
+#[tauri::command]
+async fn install_update(app: tauri::AppHandle) -> Result<(), String> {
+    use tauri_plugin_updater::UpdaterExt;
+    let updater = app.updater().map_err(|e| e.to_string())?;
+    let update = updater
+        .check()
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "no update available".to_string())?;
+
+    let app2 = app.clone();
+    let mut downloaded: u64 = 0;
+    update
+        .download_and_install(
+            move |chunk, total| {
+                downloaded += chunk as u64;
+                let _ = app2.emit("update-progress", (downloaded, total.unwrap_or(0)));
+            },
+            || {},
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+
+    app.restart();
+}
+
+/// On launch, ask GitHub whether a newer Sotto is published. If so, pop a
+/// native toast and emit `update-available`. The install itself is user-driven
+/// from the settings window (which runs its own check on open, so a missed
+/// startup event doesn't matter). No-op in dev builds (updater not configured).
+fn spawn_update_check(app: tauri::AppHandle) {
+    tauri::async_runtime::spawn(async move {
+        use tauri_plugin_updater::UpdaterExt;
+        let updater = match app.updater() {
+            Ok(u) => u,
+            Err(err) => {
+                tracing::warn!(?err, "updater unavailable");
+                return;
+            }
+        };
+        match updater.check().await {
+            Ok(Some(update)) => {
+                tracing::info!(version = %update.version, "update available");
+                use tauri_plugin_notification::NotificationExt;
+                let _ = app
+                    .notification()
+                    .builder()
+                    .title("Sotto update available")
+                    .body(format!("Version {} is ready. Open Settings to install.", update.version))
+                    .show();
+                let _ = app.emit("update-available", update.version.clone());
+            }
+            Ok(None) => tracing::info!("Sotto is up to date"),
+            Err(err) => tracing::warn!(?err, "update check failed"),
+        }
+    });
 }
 
 fn set_polish_runtime(app: &tauri::AppHandle, mode: PolishMode) {
@@ -373,6 +460,9 @@ fn spawn_pipeline(app: tauri::AppHandle, controls: Controls, cfg: Config) {
                 DictationEvent::Start => match recorder.start() {
                     Ok(()) => {
                         listening.store(true, Ordering::Relaxed);
+                        // Warm the LLM sidecar while the user speaks (AI mode
+                        // only) so its cold model-load doesn't block after Stop.
+                        polisher.prewarm();
                         show_overlay(&app);
                         emit_state(&app, "listening");
                         tracing::info!("listening");

@@ -190,3 +190,20 @@ input[type="range"]::-webkit-slider-thumb {
 .switch[aria-checked="true"] { background: var(--accent); }
 .switch .knob { position: absolute; top: 2px; left: 2px; width: 18px; height: 18px; border-radius: 50%; background: #fff; box-shadow: 0 1px 2px rgba(0,0,0,.25); transition: left 0.16s; }
 .switch[aria-checked="true"] .knob { left: 18px; }
+
+/* ── update / asset-download banner ─────────────────────────────── */
+.banner {
+  display: flex; align-items: center; gap: 11px;
+  margin: 0 16px 4px; padding: 11px 14px;
+  background: var(--accent-soft); border: 1px solid var(--border);
+  border-radius: 10px; font-size: 13px; color: var(--text);
+}
+.banner-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); flex: none; }
+.banner-dot.amber { background: #e3a857; }
+.banner-text { flex: 1; }
+.banner-actions { display: inline-flex; gap: 8px; }
+.btn.primary { background: var(--accent); border-color: transparent; color: #10201f; font-weight: 600; }
+.btn.primary:hover { filter: brightness(1.06); }
+.btn.ghost { background: transparent; }
+.banner-bar { flex: none; width: 140px; height: 5px; border-radius: 3px; background: rgba(127,127,127,.22); overflow: hidden; }
+.banner-fill { display: block; width: 0%; height: 100%; background: #e3a857; transition: width 0.2s; }

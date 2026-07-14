@@ -46,26 +46,22 @@ Sotto communicates its active status using a custom visual identity. The UI uses
 
 ## 📦 Getting Started (For Users)
 
-### 1. Download the Installer
-Get the latest compiled installer package from the build directory:
-- **[Sotto_0.1.0_x64-setup.exe](file:///D:/Coding/sotto-opencode/target/release/bundle/nsis/Sotto_0.1.0_x64-setup.exe)** (Recommended executable installer)
-- **[Sotto_0.1.0_x64_en-US.msi](file:///D:/Coding/sotto-opencode/target/release/bundle/msi/Sotto_0.1.0_x64_en-US.msi)** (MSI installer)
+### 1. Install (~4 MB)
+Grab the latest signed installer from the [**Releases page**](https://github.com/khairyKY/sotto/releases/latest) — pick `Sotto_x.y.z_x64-setup.exe` and run it.
 
-Run the installer on your Windows device. It will set up the application and register system shortcuts.
+### 2. First launch — one-time model download (~1.8 GB)
+The installer itself is intentionally tiny. On first launch Sotto opens Settings and downloads the voice models + local-LLM runtime once into `%APPDATA%\sotto`; a progress banner keeps you informed. After that, dictation works fully offline and updates never re-download this again.
 
-### 2. Configure the Data Folder
-By default, Sotto loads configurations and AI models from `D:\sotto`. The folder should contain:
-- `onnxruntime.dll` (ONNX library)
-- `config.toml` (Settings, automatically created on first run)
-- `models/` (Contains ASR model and the Qwen2.5 `.gguf` file)
-- `runtime/` (Contains `llama-server.exe` sidecar)
+### 3. Use it
+Sotto launches minimized to the **system tray** (check the `^` overflow menu next to the clock). Right-click the tray icon (charcoal S-mark) for **Settings**, **Polish mode**, **Pause**, or **Quit**.
 
-*Note: You can override this folder by setting the `SOTTO_DATA_DIR` environment variable.*
+Open any app, hold **Right Ctrl**, speak, release — Sotto transcribes locally and pastes the text into the focused window.
 
-### 3. Usage
-- Launch Sotto from the Start Menu. It will launch minimized to your **System Tray** (check the **`^`** overflow menu next to your clock).
-- Right-click the **Sotto tray icon** (charcoal square with an `S`) to access **Settings**, change the **Polish mode**, **Pause** dictation, or **Quit**.
-- Open any app, hold **Right Ctrl**, speak, and release it. Sotto will process your speech and paste it.
+### 4. Updates — one click, ~4 MB
+Sotto checks GitHub on launch. When a newer version is out, a **native Windows toast** appears and the Settings window shows an **Install & restart** banner. Click it — the small installer downloads, verifies its signature, and relaunches. Your models and settings are untouched.
+
+### 5. Uninstalling
+Uninstall Sotto from **Settings → Apps** or via `Sotto_*_x64-setup.exe /uninstall`. The uninstaller removes the app, disables launch-at-login, and asks whether to also delete the ~1.8 GB of downloaded models and your settings (default: keep — so a reinstall is instant).
 
 ---
 
@@ -95,26 +91,25 @@ Sotto is structured as a Tauri v2 application:
   ```powershell
   npx tauri build
   ```
-- **Simulate/Preview the UI Frontend Standalone:**
+- **Preview the UI Frontend Standalone (browser, no build):**
   ```powershell
   node scripts/serve-ui.mjs
   ```
   *(Preview at `http://localhost:5173/settings.html` and `http://localhost:5173/preview.html`)*
 
-- **Simulate the Overlay Pill with Synthetic Mic Levels (no mic needed):**
+- **Headless ASR on a WAV file:**
   ```powershell
-  cargo run -- --overlay-demo
+  cargo run -- --transcribe path\to\audio.wav
   ```
 
-- **Open Settings Immediately on Startup:**
-  ```powershell
-  cargo run -- --settings
-  ```
-
-- **Run AI Polish CLI Test on Arbitrary Text:**
+- **Run the AI polish tier on a string (spawns the local LLM sidecar):**
   ```powershell
   cargo run -- --polish "<raw text>"
   ```
+
+### Cutting a release
+
+The updater workflow (bump version → sign → publish to GitHub Releases so every running app picks it up as a 4 MB update) is documented step-by-step in [`docs/updating.md`](./docs/updating.md).
 
 ---
 
