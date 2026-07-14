@@ -14,11 +14,17 @@
 use crate::config::{self, LlmConfig};
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
+use std::os::windows::process::CommandExt;
 use std::process::{Child, Command, Stdio};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
+
+/// Spawn the console-subsystem sidecar with no console window. Without this a
+/// GUI (`windows_subsystem = "windows"`) build pops a cmd window every time the
+/// sidecar launches. Same flag `startup.rs` uses for its `reg.exe` calls.
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 const SYSTEM_PROMPT: &str = "\
 You are a precise editor for a voice-dictation app. Convert the raw spoken \
@@ -75,6 +81,19 @@ impl Llm {
         config::llama_server_exe().exists() && config::llm_model_path().exists()
     }
 
+    /// Start the sidecar loading *now* (e.g. the moment the user begins
+    /// speaking) so its ~4s cold model-load overlaps recording + transcription
+    /// instead of blocking after the clip ends. Best-effort and non-blocking:
+    /// only launches the process; any error is ignored since the real `polish`
+    /// call re-checks and falls back to rules on failure.
+    pub fn prewarm(&self) {
+        if let Ok(mut g) = self.inner.lock() {
+            if self.ensure_spawned(&mut g).is_ok() {
+                g.last_used = Instant::now();
+            }
+        }
+    }
+
     /// Rewrite `raw` via the LLM. Returns `Err` on any failure so the caller
     /// can fall back to rules-based cleanup.
     pub fn polish(&self, raw: &str) -> Result<String> {
@@ -124,6 +143,7 @@ impl Llm {
             .arg(self.cfg.n_gpu_layers.to_string())
             .arg("--ctx-size")
             .arg(self.cfg.ctx_size.to_string())
+            .creation_flags(CREATE_NO_WINDOW)
             .stdout(Stdio::null())
             .stderr(stderr)
             .spawn()

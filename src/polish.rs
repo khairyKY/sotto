@@ -72,6 +72,17 @@ impl Polisher {
         }
     }
 
+    /// Pre-spawn the LLM sidecar if AI polish is the active tier, so its model
+    /// load overlaps recording + transcription rather than blocking afterward.
+    /// No-op in Off/Rules mode or when the sidecar isn't available.
+    pub fn prewarm(&self) {
+        if self.mode() == PolishMode::Ai {
+            if let Some(llm) = &self.llm {
+                llm.prewarm();
+            }
+        }
+    }
+
     /// True if `raw` would actually be sent through the LLM (AI mode selected,
     /// sidecar available, and long enough to clear the word threshold). Lets the
     /// overlay show the "Polishing" state only when a real AI pass will run.

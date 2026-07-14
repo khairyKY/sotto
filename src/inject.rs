@@ -47,7 +47,10 @@ fn wait_for_modifiers_released() {
     }
 }
 
+// Fields are only read through the derived `Debug` (in the tracing call), which
+// the dead-code lint doesn't count — silence it rather than drop the diagnostics.
 #[derive(Debug)]
+#[allow(dead_code)]
 struct ForegroundTarget {
     hwnd: isize,
     process_id: u32,
