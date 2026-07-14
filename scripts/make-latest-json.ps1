@@ -11,7 +11,7 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 
-$nsis  = "D:\Coding\sotto-opencode\target\release\bundle\nsis"
+$nsis  = "D:\Coding\sotto\target\release\bundle\nsis"
 $setup = Get-ChildItem $nsis -Filter '*-setup.exe' | Select-Object -First 1
 if (-not $setup) { throw "No -setup.exe in $nsis. Run 'npx tauri build' first." }
 $sigPath = "$($setup.FullName).sig"

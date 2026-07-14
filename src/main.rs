@@ -25,7 +25,7 @@ use config::{ActivationMode, Config, DictEntry, PolishMode};
 use hotkey::DictationEvent;
 use single_instance::SingleInstanceGuard;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU8, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicU32, AtomicU8, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tauri::{Emitter, Manager};
@@ -47,6 +47,10 @@ pub struct Controls {
     pub level: Arc<AtomicU32>,
     /// True while recording — gates the level-event emitter.
     pub listening: Arc<AtomicBool>,
+    /// HWND (as isize) of the window that was focused when the user pressed
+    /// the hotkey. If they Alt-Tab mid-dictation, we still inject here.
+    /// 0 = nothing captured / capture failed.
+    pub focus_target: Arc<AtomicIsize>,
 }
 
 impl Controls {
@@ -63,6 +67,7 @@ impl Controls {
             history: history::History::new(),
             level: Arc::new(AtomicU32::new(0)),
             listening: Arc::new(AtomicBool::new(false)),
+            focus_target: Arc::new(AtomicIsize::new(0)),
         }
     }
 }
@@ -96,6 +101,16 @@ struct ModelDto {
 }
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
+struct HotkeyOption {
+    /// Human label shown in the picker (e.g. "Right Ctrl", "Mouse: Middle click").
+    label: String,
+    /// Stable config-file name — what `set_hotkey` accepts.
+    name: String,
+    /// UI hint: prompt the user "are you sure?" before saving this pick.
+    risky: bool,
+}
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 struct SettingsPayload {
     hotkey: String,
     activation: String,
@@ -106,6 +121,7 @@ struct SettingsPayload {
     dictionary: Vec<DictEntryDto>,
     history: Vec<HistoryDto>,
     models: Vec<ModelDto>,
+    hotkey_options: Vec<HotkeyOption>,
 }
 
 // ── commands ───────────────────────────────────────────────────────────
@@ -114,6 +130,14 @@ fn get_settings(state: tauri::State<'_, AppState>) -> SettingsPayload {
     let cfg = state.cfg.lock().unwrap();
     let c = &state.controls;
     let idx = c.hotkey_idx.load(Ordering::Relaxed).min(hotkey::SUPPORTED_HOTKEYS.len() - 1);
+    let hotkey_options: Vec<HotkeyOption> = hotkey::SUPPORTED_HOTKEYS
+        .iter()
+        .map(|(label, name, _, risky)| HotkeyOption {
+            label: (*label).to_string(),
+            name: (*name).to_string(),
+            risky: *risky,
+        })
+        .collect();
     let activation = match ActivationMode::from_u8(c.activation.load(Ordering::Relaxed)) {
         ActivationMode::Toggle => "toggle",
         ActivationMode::Hold => "hold",
@@ -126,6 +150,7 @@ fn get_settings(state: tauri::State<'_, AppState>) -> SettingsPayload {
     let installed = config::model_dir().exists();
     let size = dir_size_mb(config::model_dir()).map(|mb| format!("{mb} MB")).unwrap_or_default();
     SettingsPayload {
+        hotkey_options,
         hotkey: hotkey::SUPPORTED_HOTKEYS[idx].1.to_string(),
         activation: activation.to_string(),
         polish: polish.to_string(),
@@ -210,6 +235,20 @@ fn copy_text(text: String) {
     }
 }
 
+/// Open a URL in the user's default browser. Used by the settings window's
+/// "Download from GitHub" fallback link — always available so an updater
+/// error is never a dead end. `cmd /c start "" <url>` handles URL escaping
+/// and the empty "" arg is a start.exe quirk that prevents the URL being
+/// treated as a window title.
+#[tauri::command]
+fn open_url(url: String) {
+    use std::os::windows::process::CommandExt;
+    let _ = std::process::Command::new("cmd")
+        .args(["/c", "start", "", &url])
+        .creation_flags(0x0800_0000) // CREATE_NO_WINDOW
+        .spawn();
+}
+
 // ── main ───────────────────────────────────────────────────────────────
 fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
@@ -241,7 +280,7 @@ fn main() -> anyhow::Result<()> {
         .invoke_handler(tauri::generate_handler![
             get_settings, set_hotkey, set_activation, set_polish, set_threshold,
             set_dictionary, set_launch_login, set_start_hidden, copy_text,
-            check_update, install_update,
+            open_url, check_update, install_update,
             assets::assets_status, assets::download_assets
         ])
         .setup(move |app| {
@@ -451,6 +490,7 @@ fn spawn_pipeline(app: tauri::AppHandle, controls: Controls, cfg: Config) {
     let history = controls.history.clone();
     let listening = controls.listening.clone();
     let level = controls.level.clone();
+    let focus_target = controls.focus_target.clone();
     std::thread::spawn(move || {
         let mut recorder = audio::Recorder::new(level);
         let mut asr = asr::Asr::new();
@@ -460,6 +500,10 @@ fn spawn_pipeline(app: tauri::AppHandle, controls: Controls, cfg: Config) {
                 DictationEvent::Start => match recorder.start() {
                     Ok(()) => {
                         listening.store(true, Ordering::Relaxed);
+                        // Capture the focus target NOW so an Alt-Tab during
+                        // dictation doesn't reroute the injection. Restored
+                        // just before we send the keystrokes below.
+                        focus_target.store(inject::capture_focus(), Ordering::Relaxed);
                         // Warm the LLM sidecar while the user speaks (AI mode
                         // only) so its cold model-load doesn't block after Stop.
                         polisher.prewarm();
@@ -507,6 +551,9 @@ fn spawn_pipeline(app: tauri::AppHandle, controls: Controls, cfg: Config) {
                         emit_state(&app, "error");
                         continue;
                     }
+                    // Restore focus to the original target before injecting.
+                    // No-op if the user hasn't moved focus, cheap otherwise.
+                    inject::restore_focus(focus_target.swap(0, Ordering::Relaxed));
                     suppressed.store(true, Ordering::SeqCst);
                     let result = inject::inject_text(&polished, injection_mode);
                     suppressed.store(false, Ordering::SeqCst);

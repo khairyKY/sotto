@@ -52,7 +52,7 @@
           </div>
           <div class="row-control" id="hotkey-control">
             <span class="keycap" id="hotkey-keycap">Right Ctrl</span>
-            <button class="btn" id="hotkey-rebind">Rebind</button>
+            <select class="btn" id="hotkey-picker" title="Pick any key or mouse button as your dictation hotkey"></select>
           </div>
         </div>
       </section>
@@ -146,12 +146,22 @@
       <!-- ABOUT / UPDATES -->
       <section>
         <div class="section-head"><span class="section-title">About</span></div>
-        <div class="card row">
-          <div class="row-label">
-            <div class="label">Sotto <span class="mono" id="app-version"></span></div>
-            <div class="sub" id="update-status">Checking for updates…</div>
+        <div class="card">
+          <div class="row bare">
+            <div class="row-label">
+              <div class="label">Sotto <span class="mono" id="app-version"></span></div>
+              <div class="sub" id="update-status">Checking for updates…</div>
+            </div>
+            <button class="btn" id="check-update">Check for updates</button>
           </div>
-          <button class="btn" id="check-update">Check for updates</button>
+          <div class="divider"></div>
+          <div class="row bare">
+            <div class="row-label">
+              <div class="label">Trouble updating?</div>
+              <div class="sub">Every release is on GitHub — download the latest installer manually and run it (settings and models are preserved).</div>
+            </div>
+            <button class="btn" id="open-releases">Open releases page</button>
+          </div>
         </div>
       </section>
     </main>

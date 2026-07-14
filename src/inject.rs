@@ -2,11 +2,53 @@ use crate::config::InjectionMode;
 use std::mem::size_of;
 use std::time::{Duration, Instant};
 use windows::Win32::Foundation::HWND;
+use windows::Win32::System::Threading::{AttachThreadInput, GetCurrentThreadId};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     GetAsyncKeyState, SendInput, VIRTUAL_KEY, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT,
     KEYEVENTF_KEYUP, KEYEVENTF_UNICODE, VK_CONTROL, VK_LWIN, VK_MENU, VK_RWIN, VK_SHIFT, VK_V,
 };
-use windows::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, GetWindowThreadProcessId};
+use windows::Win32::UI::WindowsAndMessaging::{
+    GetForegroundWindow, GetWindowThreadProcessId, IsWindow, SetForegroundWindow,
+};
+
+/// Read the currently-focused window's HWND so it can be restored later
+/// (before injection) even if the user Alt-Tabbed while speaking. Returns 0
+/// if capture fails, which downstream treats as "just inject wherever the
+/// user is now" — the pre-fix behavior.
+pub fn capture_focus() -> isize {
+    unsafe { GetForegroundWindow().0 as isize }
+}
+
+/// Bring `target_hwnd` back to the foreground before injection. Windows
+/// refuses `SetForegroundWindow` from a non-foreground process by default —
+/// the reliable workaround is to attach our input queue to the target's
+/// thread, do the call, then detach. Failure is silent: injection then
+/// lands in whatever window is currently focused (still functional, just
+/// not the intended target).
+pub fn restore_focus(target_hwnd: isize) {
+    if target_hwnd == 0 {
+        return;
+    }
+    let target = HWND(target_hwnd as *mut _);
+    unsafe {
+        if !IsWindow(Some(target)).as_bool() {
+            // Target window closed between Start and now; nothing to do.
+            return;
+        }
+        let target_thread = GetWindowThreadProcessId(target, None);
+        let current_thread = GetCurrentThreadId();
+        let attach = target_thread != 0
+            && target_thread != current_thread
+            && AttachThreadInput(current_thread, target_thread, true).as_bool();
+        let _ = SetForegroundWindow(target);
+        if attach {
+            let _ = AttachThreadInput(current_thread, target_thread, false);
+        }
+    }
+    // Small settle so the target's message pump processes the activation
+    // before we start feeding it keystrokes.
+    std::thread::sleep(Duration::from_millis(25));
+}
 
 /// Injects `text` into whatever window currently has keyboard focus, using the
 /// configured strategy.

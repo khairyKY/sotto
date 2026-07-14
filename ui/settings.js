@@ -39,15 +39,10 @@ async function getSettings() {
   return mock;
 }
 
-const HOTKEY_LABEL = {
-  ControlRight: "Right Ctrl", ControlLeft: "Left Ctrl", AltGr: "Right Alt",
-  Alt: "Left Alt", ShiftRight: "Right Shift", ShiftLeft: "Left Shift", CapsLock: "Caps Lock",
-};
-// Browser keydown event.code → our config key name.
-const CODE_TO_KEY = {
-  ControlRight: "ControlRight", ControlLeft: "ControlLeft", AltRight: "AltGr",
-  AltLeft: "Alt", ShiftRight: "ShiftRight", ShiftLeft: "ShiftLeft", CapsLock: "CapsLock",
-};
+// Hotkey label lookup — populated from the Rust `hotkey_options` list on boot
+// so any key/button added to SUPPORTED_HOTKEYS shows up here automatically.
+let HOTKEY_LABELS = {};
+let HOTKEY_RISKY = {};
 
 const $ = (id) => document.getElementById(id);
 
@@ -155,34 +150,46 @@ async function copyHistory(text) {
 
 function escapeHtml(s) { return s.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c])); }
 
-// ── hotkey rebind (press-any-key capture) ──────────────────────
-let capturing = false;
-function setKeycap(key) { $("hotkey-keycap").textContent = HOTKEY_LABEL[key] || key; }
-$("hotkey-rebind").onclick = () => {
-  if (capturing) return;
-  capturing = true;
-  const cap = $("hotkey-keycap");
-  cap.textContent = "Press a key…";
-  cap.style.borderStyle = "dashed";
-  const onKey = (ev) => {
-    const key = CODE_TO_KEY[ev.code];
-    window.removeEventListener("keydown", onKey, true);
-    document.removeEventListener("click", onCancel, true);
-    capturing = false;
-    cap.style.borderStyle = "";
-    if (key) { setKeycap(key); invoke("set_hotkey", { key }); }
-    ev.preventDefault();
-  };
-  const onCancel = (ev) => {
-    if (ev.target === $("hotkey-rebind")) return;
-    window.removeEventListener("keydown", onKey, true);
-    document.removeEventListener("click", onCancel, true);
-    capturing = false;
-    cap.style.borderStyle = "";
-  };
-  window.addEventListener("keydown", onKey, true);
-  setTimeout(() => document.addEventListener("click", onCancel, true), 0);
-};
+// ── hotkey picker ──────────────────────────────────────────────
+function setKeycap(key) { $("hotkey-keycap").textContent = HOTKEY_LABELS[key] || key; }
+
+function populateHotkeyPicker(options, current) {
+  const sel = $("hotkey-picker");
+  HOTKEY_LABELS = {};
+  HOTKEY_RISKY = {};
+  sel.innerHTML = "";
+  for (const o of options) {
+    HOTKEY_LABELS[o.name] = o.label;
+    HOTKEY_RISKY[o.name] = o.risky;
+    const opt = document.createElement("option");
+    opt.value = o.name;
+    opt.textContent = o.risky ? `${o.label}  ⚠` : o.label;
+    if (o.name === current) opt.selected = true;
+    sel.appendChild(opt);
+  }
+}
+
+document.getElementById("hotkey-picker").addEventListener("change", (ev) => {
+  const key = ev.target.value;
+  // Risky picks (letters wouldn't be here yet, but F5/F11/mouse primary are)
+  // get one confirmation before we save. User can proceed if they meant it.
+  if (HOTKEY_RISKY[key]) {
+    const label = HOTKEY_LABELS[key] || key;
+    const ok = window.confirm(
+      `Use “${label}” as your dictation hotkey?\n\n` +
+      `This key is often used elsewhere — every press or click of it will start or stop dictation. ` +
+      `If you didn't mean this, pick a different key.`
+    );
+    if (!ok) {
+      // Revert selection to previous (whatever the keycap shows).
+      const cur = Object.keys(HOTKEY_LABELS).find(k => HOTKEY_LABELS[k] === $("hotkey-keycap").textContent);
+      if (cur) ev.target.value = cur;
+      return;
+    }
+  }
+  setKeycap(key);
+  invoke("set_hotkey", { key });
+});
 
 // ── threshold slider ───────────────────────────────────────────
 const slider = $("threshold");
@@ -199,6 +206,7 @@ async function boot() {
   const s = await getSettings();
   if (s.theme) document.documentElement.dataset.theme = s.theme;
 
+  populateHotkeyPicker(s.hotkey_options || s.hotkeyOptions || [], s.hotkey);
   setKeycap(s.hotkey);
   selectSegment($("activation"), s.activation);
   selectSegment($("polish"), s.polish);
@@ -235,6 +243,12 @@ async function boot() {
 }
 
 // ── app updates (toast + one-click install) ────────────────────
+async function openReleases() {
+  const url = "https://github.com/khairyKY/sotto/releases/latest";
+  if (hasTauri) invoke("open_url", { url });
+  else window.open(url, "_blank");
+}
+
 async function initUpdates() {
   const banner = $("update-banner");
   const statusEl = $("update-status");
@@ -266,12 +280,18 @@ async function initUpdates() {
     try {
       await invoke("install_update"); // app relaunches on success
     } catch (e) {
-      $("update-text").textContent = "Update failed: " + e;
+      // Auto-update can fail (offline, permissions, corrupted download).
+      // Show the manual path right where the user's already looking.
+      $("update-text").innerHTML =
+        `Auto-update failed (${e}). <a href="#" id="update-manual-link">Download it manually from GitHub</a> — just run the installer to update.`;
+      const link = document.getElementById("update-manual-link");
+      if (link) link.onclick = (ev) => { ev.preventDefault(); openReleases(); };
       $("update-install").disabled = false;
     }
   };
   $("update-dismiss").onclick = () => { banner.hidden = true; };
   $("check-update").onclick = () => refresh(true);
+  $("open-releases").onclick = () => openReleases();
 
   if (hasTauri && T.event) {
     T.event.listen("update-available", (e) => showUpdate(e.payload));
