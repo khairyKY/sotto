@@ -51,6 +51,9 @@ pub struct Controls {
     /// the hotkey. If they Alt-Tab mid-dictation, we still inject here.
     /// 0 = nothing captured / capture failed.
     pub focus_target: Arc<AtomicIsize>,
+    /// Set when Escape was pressed during an active dictation. The worker
+    /// checks between stages and aborts if true, discarding the transcript.
+    pub cancelled: Arc<AtomicBool>,
 }
 
 impl Controls {
@@ -68,6 +71,7 @@ impl Controls {
             level: Arc::new(AtomicU32::new(0)),
             listening: Arc::new(AtomicBool::new(false)),
             focus_target: Arc::new(AtomicIsize::new(0)),
+            cancelled: Arc::new(AtomicBool::new(false)),
         }
     }
 }
@@ -275,7 +279,6 @@ fn main() -> anyhow::Result<()> {
     let state = AppState { controls: controls.clone(), cfg: Mutex::new(cfg.clone()) };
     tauri::Builder::default()
         .plugin(tauri_plugin_updater::Builder::new().build())
-        .plugin(tauri_plugin_notification::init())
         .manage(state)
         .invoke_handler(tauri::generate_handler![
             get_settings, set_hotkey, set_activation, set_polish, set_threshold,
@@ -411,10 +414,11 @@ async fn install_update(app: tauri::AppHandle) -> Result<(), String> {
     app.restart();
 }
 
-/// On launch, ask GitHub whether a newer Sotto is published. If so, pop a
-/// native toast and emit `update-available`. The install itself is user-driven
-/// from the settings window (which runs its own check on open, so a missed
-/// startup event doesn't matter). No-op in dev builds (updater not configured).
+/// On launch, ask GitHub whether a newer Sotto is published. If so, emit
+/// `update-available` so the settings window can show its banner. **No native
+/// OS toast** — Windows toast dismiss timing is uncontrollable and users
+/// found it lingering; the in-app banner + tray presence are enough.
+/// No-op in dev builds (updater not configured).
 fn spawn_update_check(app: tauri::AppHandle) {
     tauri::async_runtime::spawn(async move {
         use tauri_plugin_updater::UpdaterExt;
@@ -428,13 +432,6 @@ fn spawn_update_check(app: tauri::AppHandle) {
         match updater.check().await {
             Ok(Some(update)) => {
                 tracing::info!(version = %update.version, "update available");
-                use tauri_plugin_notification::NotificationExt;
-                let _ = app
-                    .notification()
-                    .builder()
-                    .title("Sotto update available")
-                    .body(format!("Version {} is ready. Open Settings to install.", update.version))
-                    .show();
                 let _ = app.emit("update-available", update.version.clone());
             }
             Ok(None) => tracing::info!("Sotto is up to date"),
@@ -500,31 +497,64 @@ fn spawn_pipeline(app: tauri::AppHandle, controls: Controls, cfg: Config) {
     let listening = controls.listening.clone();
     let level = controls.level.clone();
     let focus_target = controls.focus_target.clone();
+    let cancelled = controls.cancelled.clone();
     std::thread::spawn(move || {
         let mut recorder = audio::Recorder::new(level);
         let mut asr = asr::Asr::new();
 
+        // Local closure: emit "cancelled", clear the flag, and reset session
+        // state. Called between stages when the user has hit Escape.
+        let abort = |app: &tauri::AppHandle| {
+            emit_state(app, "cancelled");
+            tracing::info!("dictation cancelled by user");
+        };
+
         for event in rx {
             match event {
-                DictationEvent::Start => match recorder.start() {
-                    Ok(()) => {
-                        listening.store(true, Ordering::Relaxed);
-                        // Capture the focus target NOW so an Alt-Tab during
-                        // dictation doesn't reroute the injection. Restored
-                        // just before we send the keystrokes below.
-                        focus_target.store(inject::capture_focus(), Ordering::Relaxed);
-                        // Warm the LLM sidecar while the user speaks (AI mode
-                        // only) so its cold model-load doesn't block after Stop.
-                        polisher.prewarm();
-                        show_overlay(&app);
-                        emit_state(&app, "listening");
-                        tracing::info!("listening");
-                    }
-                    Err(err) => {
-                        emit_state(&app, "error");
-                        tracing::error!(?err, "failed to start capture");
+                DictationEvent::Start => {
+                    // A fresh cycle — clear any stale cancel flag from before.
+                    cancelled.store(false, Ordering::SeqCst);
+                    match recorder.start() {
+                        Ok(()) => {
+                            listening.store(true, Ordering::Relaxed);
+                            // Capture the focus target NOW so an Alt-Tab during
+                            // dictation doesn't reroute the injection. Restored
+                            // just before we send the keystrokes below.
+                            focus_target.store(inject::capture_focus(), Ordering::Relaxed);
+                            // Warm the LLM sidecar while the user speaks (AI mode
+                            // only) so its cold model-load doesn't block after Stop.
+                            polisher.prewarm();
+                            show_overlay(&app);
+                            emit_state(&app, "listening");
+                            tracing::info!("listening");
+                        }
+                        Err(err) => {
+                            emit_state(&app, "error");
+                            tracing::error!(?err, "failed to start capture");
+                        }
                     }
                 },
+                DictationEvent::Cancel => {
+                    // Only meaningful if a dictation is actually in flight —
+                    // Escape while idle is a no-op. Snapshot listening BEFORE
+                    // we set cancelled so downstream stages see the flag.
+                    let was_listening = listening.load(Ordering::Relaxed);
+                    cancelled.store(true, Ordering::SeqCst);
+                    if was_listening {
+                        // User pressed Escape while still speaking — stop the
+                        // recorder and discard the samples. The `for event in
+                        // rx` loop is currently at rest, so we can do this
+                        // inline; if a Stop then arrives it'll see empty
+                        // samples and skip.
+                        listening.store(false, Ordering::Relaxed);
+                        let _ = recorder.stop();
+                        focus_target.store(0, Ordering::Relaxed);
+                        abort(&app);
+                    }
+                    // If Cancel arrives during transcribe/polish (worker is
+                    // blocked mid-op), the flag will be checked when the
+                    // current stage finishes — see the Stop handler below.
+                }
                 DictationEvent::Stop => {
                     listening.store(false, Ordering::Relaxed);
                     let samples = match recorder.stop() {
@@ -539,6 +569,12 @@ fn spawn_pipeline(app: tauri::AppHandle, controls: Controls, cfg: Config) {
                         emit_state(&app, "idle");
                         continue;
                     }
+                    // Cancel arrived while we were reading `samples` — abort
+                    // now, before wasting cycles on transcription.
+                    if cancelled.swap(false, Ordering::SeqCst) {
+                        abort(&app);
+                        continue;
+                    }
                     emit_state(&app, "transcribing");
                     let text = match asr.transcribe(&samples) {
                         Ok(t) => t,
@@ -548,6 +584,13 @@ fn spawn_pipeline(app: tauri::AppHandle, controls: Controls, cfg: Config) {
                             continue;
                         }
                     };
+                    // ASR is synchronous and can't be interrupted mid-call —
+                    // but a cancel that arrived DURING transcription is honored
+                    // here, so at least the polish + injection never happen.
+                    if cancelled.swap(false, Ordering::SeqCst) {
+                        abort(&app);
+                        continue;
+                    }
                     if text.is_empty() {
                         emit_state(&app, "error");
                         continue;
@@ -556,6 +599,12 @@ fn spawn_pipeline(app: tauri::AppHandle, controls: Controls, cfg: Config) {
                         emit_state(&app, "polishing");
                     }
                     let polished = polisher.polish(&text);
+                    // Final chance to abort before injection lands text in the
+                    // user's window.
+                    if cancelled.swap(false, Ordering::SeqCst) {
+                        abort(&app);
+                        continue;
+                    }
                     if polished.is_empty() {
                         emit_state(&app, "error");
                         continue;

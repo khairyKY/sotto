@@ -9,6 +9,10 @@ use crate::config::ActivationMode;
 pub enum DictationEvent {
     Start,
     Stop,
+    /// Abort the current cycle — user pressed Escape. Handled by the worker
+    /// by discarding any in-flight audio / transcript and showing a
+    /// "cancelled" state on the overlay.
+    Cancel,
 }
 
 /// A hotkey binding source — either a keyboard key or a mouse button. The
@@ -145,6 +149,17 @@ pub fn run_listener(
     let callback = move |event: rdev::Event| {
         if suppressed.load(Ordering::SeqCst) {
             return;
+        }
+
+        // Escape aborts an in-flight dictation regardless of what the bound
+        // hotkey is — same key on every keyboard, and the pipeline handler
+        // ignores the event if nothing is happening. This is checked before
+        // the bound-hotkey match so Escape never triggers Start/Stop even if
+        // the user has (implausibly) bound Escape as their hotkey.
+        if let EventType::KeyPress(rdev::Key::Escape) = event.event_type {
+            let _ = tx.send(DictationEvent::Cancel);
+            // Fall through — Escape could ALSO match a bound hotkey. Almost
+            // never the case, but the logic below handles it cleanly.
         }
 
         // Read the bound input live so a rebind takes effect without a restart.

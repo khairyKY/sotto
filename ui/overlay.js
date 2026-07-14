@@ -141,6 +141,10 @@ function drawState(x, y, w, h, now) {
     if (sincePhase > 2400) { const f = Math.min(1, (sincePhase - 2400) / 300); alpha *= 1 - f; dy += f * 4; }
     if (sincePhase >= 2700) { setState('idle'); return; }
   }
+  if (name === 'cancelled') {
+    if (sincePhase > 1600) { const f = Math.min(1, (sincePhase - 1600) / 300); alpha *= 1 - f; dy += f * 4; }
+    if (sincePhase >= 1900) { setState('idle'); return; }
+  }
   y += dy;
 
   // level envelope, driven by live mic level (falls back to a gentle idle wobble).
@@ -217,6 +221,19 @@ function drawState(x, y, w, h, now) {
     ctx.fillStyle = CL.rose; ctx.beginPath(); ctx.arc(gx, yc + 8, 1.5, 0, Math.PI * 2); ctx.fill();
     ctx.font = `500 13px Inter, system-ui, sans-serif`; ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
     ctx.fillStyle = CL.roseTxt; ctx.fillText('Didn’t catch that', gx + 14, yc);
+  } else if (name === 'cancelled') {
+    // Muted "cancelled" state — a small X mark next to the S monogram and a
+    // "Cancelled" label. Same rose palette family as error (both are non-
+    // successful outcomes) but distinct glyph so it reads at a glance.
+    const mr = monogram(x, y, h, CL.rose, alpha);
+    const gx = mr + 14;
+    ctx.strokeStyle = CL.rose; ctx.lineWidth = 2.2; ctx.lineCap = 'round';
+    ctx.beginPath();
+    ctx.moveTo(gx - 5, yc - 5); ctx.lineTo(gx + 5, yc + 5);
+    ctx.moveTo(gx + 5, yc - 5); ctx.lineTo(gx - 5, yc + 5);
+    ctx.stroke();
+    ctx.font = `500 13px Inter, system-ui, sans-serif`; ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+    ctx.fillStyle = CL.roseTxt; ctx.fillText('Cancelled', gx + 14, yc);
   }
   ctx.globalAlpha = 1;
 }

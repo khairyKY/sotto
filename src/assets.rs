@@ -125,8 +125,19 @@ pub fn download_assets(app: AppHandle) {
 /// `D:\sotto` install or after the first run.
 pub fn spawn_provision_if_missing(app: AppHandle) {
     std::thread::spawn(move || {
-        let missing: Vec<Asset> = manifest().into_iter().filter(|a| !is_present(a)).collect();
+        let all = manifest();
+        // Log every marker path + presence — makes "why is it still
+        // downloading?" debuggable from the log without a debugger attached.
+        for a in &all {
+            let (marker, ok) = match &a.kind {
+                Kind::File { dest }      => { let p = dest();   let ok = p.exists(); (p, ok) }
+                Kind::Zip  { marker, .. }=> { let p = marker(); let ok = p.exists(); (p, ok) }
+            };
+            tracing::info!(asset = a.name, marker = %marker.display(), present = ok, "asset check");
+        }
+        let missing: Vec<Asset> = all.into_iter().filter(|a| !is_present(a)).collect();
         if missing.is_empty() {
+            tracing::info!("all assets present — no download needed");
             let _ = app.emit("assets-ready", true);
             return;
         }
@@ -134,7 +145,8 @@ pub fn spawn_provision_if_missing(app: AppHandle) {
             tracing::info!("asset provisioning already running");
             return;
         }
-        tracing::info!(count = missing.len(), "provisioning missing assets from GitHub");
+        let names: Vec<&str> = missing.iter().map(|a| a.name).collect();
+        tracing::info!(?names, "provisioning missing assets from GitHub");
         let result = provision(&app, &missing);
         IN_PROGRESS.store(false, Ordering::SeqCst);
         match result {

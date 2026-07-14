@@ -395,14 +395,12 @@ async function initUpdates() {
       $("update-install").disabled = false;
     }
   };
-  // Any of Later / X / clicking off dismisses the banner. `hidden = true`
-  // uses the HTML attribute; also set display:none as a belt-and-braces guard
-  // against a stale CSS layout that renders `hidden` elements.
+  // X button dismisses the banner. (There was a redundant "Later" button in
+  // v0.1.2; removed to keep the surface clean.)
   const dismiss = () => {
     banner.hidden = true;
     banner.style.display = "none";
   };
-  $("update-dismiss").onclick = dismiss;
   $("update-close").onclick = dismiss;
   $("check-update").onclick = () => refresh(true);
   $("open-releases").onclick = () => openReleases();
@@ -423,27 +421,54 @@ async function initAssets() {
   const banner = $("assets-banner");
   const fill = $("assets-fill");
   const text = $("assets-text");
-  const status = await invoke("assets_status"); // undefined in browser preview
-  if (!status || status.ready) { banner.hidden = true; return; }
 
-  banner.hidden = false;
-  text.textContent = "Downloading voice models… (first run)";
+  // Defensive: force-hide before any async work (fights stale DOM state from
+  // a previous window session and browser-preview mode with no Tauri).
+  banner.hidden = true;
+  banner.style.display = "none";
 
+  // Register the event listeners BEFORE the invoke round-trip — Rust's
+  // provisioner runs on setup() and may emit its first progress event before
+  // this fn even fires, so a listener registered after the invoke would miss
+  // the early progress and leave the bar at 0%.
   if (hasTauri && T.event) {
     T.event.listen("asset-progress", (e) => {
       const p = e.payload || {};
       const pct = p.total ? Math.round((p.received / p.total) * 100) : 0;
+      const mbNow = (p.received / 1048576).toFixed(0);
+      const mbAll = p.total ? (p.total / 1048576).toFixed(0) : "?";
+      showAssets(banner);
       fill.style.width = pct + "%";
-      text.textContent = `Downloading ${p.name}… ${pct}%`;
+      text.textContent = `Downloading ${p.name}… ${pct}% (${mbNow} / ${mbAll} MB)`;
     });
     T.event.listen("assets-ready", () => {
       fill.style.width = "100%";
-      text.textContent = "Models ready.";
-      setTimeout(() => (banner.hidden = true), 1500);
+      text.textContent = "All models ready.";
+      setTimeout(() => {
+        banner.hidden = true;
+        banner.style.display = "none";
+      }, 1500);
     });
     T.event.listen("asset-error", (e) => {
+      showAssets(banner);
       text.textContent = "Download failed: " + e.payload + " — restart Sotto to retry.";
     });
   }
+
+  const status = await invoke("assets_status"); // undefined in browser preview
+  if (!status || status.ready) {
+    // Confirmed nothing to download — stay hidden.
+    return;
+  }
+  // Show which assets are still missing so it's not a mystery what's being
+  // fetched, even before the first progress event lands.
+  showAssets(banner);
+  const missing = (status.missing || []).join(", ");
+  text.textContent = `Downloading ${missing || "voice models"}…`;
+}
+
+function showAssets(banner) {
+  banner.hidden = false;
+  banner.style.display = "";
 }
 boot();
