@@ -4136,7 +4136,7 @@ dependencies = [
 
 [[package]]
 name = "sotto"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "arboard",
@@ -4150,6 +4150,7 @@ dependencies = [
  "tauri-build",
  "tauri-plugin-notification",
  "tauri-plugin-updater",
+ "tokio",
  "toml 1.1.2+spec-1.1.0",
  "tracing",
  "tracing-subscriber",

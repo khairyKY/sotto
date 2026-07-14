@@ -34,6 +34,9 @@
         <button class="btn primary" id="update-install">Install &amp; restart</button>
         <button class="btn ghost" id="update-dismiss">Later</button>
       </span>
+      <button class="banner-close" id="update-close" title="Dismiss" aria-label="Dismiss">
+        <svg width="10" height="10" viewBox="0 0 10 10"><line x1="1" y1="1" x2="9" y2="9" /><line x1="9" y1="1" x2="1" y2="9" /></svg>
+      </button>
     </div>
     <div class="banner" id="assets-banner" hidden>
       <span class="banner-dot amber"></span>
@@ -52,7 +55,7 @@
           </div>
           <div class="row-control" id="hotkey-control">
             <span class="keycap" id="hotkey-keycap">Right Ctrl</span>
-            <select class="btn" id="hotkey-picker" title="Pick any key or mouse button as your dictation hotkey"></select>
+            <button class="btn" id="hotkey-open">Change…</button>
           </div>
         </div>
       </section>
@@ -165,6 +168,26 @@
         </div>
       </section>
     </main>
+
+    <!-- Hotkey picker modal — hidden until opened. Primary interaction is
+         "press a key or mouse button"; the recommended list underneath is a
+         fallback for people who prefer to scroll and click. -->
+    <div class="modal-scrim" id="hotkey-modal" hidden>
+      <div class="modal-card" role="dialog" aria-labelledby="hotkey-modal-title">
+        <div class="modal-head">
+          <span class="modal-title" id="hotkey-modal-title">Choose your dictation hotkey</span>
+          <button class="winbtn" id="hotkey-modal-close" title="Cancel" aria-label="Cancel"><svg width="10" height="10"><line x1="1" y1="1" x2="9" y2="9" /><line x1="9" y1="1" x2="1" y2="9" /></svg></button>
+        </div>
+        <div class="modal-body">
+          <div class="capture" id="hotkey-capture" tabindex="0">
+            <div class="capture-title" id="capture-title">Press any key or mouse button</div>
+            <div class="capture-sub" id="capture-sub">Focus this box, then tap the key you want. Streamdeck / macro pads work if they emit a standard key.</div>
+          </div>
+          <div class="hotkey-list-head">or pick from the list</div>
+          <div class="hotkey-list" id="hotkey-list"></div>
+        </div>
+      </div>
+    </div>
 
     <script src="./settings.js"></script>
   </body>

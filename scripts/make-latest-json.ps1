@@ -12,7 +12,10 @@ param(
 $ErrorActionPreference = 'Stop'
 
 $nsis  = "D:\Coding\sotto\target\release\bundle\nsis"
-$setup = Get-ChildItem $nsis -Filter '*-setup.exe' | Select-Object -First 1
+# Filter to the target Version and grab the newest match (guards against a
+# stale 0.1.0 setup.exe sitting next to the fresh 0.1.1 one).
+$setup = Get-ChildItem $nsis -Filter "*_${Version}_*-setup.exe" |
+         Sort-Object LastWriteTime -Descending | Select-Object -First 1
 if (-not $setup) { throw "No -setup.exe in $nsis. Run 'npx tauri build' first." }
 $sigPath = "$($setup.FullName).sig"
 if (-not (Test-Path $sigPath)) { throw "No signature at $sigPath. Was TAURI_SIGNING_PRIVATE_KEY set during build?" }

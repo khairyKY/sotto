@@ -1,6 +1,6 @@
 [package]
 name = "sotto"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2024"
 
 [build-dependencies]
@@ -16,6 +16,9 @@ rdev = "0.5.3"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1"
 tauri = { version = "2", features = ["tray-icon"] }
+# `time` feature is what enables tokio::time::timeout. Tauri already pulls
+# tokio in transitively; naming it here just exposes the `timeout` helper.
+tokio = { version = "1", features = ["time"] }
 tauri-plugin-updater = "2"
 tauri-plugin-notification = "2"
 toml = "1.1.2"

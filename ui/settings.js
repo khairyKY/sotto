@@ -150,45 +150,148 @@ async function copyHistory(text) {
 
 function escapeHtml(s) { return s.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c])); }
 
-// ── hotkey picker ──────────────────────────────────────────────
+// ── hotkey picker (modal with press-any-key + recommended list) ─
+// Browser KeyboardEvent.code → our config name. The recommended-list config
+// names deliberately mirror browser codes where reasonable, so this table
+// only needs the handful of divergences.
+const CODE_ALIAS = {
+  AltRight: "AltGr", AltLeft: "Alt", Enter: "Return",
+  // Numpad numeric keys aren't currently rebindable — most users don't want
+  // dictation to trigger from Numpad 5. Numpad operator keys (+ - * / Enter)
+  // ARE bindable and pass through with their own codes below.
+  NumpadEnter: "NumpadEnter",
+  NumpadAdd: "NumpadAdd", NumpadSubtract: "NumpadSubtract",
+  NumpadMultiply: "NumpadMultiply", NumpadDivide: "NumpadDivide",
+};
+// MouseEvent.button → our config name.
+const MOUSE_BUTTON_TO_KEY = {
+  0: "MouseLeft", 1: "MouseMiddle", 2: "MouseRight",
+  3: "MouseX1", 4: "MouseX2",
+};
+let currentHotkey = null;
+let hotkeyOptions = [];
+
 function setKeycap(key) { $("hotkey-keycap").textContent = HOTKEY_LABELS[key] || key; }
 
+function eventCodeToName(code) {
+  if (CODE_ALIAS[code]) return CODE_ALIAS[code];
+  // Everything else is stored using its browser code name — matches the
+  // config names we chose in SUPPORTED_HOTKEYS (F1-F12, KeyA-Z, Digit0-9,
+  // ArrowUp/Down/Left/Right, Home, End, PageUp, PageDown, Insert, Delete,
+  // Space, Tab, Backspace, Escape, PrintScreen, ScrollLock, Pause, NumLock).
+  return code;
+}
+
 function populateHotkeyPicker(options, current) {
-  const sel = $("hotkey-picker");
+  hotkeyOptions = options;
   HOTKEY_LABELS = {};
   HOTKEY_RISKY = {};
-  sel.innerHTML = "";
   for (const o of options) {
     HOTKEY_LABELS[o.name] = o.label;
     HOTKEY_RISKY[o.name] = o.risky;
-    const opt = document.createElement("option");
-    opt.value = o.name;
-    opt.textContent = o.risky ? `${o.label}  ⚠` : o.label;
-    if (o.name === current) opt.selected = true;
-    sel.appendChild(opt);
+  }
+  currentHotkey = current;
+}
+
+// Loose grouping heuristic — categories inferred from config-name prefix so
+// adding new hotkeys in Rust auto-slots them into the right section.
+function groupOf(name) {
+  if (/^Control|^Shift|^Alt|^Meta|CapsLock|Function/.test(name)) return "Modifiers";
+  if (/^F\d+$/.test(name)) return "Function keys";
+  if (/^Mouse/.test(name)) return "Mouse buttons";
+  if (/^Key[A-Z]$/.test(name) || /^Digit\d$/.test(name)) return "Letters & digits";
+  if (/^Arrow/.test(name)) return "Arrow keys";
+  if (/^Numpad|^NumLock/.test(name)) return "Numpad";
+  return "Other";
+}
+
+function renderHotkeyList() {
+  const host = $("hotkey-list");
+  host.innerHTML = "";
+  // Preserve source order within each group.
+  const groups = new Map();
+  for (const o of hotkeyOptions) {
+    const g = groupOf(o.name);
+    if (!groups.has(g)) groups.set(g, []);
+    groups.get(g).push(o);
+  }
+  for (const [group, items] of groups) {
+    const label = document.createElement("div");
+    label.className = "hotkey-group-label";
+    label.textContent = group;
+    host.appendChild(label);
+    for (const o of items) {
+      const row = document.createElement("div");
+      row.className = "hotkey-option" + (o.name === currentHotkey ? " active" : "");
+      row.innerHTML = `<span>${o.label}</span>${o.risky ? '<span class="warn">risky</span>' : ""}`;
+      row.onclick = () => pickHotkey(o.name);
+      host.appendChild(row);
+    }
   }
 }
 
-document.getElementById("hotkey-picker").addEventListener("change", (ev) => {
-  const key = ev.target.value;
-  // Risky picks (letters wouldn't be here yet, but F5/F11/mouse primary are)
-  // get one confirmation before we save. User can proceed if they meant it.
-  if (HOTKEY_RISKY[key]) {
-    const label = HOTKEY_LABELS[key] || key;
+function openHotkeyModal() {
+  renderHotkeyList();
+  $("hotkey-modal").hidden = false;
+  // Auto-focus the capture area so a key press is immediately caught.
+  setTimeout(() => $("hotkey-capture").focus(), 0);
+}
+function closeHotkeyModal() {
+  $("hotkey-modal").hidden = true;
+  $("hotkey-capture").classList.remove("armed");
+  $("capture-title").textContent = "Press any key or mouse button";
+  $("capture-sub").textContent =
+    "Focus this box, then tap the key you want. Streamdeck / macro pads work if they emit a standard key.";
+}
+
+function pickHotkey(name) {
+  if (!HOTKEY_LABELS[name]) {
+    // Not in our recommended list — tell the user, don't save.
+    const cap = $("capture-title");
+    const sub = $("capture-sub");
+    cap.textContent = "That key isn't bindable";
+    sub.textContent =
+      "This build of Sotto supports the keys shown below (rdev limitation). Configure your device to emit one of them.";
+    $("hotkey-capture").classList.remove("armed");
+    return;
+  }
+  if (HOTKEY_RISKY[name]) {
     const ok = window.confirm(
-      `Use “${label}” as your dictation hotkey?\n\n` +
+      `Use “${HOTKEY_LABELS[name]}” as your dictation hotkey?\n\n` +
       `This key is often used elsewhere — every press or click of it will start or stop dictation. ` +
       `If you didn't mean this, pick a different key.`
     );
-    if (!ok) {
-      // Revert selection to previous (whatever the keycap shows).
-      const cur = Object.keys(HOTKEY_LABELS).find(k => HOTKEY_LABELS[k] === $("hotkey-keycap").textContent);
-      if (cur) ev.target.value = cur;
-      return;
-    }
+    if (!ok) return;
   }
-  setKeycap(key);
-  invoke("set_hotkey", { key });
+  currentHotkey = name;
+  setKeycap(name);
+  invoke("set_hotkey", { key: name });
+  closeHotkeyModal();
+}
+
+// Wire the modal open/close + capture events.
+$("hotkey-open").onclick = openHotkeyModal;
+$("hotkey-modal-close").onclick = closeHotkeyModal;
+$("hotkey-modal").onclick = (ev) => { if (ev.target.id === "hotkey-modal") closeHotkeyModal(); };
+document.addEventListener("keydown", (ev) => {
+  if ($("hotkey-modal").hidden) return;
+  if (ev.key === "Escape") { closeHotkeyModal(); return; }
+  // Only capture when the capture zone is focused, so the user can Tab out
+  // and click a list item without accidentally binding Tab/Enter.
+  if (document.activeElement !== $("hotkey-capture")) return;
+  ev.preventDefault(); ev.stopPropagation();
+  $("hotkey-capture").classList.add("armed");
+  $("capture-title").textContent = `Captured: ${ev.code}`;
+  pickHotkey(eventCodeToName(ev.code));
+});
+$("hotkey-capture").addEventListener("mousedown", (ev) => {
+  if (ev.button === 0) return; // Left click here just focuses the box.
+  ev.preventDefault();
+  const name = MOUSE_BUTTON_TO_KEY[ev.button];
+  if (!name) return;
+  $("hotkey-capture").classList.add("armed");
+  $("capture-title").textContent = `Captured: ${name}`;
+  pickHotkey(name);
 });
 
 // ── threshold slider ───────────────────────────────────────────
@@ -260,7 +363,10 @@ async function initUpdates() {
 
   const showUpdate = (version) => {
     $("update-text").textContent = `Sotto v${version} is available.`;
+    // Undo the belt-and-braces display:none the dismiss handler adds.
     banner.hidden = false;
+    banner.style.display = "";
+    $("update-install").disabled = false;
   };
   async function refresh(manual) {
     statusEl.textContent = "Checking for updates…";
@@ -289,7 +395,15 @@ async function initUpdates() {
       $("update-install").disabled = false;
     }
   };
-  $("update-dismiss").onclick = () => { banner.hidden = true; };
+  // Any of Later / X / clicking off dismisses the banner. `hidden = true`
+  // uses the HTML attribute; also set display:none as a belt-and-braces guard
+  // against a stale CSS layout that renders `hidden` elements.
+  const dismiss = () => {
+    banner.hidden = true;
+    banner.style.display = "none";
+  };
+  $("update-dismiss").onclick = dismiss;
+  $("update-close").onclick = dismiss;
   $("check-update").onclick = () => refresh(true);
   $("open-releases").onclick = () => openReleases();
 

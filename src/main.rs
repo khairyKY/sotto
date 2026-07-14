@@ -361,15 +361,24 @@ struct UpdateInfo {
 }
 
 /// Ask GitHub whether a newer Sotto is published. Returns `None` when up to
-/// date or in a dev build (updater not configured). Called by the settings
-/// window on open and by the "Check for updates" button.
+/// date, on any network error, or if the check takes longer than 8 seconds
+/// (a hung endpoint would otherwise leave the settings UI spinning forever).
 #[tauri::command]
 async fn check_update(app: tauri::AppHandle) -> Option<UpdateInfo> {
     use tauri_plugin_updater::UpdaterExt;
     let updater = app.updater().ok()?;
-    match updater.check().await {
-        Ok(Some(u)) => Some(UpdateInfo { version: u.version, notes: u.body }),
-        _ => None,
+    let checked = tokio::time::timeout(std::time::Duration::from_secs(8), updater.check()).await;
+    match checked {
+        Ok(Ok(Some(u))) => Some(UpdateInfo { version: u.version, notes: u.body }),
+        Ok(Ok(None)) => None,
+        Ok(Err(err)) => {
+            tracing::warn!(?err, "check_update: updater plugin error");
+            None
+        }
+        Err(_) => {
+            tracing::warn!("check_update: 8s timeout — endpoint unreachable or slow");
+            None
+        }
     }
 }
 

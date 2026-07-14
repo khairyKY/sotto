@@ -207,3 +207,77 @@ input[type="range"]::-webkit-slider-thumb {
 .btn.ghost { background: transparent; }
 .banner-bar { flex: none; width: 140px; height: 5px; border-radius: 3px; background: rgba(127,127,127,.22); overflow: hidden; }
 .banner-fill { display: block; width: 0%; height: 100%; background: #e3a857; transition: width 0.2s; }
+
+/* ── update banner close button ─────────────────────────────── */
+.banner { position: relative; }
+.banner-close {
+  width: 22px; height: 22px; border: 0; background: transparent; cursor: pointer;
+  color: var(--muted); border-radius: 5px; display: inline-flex;
+  align-items: center; justify-content: center; padding: 0; margin-left: 4px;
+  transition: background 0.12s, color 0.12s;
+}
+.banner-close:hover { background: rgba(127,127,127,.15); color: var(--text); }
+.banner-close svg { stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; fill: none; }
+
+/* ── hotkey picker modal ─────────────────────────────────────── */
+.modal-scrim {
+  position: fixed; inset: 0; background: rgba(15, 14, 16, 0.55);
+  backdrop-filter: blur(2px); z-index: 100;
+  display: flex; align-items: center; justify-content: center;
+  animation: fadeIn 0.14s ease-out;
+}
+@keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+.modal-scrim[hidden] { display: none; }
+.modal-card {
+  width: min(460px, calc(100% - 40px));
+  max-height: min(560px, calc(100vh - 80px));
+  background: var(--card); border: 1px solid var(--border);
+  border-radius: 14px; box-shadow: var(--shadow);
+  display: flex; flex-direction: column; overflow: hidden;
+}
+.modal-head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 14px 12px 12px 18px; border-bottom: 1px solid var(--divider);
+}
+.modal-title { font: 500 13px Inter, sans-serif; color: var(--text); }
+.modal-body { padding: 16px; overflow-y: auto; flex: 1; display: flex; flex-direction: column; gap: 14px; }
+
+/* Press-any-key capture zone — the primary control. Focused = active. */
+.capture {
+  border: 1.5px dashed var(--ctrl-border); border-radius: 10px;
+  padding: 22px 16px; text-align: center; outline: none;
+  transition: border-color 0.16s, background 0.16s;
+  background: rgba(127,127,127,.04);
+}
+.capture:hover { background: rgba(127,127,127,.08); }
+.capture:focus {
+  border-color: var(--accent); border-style: solid;
+  background: var(--accent-soft);
+}
+.capture-title { font: 500 14px Inter, sans-serif; color: var(--text); }
+.capture-sub { font: 400 12px Inter, sans-serif; color: var(--muted); margin-top: 6px; }
+.capture.armed .capture-title { color: var(--accent); }
+
+/* Recommended-list group underneath the capture. */
+.hotkey-list-head {
+  font: 500 11px Inter, sans-serif; color: var(--header);
+  text-transform: uppercase; letter-spacing: 0.06em;
+  padding: 4px 4px 0; border-top: 1px solid var(--divider); padding-top: 12px;
+}
+.hotkey-list { display: flex; flex-direction: column; gap: 2px; }
+.hotkey-group-label {
+  font: 500 11px Inter, sans-serif; color: var(--header);
+  padding: 6px 8px 4px;
+}
+.hotkey-option {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 8px 10px; border-radius: 7px; cursor: pointer;
+  font: 500 12.5px Inter, sans-serif; color: var(--text);
+  transition: background 0.1s;
+}
+.hotkey-option:hover { background: rgba(127,127,127,.10); }
+.hotkey-option.active { background: var(--accent-soft); color: var(--accent); }
+.hotkey-option .warn {
+  font: 500 10.5px Inter, sans-serif; color: #E3A857;
+  background: rgba(227,168,87,.14); padding: 2px 7px; border-radius: 20px;
+}
