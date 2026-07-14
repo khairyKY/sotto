@@ -18,8 +18,9 @@ The heavy assets are fetched a single time and reused across all future updates.
 
 - App updater config: `tauri.conf.json` → `plugins.updater` (endpoint + pubkey).
 - First-run downloader: `src/assets.rs` (manifest + `ASSET_BASE` tag).
-- Signing key: `D:\sotto\sotto-updater.key` (**private — never commit**), public
-  key is embedded in `tauri.conf.json`.
+- Signing key: `D:\Coding\sotto-signing\sotto-updater.key` (**private — never
+  commit**; deliberately outside `D:\sotto` so an "uninstall + delete data"
+  can never nuke it). Public key is embedded in `tauri.conf.json`.
 
 ---
 
@@ -44,7 +45,7 @@ The archive **file names** must match `src/assets.rs`:
 
 ### 2. Keep the signing key safe
 
-`D:\sotto\sotto-updater.key` signs every update. If you lose it, existing users
+`D:\Coding\sotto-signing\sotto-updater.key` signs every update. If you lose it, existing users
 can't verify future updates and must reinstall manually. Back it up somewhere
 private. It currently has **no password** — to add one later, regenerate with
 `npx tauri signer generate -p <password>` and update the pubkey in
@@ -61,7 +62,7 @@ before you have real users).
 2. **Build, signed** (from the repo root, in an MSVC dev shell):
 
    ```powershell
-   $env:TAURI_SIGNING_PRIVATE_KEY = Get-Content D:\sotto\sotto-updater.key -Raw
+   $env:TAURI_SIGNING_PRIVATE_KEY = Get-Content D:\Coding\sotto-signing\sotto-updater.key -Raw
    $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = ''   # empty = no password
    npx tauri build
    ```

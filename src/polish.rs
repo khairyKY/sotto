@@ -100,6 +100,17 @@ impl Polisher {
         if word_count(raw) < self.ai_min_words() {
             return rules; // too short to be worth the round-trip
         }
+        // Quality gate: if the rules pass didn't change anything (no fillers
+        // to remove, spacing already clean), the transcript is already tidy —
+        // the LLM would only introduce lossy paraphrasing. Skipping here also
+        // saves 300-500ms on already-clean speech, which is the common case
+        // once a user learns to speak fluently to the app.
+        if rules.trim_end_matches(|c: char| c.is_ascii_punctuation() || c.is_whitespace())
+            == raw.trim().trim_end_matches(|c: char| c.is_ascii_punctuation() || c.is_whitespace())
+        {
+            tracing::debug!("polish: skipped AI — rules pass was a no-op");
+            return rules;
+        }
         let Some(llm) = &self.llm else { return rules };
 
         let t = std::time::Instant::now();

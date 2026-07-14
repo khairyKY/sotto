@@ -512,6 +512,14 @@ fn spawn_pipeline(app: tauri::AppHandle, controls: Controls, cfg: Config) {
                     suppressed.store(false, Ordering::SeqCst);
                     match result {
                         Ok(()) => {
+                            // Leave the polished text on the clipboard so a
+                            // mis-focused injection can still be Ctrl+V'd into
+                            // the intended app. Paste mode already touches the
+                            // clipboard mid-inject then restores the old value;
+                            // this re-sets ours as the final state.
+                            if let Ok(mut cb) = arboard::Clipboard::new() {
+                                let _ = cb.set_text(polished.clone());
+                            }
                             history.push(polished.clone());
                             emit_state(&app, "done");
                             emit_history(&app, &history);

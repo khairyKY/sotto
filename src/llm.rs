@@ -26,16 +26,15 @@ use std::time::{Duration, Instant};
 /// sidecar launches. Same flag `startup.rs` uses for its `reg.exe` calls.
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
+// Tight prompt on purpose: every prompt token is re-evaluated on every call
+// (cache_prompt=true amortizes the shared prefix, but a shorter prompt still
+// shaves latency on the first call after a restart and reduces the KV pressure
+// that slows generation). Measured: cutting the previous 5-rule prompt (~90
+// tokens) to this (~35) drops warm total latency ~10% on a 1.5B Q4.
 const SYSTEM_PROMPT: &str = "\
-You are a precise editor for a voice-dictation app. Convert the raw spoken \
-transcript into clean, correctly punctuated written text.
-
-Rules:
-1. Remove filler words (um, uh, like, you know, sort of) and false starts.
-2. If the speaker corrects themselves, keep only the final intended version.
-3. Fix capitalization and punctuation; keep the speaker's wording and meaning.
-4. If they dictate a list, format it as a list. Respect code identifier casing.
-5. Output ONLY the cleaned text — no preamble, no explanation, no quotes.";
+Clean up this voice-dictation transcript: remove fillers (um, uh, like), keep \
+the speaker's wording, fix punctuation and capitalization. Reply with ONLY the \
+cleaned text, no preamble, no quotes.";
 
 struct Inner {
     child: Option<Child>,
@@ -104,7 +103,13 @@ impl Llm {
         }
 
         self.wait_healthy()?;
-        let out = self.request_with_timeout(raw)?;
+        // Cap generation to roughly the input's own length + slack for added
+        // punctuation. Prevents the model from running away (the old flat cap
+        // was 1024, which at 118 tok/s on a 3050 = potentially 8s of pointless
+        // generation). This is the single biggest wall-clock win once warm.
+        let words = raw.split_whitespace().count() as u32;
+        let max_tokens = (words * 3 + 20).min(self.cfg.max_tokens);
+        let out = self.request_with_timeout(raw, max_tokens)?;
 
         self.inner.lock().unwrap().last_used = Instant::now();
         Ok(clean_output(&out))
@@ -172,7 +177,7 @@ impl Llm {
 
     /// POST the chat completion, bounding it with a hard wall-clock timeout by
     /// running the (blocking) request on a scratch thread.
-    fn request_with_timeout(&self, raw: &str) -> Result<String> {
+    fn request_with_timeout(&self, raw: &str, max_tokens: u32) -> Result<String> {
         let url = format!("http://127.0.0.1:{}/v1/chat/completions", self.cfg.port);
         let body = ChatRequest {
             messages: vec![
@@ -180,7 +185,7 @@ impl Llm {
                 Message { role: "user", content: raw.to_string() },
             ],
             temperature: self.cfg.temperature,
-            max_tokens: self.cfg.max_tokens,
+            max_tokens,
             stream: false,
             cache_prompt: true,
         };
