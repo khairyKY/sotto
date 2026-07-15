@@ -3,3 +3,6 @@
 *.log
 *.zip
 node_modules/
+
+# Local design references (third-party screenshots — not distributed)
+Screenshots_inspo/

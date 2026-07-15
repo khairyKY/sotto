@@ -19,9 +19,10 @@ mod llm;
 mod polish;
 mod single_instance;
 mod startup;
+mod stats;
 mod tray;
 
-use config::{ActivationMode, Config, DictEntry, PolishMode};
+use config::{ActivationMode, Config, DictEntry, InjectionMode, PolishMode};
 use hotkey::DictationEvent;
 use single_instance::SingleInstanceGuard;
 use std::path::PathBuf;
@@ -54,6 +55,9 @@ pub struct Controls {
     /// Set when Escape was pressed during an active dictation. The worker
     /// checks between stages and aborts if true, discarding the transcript.
     pub cancelled: Arc<AtomicBool>,
+    /// Live "record usage stats" flag — flipped from settings without a
+    /// restart, read by the worker at record time.
+    pub stats_enabled: Arc<AtomicBool>,
 }
 
 impl Controls {
@@ -72,14 +76,17 @@ impl Controls {
             listening: Arc::new(AtomicBool::new(false)),
             focus_target: Arc::new(AtomicIsize::new(0)),
             cancelled: Arc::new(AtomicBool::new(false)),
+            stats_enabled: Arc::new(AtomicBool::new(cfg.stats_enabled)),
         }
     }
 }
 
-/// Tauri-managed state: live controls + the on-disk config (for persistence).
+/// Tauri-managed state: live controls + the on-disk config (for persistence)
+/// + the worker's event channel (so commands and the tray can drive it).
 struct AppState {
     controls: Controls,
     cfg: Mutex<Config>,
+    tx: crossbeam_channel::Sender<DictationEvent>,
 }
 
 // ── IPC payloads ───────────────────────────────────────────────────────
@@ -253,6 +260,34 @@ fn open_url(url: String) {
         .spawn();
 }
 
+/// Re-run the last dictation take (tray item + the overlay's ↺ button in the
+/// 2.0 UI). No-op when nothing is stashed.
+#[tauri::command]
+fn retry_last(state: tauri::State<'_, AppState>) {
+    let _ = state.tx.send(DictationEvent::Retry);
+}
+
+/// Aggregated usage stats for the Insights dashboard. Cheap enough to compute
+/// on every call — no caching until it measurably matters.
+#[tauri::command]
+fn get_stats() -> stats::StatsPayload {
+    let (today, _) = stats::local_today();
+    stats::aggregate(&stats::load(), today)
+}
+
+#[tauri::command]
+fn clear_stats() {
+    stats::clear();
+}
+
+#[tauri::command]
+fn set_stats_enabled(enabled: bool, state: tauri::State<'_, AppState>) {
+    state.controls.stats_enabled.store(enabled, Ordering::Relaxed);
+    let mut cfg = state.cfg.lock().unwrap();
+    cfg.stats_enabled = enabled;
+    let _ = cfg.save();
+}
+
 // ── main ───────────────────────────────────────────────────────────────
 fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
@@ -276,14 +311,18 @@ fn main() -> anyhow::Result<()> {
     tracing::info!(?cfg, path = %Config::path().display(), "loaded config");
     let controls = Controls::from_config(&cfg);
 
-    let state = AppState { controls: controls.clone(), cfg: Mutex::new(cfg.clone()) };
+    // The worker's event channel is created here so both the pipeline and the
+    // Tauri commands / tray (via AppState.tx) can drive it — e.g. Retry.
+    let (tx, rx) = crossbeam_channel::unbounded::<DictationEvent>();
+    let state = AppState { controls: controls.clone(), cfg: Mutex::new(cfg.clone()), tx: tx.clone() };
     tauri::Builder::default()
         .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(state)
         .invoke_handler(tauri::generate_handler![
             get_settings, set_hotkey, set_activation, set_polish, set_threshold,
             set_dictionary, set_launch_login, set_start_hidden, copy_text,
-            open_url, check_update, install_update,
+            open_url, check_update, install_update, retry_last,
+            get_stats, clear_stats, set_stats_enabled,
             assets::assets_status, assets::download_assets
         ])
         .setup(move |app| {
@@ -297,7 +336,7 @@ fn main() -> anyhow::Result<()> {
                     let _ = w.show();
                 }
             }
-            spawn_pipeline(app.handle().clone(), controls.clone(), cfg.clone());
+            spawn_pipeline(app.handle().clone(), controls.clone(), cfg.clone(), tx.clone(), rx.clone());
             spawn_update_check(app.handle().clone());
             assets::spawn_provision_if_missing(app.handle().clone());
             tracing::info!("Sotto ready — hold the hotkey and speak");
@@ -319,12 +358,14 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
     let p_rules = CheckMenuItemBuilder::with_id("polish_rules", "Rules only").checked(cur == PolishMode::Rules).build(app)?;
     let p_ai = CheckMenuItemBuilder::with_id("polish_ai", "AI").checked(cur == PolishMode::Ai).build(app)?;
     let polish = SubmenuBuilder::new(app, "Polish").item(&p_off).item(&p_rules).item(&p_ai).build()?;
+    let retry = MenuItemBuilder::with_id("retry", "Retry last dictation").build(app)?;
     let settings = MenuItemBuilder::with_id("settings", "Settings…").build(app)?;
     let quit = MenuItemBuilder::with_id("quit", "Quit Sotto").build(app)?;
     let menu = MenuBuilder::new(app)
         .item(&pause)
         .item(&polish)
         .separator()
+        .item(&retry)
         .item(&settings)
         .separator()
         .item(&quit)
@@ -351,6 +392,10 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
             "polish_off" => set_polish_runtime(app, PolishMode::Off),
             "polish_rules" => set_polish_runtime(app, PolishMode::Rules),
             "polish_ai" => set_polish_runtime(app, PolishMode::Ai),
+            "retry" => {
+                // No-op inside the worker if nothing is stashed.
+                let _ = app.state::<AppState>().tx.send(DictationEvent::Retry);
+            }
             _ => {}
         })
         .build(app)?;
@@ -463,8 +508,13 @@ fn position_overlay(w: &tauri::WebviewWindow) {
 
 /// Spawns the hotkey listener, the dictation worker, and the mic-level emitter.
 /// These own `!Send` resources (recorder, ASR) so each lives on its own thread.
-fn spawn_pipeline(app: tauri::AppHandle, controls: Controls, cfg: Config) {
-    let (tx, rx) = crossbeam_channel::unbounded::<DictationEvent>();
+fn spawn_pipeline(
+    app: tauri::AppHandle,
+    controls: Controls,
+    cfg: Config,
+    tx: crossbeam_channel::Sender<DictationEvent>,
+    rx: crossbeam_channel::Receiver<DictationEvent>,
+) {
     let suppressed = Arc::new(AtomicBool::new(false));
 
     // Global hotkey listener.
@@ -473,7 +523,10 @@ fn spawn_pipeline(app: tauri::AppHandle, controls: Controls, cfg: Config) {
         let activation = controls.activation.clone();
         let paused = controls.paused.clone();
         let supp = suppressed.clone();
-        std::thread::spawn(move || hotkey::run_listener(hotkey_idx, activation, tx, supp, paused));
+        let cancelled = controls.cancelled.clone();
+        std::thread::spawn(move || {
+            hotkey::run_listener(hotkey_idx, activation, tx, supp, paused, cancelled)
+        });
     }
 
     // Mic-level emitter (only while recording).
@@ -498,31 +551,26 @@ fn spawn_pipeline(app: tauri::AppHandle, controls: Controls, cfg: Config) {
     let level = controls.level.clone();
     let focus_target = controls.focus_target.clone();
     let cancelled = controls.cancelled.clone();
+    let stats_enabled = controls.stats_enabled.clone();
     std::thread::spawn(move || {
         let mut recorder = audio::Recorder::new(level);
         let mut asr = asr::Asr::new();
-
-        // Local closure: emit "cancelled", clear the flag, and reset session
-        // state. Called between stages when the user has hit Escape.
-        let abort = |app: &tauri::AppHandle| {
-            emit_state(app, "cancelled");
-            tracing::info!("dictation cancelled by user");
-        };
+        // The last dictation, kept in memory so Escape/error is recoverable
+        // via Retry. Overwritten by the next Start; cleared on successful
+        // delivery.
+        let mut stash: Option<Take> = None;
 
         for event in rx {
             match event {
                 DictationEvent::Start => {
-                    // A fresh cycle — clear any stale cancel flag from before.
                     cancelled.store(false, Ordering::SeqCst);
                     match recorder.start() {
                         Ok(()) => {
                             listening.store(true, Ordering::Relaxed);
                             // Capture the focus target NOW so an Alt-Tab during
-                            // dictation doesn't reroute the injection. Restored
-                            // just before we send the keystrokes below.
+                            // dictation doesn't reroute the injection.
                             focus_target.store(inject::capture_focus(), Ordering::Relaxed);
-                            // Warm the LLM sidecar while the user speaks (AI mode
-                            // only) so its cold model-load doesn't block after Stop.
+                            // Warm the LLM sidecar while the user speaks.
                             polisher.prewarm();
                             show_overlay(&app);
                             emit_state(&app, "listening");
@@ -533,27 +581,23 @@ fn spawn_pipeline(app: tauri::AppHandle, controls: Controls, cfg: Config) {
                             tracing::error!(?err, "failed to start capture");
                         }
                     }
-                },
+                }
                 DictationEvent::Cancel => {
-                    // Only meaningful if a dictation is actually in flight —
-                    // Escape while idle is a no-op. Snapshot listening BEFORE
-                    // we set cancelled so downstream stages see the flag.
-                    let was_listening = listening.load(Ordering::Relaxed);
-                    cancelled.store(true, Ordering::SeqCst);
-                    if was_listening {
-                        // User pressed Escape while still speaking — stop the
-                        // recorder and discard the samples. The `for event in
-                        // rx` loop is currently at rest, so we can do this
-                        // inline; if a Stop then arrives it'll see empty
-                        // samples and skip.
-                        listening.store(false, Ordering::Relaxed);
-                        let _ = recorder.stop();
-                        focus_target.store(0, Ordering::Relaxed);
-                        abort(&app);
+                    // Only meaningful while recording — Escape mid-transcribe/
+                    // polish is handled by the stage-boundary flag checks in
+                    // process_take (the flag was already set by the listener).
+                    if listening.swap(false, Ordering::Relaxed) {
+                        let samples = recorder.stop().unwrap_or_default();
+                        cancelled.store(false, Ordering::SeqCst); // consumed here
+                        let take = Take::new(samples, focus_target.swap(0, Ordering::Relaxed), &polisher);
+                        emit_state(&app, "cancelled");
+                        tracing::info!("dictation cancelled while recording");
+                        // Only worth stashing if there's enough audio to retry.
+                        if take.samples.len() >= MIN_CLIP_SAMPLES {
+                            record_outcome(&take, &stats_enabled, "cancelled");
+                            stash = Some(take);
+                        }
                     }
-                    // If Cancel arrives during transcribe/polish (worker is
-                    // blocked mid-op), the flag will be checked when the
-                    // current stage finishes — see the Stop handler below.
                 }
                 DictationEvent::Stop => {
                     listening.store(false, Ordering::Relaxed);
@@ -569,76 +613,171 @@ fn spawn_pipeline(app: tauri::AppHandle, controls: Controls, cfg: Config) {
                         emit_state(&app, "idle");
                         continue;
                     }
-                    // Cancel arrived while we were reading `samples` — abort
-                    // now, before wasting cycles on transcription.
+                    let take = Take::new(samples, focus_target.swap(0, Ordering::Relaxed), &polisher);
+                    // Cancel arrived during/right after recording.
                     if cancelled.swap(false, Ordering::SeqCst) {
-                        abort(&app);
+                        emit_state(&app, "cancelled");
+                        record_outcome(&take, &stats_enabled, "cancelled");
+                        stash = Some(take);
                         continue;
                     }
-                    emit_state(&app, "transcribing");
-                    let text = match asr.transcribe(&samples) {
-                        Ok(t) => t,
-                        Err(err) => {
-                            emit_state(&app, "error");
-                            tracing::error!(?err, "transcription failed");
-                            continue;
-                        }
-                    };
-                    // ASR is synchronous and can't be interrupted mid-call —
-                    // but a cancel that arrived DURING transcription is honored
-                    // here, so at least the polish + injection never happen.
-                    if cancelled.swap(false, Ordering::SeqCst) {
-                        abort(&app);
-                        continue;
-                    }
-                    if text.is_empty() {
-                        emit_state(&app, "error");
-                        continue;
-                    }
-                    if polisher.uses_ai_tier(&text) {
-                        emit_state(&app, "polishing");
-                    }
-                    let polished = polisher.polish(&text);
-                    // Final chance to abort before injection lands text in the
-                    // user's window.
-                    if cancelled.swap(false, Ordering::SeqCst) {
-                        abort(&app);
-                        continue;
-                    }
-                    if polished.is_empty() {
-                        emit_state(&app, "error");
-                        continue;
-                    }
-                    // Restore focus to the original target before injecting.
-                    // No-op if the user hasn't moved focus, cheap otherwise.
-                    inject::restore_focus(focus_target.swap(0, Ordering::Relaxed));
-                    suppressed.store(true, Ordering::SeqCst);
-                    let result = inject::inject_text(&polished, injection_mode);
-                    suppressed.store(false, Ordering::SeqCst);
-                    match result {
-                        Ok(()) => {
-                            // Leave the polished text on the clipboard so a
-                            // mis-focused injection can still be Ctrl+V'd into
-                            // the intended app. Paste mode already touches the
-                            // clipboard mid-inject then restores the old value;
-                            // this re-sets ours as the final state.
-                            if let Ok(mut cb) = arboard::Clipboard::new() {
-                                let _ = cb.set_text(polished.clone());
-                            }
-                            history.push(polished.clone());
-                            emit_state(&app, "done");
-                            emit_history(&app, &history);
-                            tracing::info!("injected: {polished:?}");
-                        }
-                        Err(err) => {
-                            emit_state(&app, "error");
-                            tracing::error!(?err, "injection failed");
-                        }
+                    process_take(
+                        &app, &mut asr, &polisher, &history, &suppressed, &cancelled,
+                        injection_mode, &stats_enabled, take, &mut stash,
+                    );
+                }
+                DictationEvent::Retry => {
+                    if let Some(take) = stash.take() {
+                        cancelled.store(false, Ordering::SeqCst);
+                        show_overlay(&app);
+                        tracing::info!(has_text = take.raw_text.is_some(), "retrying last dictation");
+                        process_take(
+                            &app, &mut asr, &polisher, &history, &suppressed, &cancelled,
+                            injection_mode, &stats_enabled, take, &mut stash,
+                        );
+                    } else {
+                        tracing::info!("retry requested but nothing stashed");
                     }
                 }
             }
         }
     });
+}
+
+/// One dictation attempt kept in memory for a possible Retry. Never written to
+/// disk. `raw_text` is set once ASR has run, so a retry after a successful
+/// transcription skips straight to polish + injection.
+struct Take {
+    samples: Vec<f32>,
+    raw_text: Option<String>,
+    focus_target: isize,
+    audio_ms: u64,
+    tier: String,
+}
+
+impl Take {
+    fn new(samples: Vec<f32>, focus_target: isize, polisher: &polish::Polisher) -> Self {
+        // Recorder returns 16 kHz mono, so ms = samples / 16.
+        let audio_ms = samples.len() as u64 * 1000 / 16_000;
+        Take { samples, raw_text: None, focus_target, audio_ms, tier: mode_str(polisher.mode()).into() }
+    }
+}
+
+fn mode_str(m: PolishMode) -> &'static str {
+    match m {
+        PolishMode::Off => "off",
+        PolishMode::Rules => "rules",
+        PolishMode::Ai => "ai",
+    }
+}
+
+/// Record a non-delivered outcome (cancelled/error) — words=0, no fixes.
+fn record_outcome(take: &Take, stats_enabled: &Arc<AtomicBool>, outcome: &str) {
+    if !stats_enabled.load(Ordering::Relaxed) {
+        return;
+    }
+    let app_name = stats::app_name(take.focus_target);
+    stats::record(&stats::entry_now(0, take.audio_ms, app_name, &take.tier, 0, 0, outcome));
+}
+
+/// Transcribe (unless already done) → polish → inject, honoring a mid-flight
+/// cancel at each stage boundary. On any non-delivery the take is put back in
+/// `stash` so Retry can resume; on delivery `stash` is cleared.
+#[allow(clippy::too_many_arguments)]
+fn process_take(
+    app: &tauri::AppHandle,
+    asr: &mut asr::Asr,
+    polisher: &polish::Polisher,
+    history: &history::History,
+    suppressed: &Arc<AtomicBool>,
+    cancelled: &Arc<AtomicBool>,
+    injection_mode: InjectionMode,
+    stats_enabled: &Arc<AtomicBool>,
+    mut take: Take,
+    stash: &mut Option<Take>,
+) {
+    // Stage 1 — transcription (skipped on a retry that already has text).
+    if take.raw_text.is_none() {
+        emit_state(app, "transcribing");
+        match asr.transcribe(&take.samples) {
+            Ok(t) => take.raw_text = Some(t),
+            Err(err) => {
+                tracing::error!(?err, "transcription failed");
+                emit_state(app, "error");
+                record_outcome(&take, stats_enabled, "error");
+                *stash = Some(take);
+                return;
+            }
+        }
+    }
+    if cancelled.swap(false, Ordering::SeqCst) {
+        emit_state(app, "cancelled");
+        record_outcome(&take, stats_enabled, "cancelled");
+        *stash = Some(take);
+        return;
+    }
+    let raw = take.raw_text.clone().unwrap_or_default();
+    if raw.trim().is_empty() {
+        emit_state(app, "error");
+        record_outcome(&take, stats_enabled, "error");
+        *stash = Some(take);
+        return;
+    }
+
+    // Stage 2 — polish.
+    if polisher.uses_ai_tier(&raw) {
+        emit_state(app, "polishing");
+    }
+    let result = polisher.polish(&raw);
+    if cancelled.swap(false, Ordering::SeqCst) {
+        emit_state(app, "cancelled");
+        record_outcome(&take, stats_enabled, "cancelled");
+        *stash = Some(take);
+        return;
+    }
+    if result.text.is_empty() {
+        emit_state(app, "error");
+        record_outcome(&take, stats_enabled, "error");
+        *stash = Some(take);
+        return;
+    }
+
+    // Stage 3 — inject into the original window.
+    inject::restore_focus(take.focus_target);
+    suppressed.store(true, Ordering::SeqCst);
+    let injected = inject::inject_text(&result.text, injection_mode);
+    suppressed.store(false, Ordering::SeqCst);
+    match injected {
+        Ok(()) => {
+            // Leave the text on the clipboard as a mis-focus safety net.
+            if let Ok(mut cb) = arboard::Clipboard::new() {
+                let _ = cb.set_text(result.text.clone());
+            }
+            history.push(result.text.clone());
+            emit_state(app, "done");
+            emit_history(app, history);
+            if stats_enabled.load(Ordering::Relaxed) {
+                let words = result.text.split_whitespace().count();
+                stats::record(&stats::entry_now(
+                    words,
+                    take.audio_ms,
+                    stats::app_name(take.focus_target),
+                    &take.tier,
+                    result.corrected_words,
+                    result.dict_hits,
+                    "injected",
+                ));
+            }
+            *stash = None; // delivered — nothing to retry
+            tracing::info!("injected: {:?}", result.text);
+        }
+        Err(err) => {
+            tracing::error!(?err, "injection failed");
+            emit_state(app, "error");
+            record_outcome(&take, stats_enabled, "error");
+            *stash = Some(take);
+        }
+    }
 }
 
 fn emit_state(app: &tauri::AppHandle, s: &str) {
@@ -691,7 +830,10 @@ fn run_polish_once(raw: &str) -> anyhow::Result<()> {
     let t = Instant::now();
     let out = polisher.polish(raw);
     println!("raw      => {raw:?}");
-    println!("polished => {out:?}  ({} ms)", t.elapsed().as_millis());
+    println!(
+        "polished => {:?}  ({} ms, {} words corrected, {} dict fixes)",
+        out.text, t.elapsed().as_millis(), out.corrected_words, out.dict_hits
+    );
     Ok(())
 }
 

@@ -143,6 +143,10 @@ pub struct Config {
     /// Start minimized to the tray (no window shown on launch).
     #[serde(default = "default_true")]
     pub start_hidden: bool,
+    /// Record local usage stats (counts + timings only, never text) for the
+    /// Insights dashboard. Fully local either way.
+    #[serde(default = "default_true")]
+    pub stats_enabled: bool,
 }
 
 fn default_true() -> bool {
@@ -161,6 +165,7 @@ impl Default for Config {
             llm: LlmConfig::default(),
             dictionary: Vec::new(),
             start_hidden: true,
+            stats_enabled: true,
         }
     }
 }

@@ -9,10 +9,14 @@ use crate::config::ActivationMode;
 pub enum DictationEvent {
     Start,
     Stop,
-    /// Abort the current cycle — user pressed Escape. Handled by the worker
-    /// by discarding any in-flight audio / transcript and showing a
+    /// Abort the current cycle — user pressed Escape. The worker stops any
+    /// in-flight capture, stashes the take for a possible retry, and shows a
     /// "cancelled" state on the overlay.
     Cancel,
+    /// Re-run the pipeline from the stashed take (tray "Retry last
+    /// dictation", and later the overlay's ↺ button). Never emitted by the
+    /// key listener itself.
+    Retry,
 }
 
 /// A hotkey binding source — either a keyboard key or a mouse button. The
@@ -142,6 +146,7 @@ pub fn run_listener(
     tx: Sender<DictationEvent>,
     suppressed: Arc<AtomicBool>,
     paused: Arc<AtomicBool>,
+    cancelled: Arc<AtomicBool>,
 ) {
     let mut is_held = false;
     let mut is_active = false; // toggle-mode recording state
@@ -153,10 +158,15 @@ pub fn run_listener(
 
         // Escape aborts an in-flight dictation regardless of what the bound
         // hotkey is — same key on every keyboard, and the pipeline handler
-        // ignores the event if nothing is happening. This is checked before
-        // the bound-hotkey match so Escape never triggers Start/Stop even if
-        // the user has (implausibly) bound Escape as their hotkey.
+        // ignores the event if nothing is happening. The flag is set HERE,
+        // from the listener thread, because the worker is single-threaded:
+        // while it's blocked inside ASR or the LLM it can't process a Cancel
+        // event, but it does check this flag at every stage boundary — so a
+        // mid-transcription Escape still stops the polish + injection. The
+        // channel event additionally handles the "cancel while recording"
+        // path (stop the recorder, stash the take).
         if let EventType::KeyPress(rdev::Key::Escape) = event.event_type {
+            cancelled.store(true, Ordering::SeqCst);
             let _ = tx.send(DictationEvent::Cancel);
             // Fall through — Escape could ALSO match a bound hotkey. Almost
             // never the case, but the logic below handles it cleanly.

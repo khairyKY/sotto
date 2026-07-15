@@ -46,7 +46,7 @@ impl Polisher {
         Self { controls, llm }
     }
 
-    fn mode(&self) -> PolishMode {
+    pub fn mode(&self) -> PolishMode {
         PolishMode::from_u8(self.controls.polish_mode.load(Ordering::Relaxed))
     }
 
@@ -56,20 +56,26 @@ impl Polisher {
 
     /// Clean up `raw` according to the configured mode. Never fails: the worst
     /// case is returning the trimmed raw transcript, so a dictation is never
-    /// lost to a polish error.
-    pub fn polish(&self, raw: &str) -> String {
+    /// lost to a polish error. Alongside the text, reports how many words the
+    /// cleanup changed and how many dictionary replacements fired — the
+    /// "fixes made by Sotto" numbers on the Insights dashboard.
+    pub fn polish(&self, raw: &str) -> PolishResult {
         let cleaned = match self.mode() {
             PolishMode::Off => raw.trim().to_string(),
             PolishMode::Rules => tier0(raw),
             PolishMode::Ai => self.polish_ai(raw),
         };
+        // Diff BEFORE the dictionary pass so corrected-words and dict-hits
+        // don't double-count the same word.
+        let corrected_words = changed_words(raw, &cleaned);
         // Dictionary / snippet replacements apply on top of every tier.
         let dict = self.controls.dictionary.lock().unwrap();
-        if dict.is_empty() {
-            cleaned
+        let (text, dict_hits) = if dict.is_empty() {
+            (cleaned, 0)
         } else {
             apply_dictionary(&cleaned, &dict)
-        }
+        };
+        PolishResult { text, corrected_words, dict_hits }
     }
 
     /// Pre-spawn the LLM sidecar if AI polish is the active tier, so its model
@@ -131,8 +137,47 @@ impl Polisher {
     }
 }
 
+/// What a polish pass produced: the final text plus the fix counts the
+/// Insights dashboard aggregates (see stats.rs).
+pub struct PolishResult {
+    pub text: String,
+    /// Words the cleanup tier changed vs. the raw transcript (fillers
+    /// removed, self-corrections resolved, casing/punctuation edits).
+    pub corrected_words: usize,
+    /// Dictionary / snippet replacements that fired.
+    pub dict_hits: usize,
+}
+
 fn word_count(s: &str) -> usize {
     s.split_whitespace().count()
+}
+
+/// How many words differ between `a` and `b`, as `max(len) - LCS` over
+/// punctuation-stripped, lowercased tokens. Dictations are at most a few
+/// hundred words, so the O(n·m) table is trivially cheap.
+pub fn changed_words(a: &str, b: &str) -> usize {
+    let norm = |s: &str| -> Vec<String> {
+        s.split_whitespace()
+            .map(|t| t.trim_matches(|c: char| !c.is_alphanumeric()).to_ascii_lowercase())
+            .filter(|t| !t.is_empty())
+            .collect()
+    };
+    let aw = norm(a);
+    let bw = norm(b);
+    let (n, m) = (aw.len(), bw.len());
+    if n == 0 || m == 0 {
+        return n.max(m);
+    }
+    let mut dp = vec![0usize; m + 1];
+    for i in 1..=n {
+        let mut prev = 0; // dp[i-1][j-1]
+        for j in 1..=m {
+            let tmp = dp[j];
+            dp[j] = if aw[i - 1] == bw[j - 1] { prev + 1 } else { dp[j].max(dp[j - 1]) };
+            prev = tmp;
+        }
+    }
+    n.max(m) - dp[m]
 }
 
 /// Tier 0 rules cleanup. `split_whitespace` also collapses runs of spaces and
@@ -164,24 +209,29 @@ fn capitalize_first(s: &str) -> String {
 /// Apply each `spoken → replacement` entry as a case-insensitive, whole-phrase
 /// substitution. ASCII-folded so byte indices stay aligned (dictionary terms
 /// are effectively ASCII), and word-boundary-checked so "arrow" doesn't hit
-/// inside "arrows".
-fn apply_dictionary(text: &str, dict: &[(String, String)]) -> String {
+/// inside "arrows". Returns the rewritten text plus how many replacements
+/// fired (the "dictionary fixes" stat).
+fn apply_dictionary(text: &str, dict: &[(String, String)]) -> (String, usize) {
     let mut out = text.to_string();
+    let mut hits = 0;
     for (spoken, replacement) in dict {
         if !spoken.trim().is_empty() {
-            out = replace_whole_ci(&out, spoken, replacement);
+            let (next, n) = replace_whole_ci(&out, spoken, replacement);
+            out = next;
+            hits += n;
         }
     }
-    out
+    (out, hits)
 }
 
-fn replace_whole_ci(hay: &str, needle: &str, rep: &str) -> String {
+fn replace_whole_ci(hay: &str, needle: &str, rep: &str) -> (String, usize) {
     let hay_lc = hay.to_ascii_lowercase();
     let needle_lc = needle.to_ascii_lowercase();
     let hb = hay_lc.as_bytes();
     let is_word = |b: u8| b.is_ascii_alphanumeric();
 
     let mut out = String::with_capacity(hay.len());
+    let mut count = 0;
     let mut i = 0;
     while i <= hay_lc.len() {
         match hay_lc[i..].find(&needle_lc) {
@@ -193,6 +243,7 @@ fn replace_whole_ci(hay: &str, needle: &str, rep: &str) -> String {
                 if left_ok && right_ok {
                     out.push_str(&hay[i..start]);
                     out.push_str(rep);
+                    count += 1;
                     i = end;
                 } else {
                     // Boundary failed — emit one char and keep scanning.
@@ -207,7 +258,7 @@ fn replace_whole_ci(hay: &str, needle: &str, rep: &str) -> String {
             }
         }
     }
-    out
+    (out, count)
 }
 
 #[cfg(test)]
@@ -256,11 +307,23 @@ mod tests {
             ("gee pee tee".to_string(), "GPT".to_string()),
             ("arrow".to_string(), "→".to_string()),
         ];
-        assert_eq!(apply_dictionary("use Gee Pee Tee now", &dict), "use GPT now");
-        assert_eq!(apply_dictionary("arrow key", &dict), "→ key");
+        assert_eq!(apply_dictionary("use Gee Pee Tee now", &dict), ("use GPT now".into(), 1));
+        assert_eq!(apply_dictionary("arrow key", &dict), ("→ key".into(), 1));
         // Whole-word only: "arrows" must not become "→s".
-        assert_eq!(apply_dictionary("two arrows here", &dict), "two arrows here");
+        assert_eq!(apply_dictionary("two arrows here", &dict), ("two arrows here".into(), 0));
         // No entries → untouched.
-        assert_eq!(apply_dictionary("nothing", &[]), "nothing");
+        assert_eq!(apply_dictionary("nothing", &[]), ("nothing".into(), 0));
+    }
+
+    #[test]
+    fn changed_words_counts_edits_not_reorderings_of_identical_text() {
+        // Removing one filler = 1 change.
+        assert_eq!(changed_words("um hello there", "Hello there"), 1);
+        // Identical after case/punct normalization = 0 changes.
+        assert_eq!(changed_words("hello there", "Hello, there."), 0);
+        // Word substitution = 1.
+        assert_eq!(changed_words("ship the crate", "ship the create"), 1);
+        // Empty raw vs text.
+        assert_eq!(changed_words("", "three new words"), 3);
     }
 }

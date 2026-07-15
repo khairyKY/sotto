@@ -122,4 +122,4 @@ The updater workflow (bump version → sign → publish to GitHub Releases so ev
 ---
 
 ## ⚖️ License
-This project is proprietary and confidential. All rights reserved.
+MIT — free and open source. See [LICENSE](./LICENSE).
