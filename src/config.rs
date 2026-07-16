@@ -156,6 +156,14 @@ pub struct Config {
     /// Soft tick when recording starts and stops.
     #[serde(default = "default_true")]
     pub sound_enabled: bool,
+    /// App-window zoom (1.0 = 100%). Applied via the webview's native zoom,
+    /// so layout stays correct at any factor.
+    #[serde(default = "default_zoom")]
+    pub zoom: f64,
+}
+
+fn default_zoom() -> f64 {
+    1.0
 }
 
 fn default_theme() -> String {
@@ -182,6 +190,7 @@ impl Default for Config {
             theme: default_theme(),
             microphone: None,
             sound_enabled: true,
+            zoom: default_zoom(),
         }
     }
 }

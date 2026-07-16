@@ -339,6 +339,34 @@
               <!-- Dynamically populated by JS -->
             </div>
 
+            <div class="settings-section-title">Appearance</div>
+            <div class="card-raised settings-card">
+              <div class="settings-row bare">
+                <div class="row-label">
+                  <div class="label">Theme</div>
+                  <div class="sub">System follows your Windows light/dark setting</div>
+                </div>
+                <div class="segmented" id="theme" data-value="system">
+                  <button data-value="light">Light</button>
+                  <button data-value="dark">Dark</button>
+                  <button data-value="system">System</button>
+                </div>
+              </div>
+              <div class="divider"></div>
+              <div class="settings-row bare">
+                <div class="row-label">
+                  <div class="label">Zoom</div>
+                  <div class="sub">Scale the app window &mdash; or use Ctrl +, Ctrl &minus;, Ctrl 0</div>
+                </div>
+                <div class="zoom-control">
+                  <button class="zoom-btn" id="zoom-out" title="Zoom out (Ctrl −)">&minus;</button>
+                  <span class="zoom-val" id="zoom-val">100%</span>
+                  <button class="zoom-btn" id="zoom-in" title="Zoom in (Ctrl +)">+</button>
+                  <button class="zoom-reset" id="zoom-reset" title="Reset to 100% (Ctrl 0)">Reset</button>
+                </div>
+              </div>
+            </div>
+
             <div class="settings-section-title">Sound</div>
             <div class="card-raised settings-card">
               <div class="toggle-row">
@@ -367,10 +395,10 @@
             <div class="card-raised settings-card">
               <div class="settings-row bare">
                 <div class="row-label">
-                  <div class="label">Sotto <span id="app-version">2.0.0</span></div>
-                  <div class="sub" id="update-status">You’re up to date</div>
+                  <div class="label">Sotto <span class="mono-inline" id="app-version"></span></div>
+                  <div class="sub" id="update-status">Checking for updates&hellip;</div>
                 </div>
-                <button class="btn btn-primary" id="check-update" style="font-size:12px; padding:6px 13px; border-radius:9px; font-weight:500;">Check for updates</button>
+                <button class="btn btn-outline" id="check-update">Check for updates</button>
               </div>
             </div>
 
@@ -389,7 +417,7 @@
                   <div class="label">Clear stats</div>
                   <div class="sub">Delete all Insights data</div>
                 </div>
-                <button class="btn btn-secondary-danger" id="clear-stats-btn" style="font-size:12px; padding:6px 13px; border-radius:9px; font-weight:500;">Clear stats</button>
+                <button class="btn btn-secondary-danger" id="clear-stats-btn">Clear stats</button>
               </div>
               <div class="divider"></div>
               <div class="settings-row bare">

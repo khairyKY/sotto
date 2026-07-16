@@ -21,6 +21,12 @@
   --mm-status-green: #8FBF9F;
   --mm-coral: #A85874;
   --mm-gauge-bg: #DED2C0;
+  /* Streak heatmap ramp (design doc, light) */
+  --mm-cal-0: #E6DFD4;
+  --mm-cal-1: #DED0EC;
+  --mm-cal-2: #C3ABE6;
+  --mm-cal-3: #A98FE0;
+  --mm-cal-4: #8E74D0;
 
   /* Neumorphic shadows — light */
   --mm-raised: 5px 5px 11px rgba(196, 183, 165, 0.34), -5px -5px 11px rgba(255, 254, 250, 0.55);
@@ -52,6 +58,12 @@
   --mm-status-green: #6FA080;
   --mm-coral: #F0C3D2;
   --mm-gauge-bg: #201B26;
+  /* Streak heatmap ramp (design doc, dark) */
+  --mm-cal-0: #241F2A;
+  --mm-cal-1: #3A3340;
+  --mm-cal-2: #5C4E86;
+  --mm-cal-3: #8E74D0;
+  --mm-cal-4: #C9B8EE;
 
   /* Neumorphic shadows — dark */
   --mm-raised: 5px 5px 11px rgba(0, 0, 0, 0.5), -5px -5px 11px rgba(255, 255, 255, 0.035);

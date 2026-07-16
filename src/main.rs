@@ -35,6 +35,11 @@ use tauri::{Emitter, Manager};
 /// Ignore captured clips shorter than this — almost always an accidental tap.
 const MIN_CLIP_SAMPLES: usize = 16_000 / 2; // 0.5s at 16 kHz
 
+/// App-window zoom bounds. Below 0.5 the sidebar labels stop being legible;
+/// above 2.0 the 760px min-width layout starts clipping.
+const ZOOM_MIN: f64 = 0.5;
+const ZOOM_MAX: f64 = 2.0;
+
 // ── shared runtime state ───────────────────────────────────────────────
 #[derive(Clone)]
 pub struct Controls {
@@ -159,6 +164,7 @@ struct SettingsPayload {
     has_take: bool,
     /// Where models/config live, for the settings "Open folder" link.
     data_dir: String,
+    zoom: f64,
 }
 
 // ── commands ───────────────────────────────────────────────────────────
@@ -211,6 +217,7 @@ fn get_settings(state: tauri::State<'_, AppState>) -> SettingsPayload {
         sound_enabled: c.sound_enabled.load(Ordering::Relaxed),
         has_take: c.has_take.load(Ordering::Relaxed),
         data_dir: config::data_dir().display().to_string(),
+        zoom: cfg.zoom,
     }
 }
 
@@ -219,6 +226,20 @@ fn set_sound_enabled(enabled: bool, state: tauri::State<'_, AppState>) {
     state.controls.sound_enabled.store(enabled, Ordering::Relaxed);
     let mut cfg = state.cfg.lock().unwrap();
     cfg.sound_enabled = enabled;
+    let _ = cfg.save();
+}
+
+/// App-window zoom. Uses the webview's own zoom rather than CSS `zoom`/
+/// transforms — the native factor scales the layout viewport too, so `100vh`
+/// and the flex shell keep resolving correctly at any level.
+#[tauri::command]
+fn set_zoom(factor: f64, app: tauri::AppHandle, state: tauri::State<'_, AppState>) {
+    let factor = factor.clamp(ZOOM_MIN, ZOOM_MAX);
+    if let Some(w) = app.get_webview_window("settings") {
+        let _ = w.set_zoom(factor);
+    }
+    let mut cfg = state.cfg.lock().unwrap();
+    cfg.zoom = factor;
     let _ = cfg.save();
 }
 
@@ -395,7 +416,7 @@ fn main() -> anyhow::Result<()> {
             get_settings, set_hotkey, set_activation, set_polish, set_threshold,
             set_dictionary, set_launch_login, set_start_hidden, set_theme, copy_text,
             open_url, check_update, install_update, retry_last, cancel_dictation, repolish_copy,
-            get_stats, clear_stats, set_stats_enabled, set_microphone, set_sound_enabled,
+            get_stats, clear_stats, set_stats_enabled, set_microphone, set_sound_enabled, set_zoom,
             menu_action,
             assets::assets_status, assets::download_assets
         ])
@@ -405,8 +426,11 @@ fn main() -> anyhow::Result<()> {
                 let _ = w.set_ignore_cursor_events(true);
                 position_overlay(&w);
             }
-            if !cfg.start_hidden {
-                if let Some(w) = app.get_webview_window("settings") {
+            if let Some(w) = app.get_webview_window("settings") {
+                if (cfg.zoom - 1.0).abs() > f64::EPSILON {
+                    let _ = w.set_zoom(cfg.zoom.clamp(ZOOM_MIN, ZOOM_MAX));
+                }
+                if !cfg.start_hidden {
                     let _ = w.show();
                 }
             }

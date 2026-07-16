@@ -186,7 +186,7 @@ async function loadInsights() {
     if ($("total-saved-val")) $("total-saved-val").textContent = minSaved.toLocaleString();
 
     renderAppBreakdown(stats.topApps || []);
-    renderStreakCalendar(stats.daily || [], stats.currentStreak || 0);
+    renderStreakCalendar(stats.daily || [], stats.currentStreak || 0, stats.longestStreak || 0);
   } catch { renderMockInsights(); }
 }
 function renderMockInsights() {
@@ -205,11 +205,11 @@ function renderMockInsights() {
     { name: "Word", words: 1520, pct: 18 },
     { name: "Slack", words: 840, pct: 10 },
   ]);
-  renderStreakCalendar(mockStreakData(), 12);
+  renderStreakCalendar(mockStreakData(), 12, 21);
 }
 function mockStreakData() {
   const data = [];
-  const today = Math.floor(Date.now() / 86400000);
+  const today = localDayNum();
   for (let i = 0; i < 120; i++) {
     if (Math.random() > 0.35) {
       const words = Math.floor(Math.random() * 200) + 10;
@@ -235,40 +235,82 @@ function renderAppBreakdown(apps) {
     host.appendChild(row);
   });
 }
-function renderStreakCalendar(daily, currentStreak) {
+// Day number = days since 1970-01-01 for a *civil local* date. Mirrors
+// stats.rs::local_today (days_from_civil over GetLocalTime) exactly —
+// Date.now()/86400000 is UTC-based and drifts a day off it depending on
+// timezone and time of day, which silently shifted every cell.
+function localDayNum(date = new Date()) {
+  return Math.floor(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()) / 86400000);
+}
+// 1970-01-01 was a Thursday, so day 0 has weekday index 4 (0 = Sunday).
+const dowOf = (day) => (((day % 7) + 4) % 7 + 7) % 7;
+const MONTH_ABBR = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+const CAL_WEEKS = 19; // 7×19 = 133 cells, per the design doc
+
+function renderStreakCalendar(daily, currentStreak, longestStreak) {
   const wrap = $("calendar-wrap");
   wrap.innerHTML = "";
-  const today = Math.floor(Date.now() / 86400000);
+  const today = localDayNum();
   const dayMap = {};
   daily.forEach(d => { dayMap[d.day] = Math.min(4, Math.ceil(d.words / 50)); });
-  const weeks = 53;
-  const days = weeks * 7;
-  const grid = document.createElement("div");
-  grid.style.display = "flex";
-  grid.style.gap = "3px";
-  
+
   if ($("streak-title")) $("streak-title").textContent = `${currentStreak || 0}-day streak`;
-  if ($("longest-streak-title")) $("longest-streak-title").textContent = `longest ${Math.max(21, currentStreak || 0)} days`;
+  if ($("longest-streak-title")) {
+    $("longest-streak-title").textContent = `longest ${longestStreak || 0} days`;
+  }
 
-  const colors = ["var(--mm-base)", "var(--mm-tint)", "#C3ABE6", "#A98FE0", "var(--mm-accent)"];
+  // Each column is a real calendar week (Sun→Sat top→bottom) and each row is
+  // a fixed weekday, so today sits in the last column at its own weekday —
+  // the previous version just chunked the last 371 days into arbitrary
+  // 7-cell columns, which is why the grid read as starting nowhere sensible.
+  const lastSunday = today - dowOf(today);
+  const firstSunday = lastSunday - (CAL_WEEKS - 1) * 7;
 
-  for (let w = 0; w < weeks; w++) {
-    const col = document.createElement("div");
-    col.style.display = "flex";
-    col.style.flexDirection = "column";
-    col.style.gap = "3px";
+  const months = document.createElement("div");
+  months.className = "cal-months";
+  const body = document.createElement("div");
+  body.className = "cal-body";
+  const dows = document.createElement("div");
+  dows.className = "cal-dows";
+  ["", "Mon", "", "Wed", "", "Fri", ""].forEach(l => {
+    const s = document.createElement("span");
+    s.textContent = l;
+    dows.appendChild(s);
+  });
+  const grid = document.createElement("div");
+  grid.className = "cal-grid";
+
+  let prevMonth = -1;
+  for (let w = 0; w < CAL_WEEKS; w++) {
+    const colSunday = firstSunday + w * 7;
+    // Month label when the month of this column's Sunday changes.
+    const m = new Date(colSunday * 86400000).getUTCMonth();
+    const label = document.createElement("span");
+    label.textContent = m !== prevMonth ? MONTH_ABBR[m] : "";
+    months.appendChild(label);
+    prevMonth = m;
+
     for (let d = 0; d < 7; d++) {
-      const idx = days - (w * 7 + d) - 1;
-      const day = today - idx;
+      const day = colSunday + d;
       const cell = document.createElement("div");
       cell.className = "cal-cell";
-      const level = dayMap[day] || 0;
-      cell.style.background = colors[level];
-      col.appendChild(cell);
+      if (day > today) {
+        // Future days in the current week: hold the grid shape, draw nothing.
+        cell.classList.add("future");
+      } else {
+        const level = dayMap[day] || 0;
+        cell.style.background = `var(--mm-cal-${level})`;
+        const iso = new Date(day * 86400000).toISOString().slice(0, 10);
+        const words = daily.find(x => x.day === day)?.words || 0;
+        cell.title = words ? `${iso} · ${words} words` : iso;
+      }
+      grid.appendChild(cell);
     }
-    grid.appendChild(col);
   }
-  wrap.appendChild(grid);
+  body.appendChild(dows);
+  body.appendChild(grid);
+  wrap.appendChild(months);
+  wrap.appendChild(body);
 }
 
 // Heuristic to separate dictionary corrections from snippet text expansions
@@ -539,6 +581,44 @@ async function copyText(text) {
 }
 
 function escapeHtml(s) { return s.replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c])); }
+
+// ── zoom ──
+// Steps match Chrome's zoom ladder so the sizes feel familiar. Applying is
+// the Rust side's job (native webview zoom, which scales the layout viewport
+// — a CSS zoom/transform here would break the 100vh flex shell).
+const ZOOM_STEPS = [0.5, 0.67, 0.75, 0.8, 0.9, 1, 1.1, 1.25, 1.5, 1.75, 2];
+let currentZoom = 1;
+
+function applyZoom(factor, persist = true) {
+  const clamped = Math.min(2, Math.max(0.5, factor));
+  currentZoom = clamped;
+  const el = $("zoom-val");
+  if (el) el.textContent = Math.round(clamped * 100) + "%";
+  if ($("zoom-out")) $("zoom-out").disabled = clamped <= ZOOM_STEPS[0];
+  if ($("zoom-in")) $("zoom-in").disabled = clamped >= ZOOM_STEPS[ZOOM_STEPS.length - 1];
+  if (persist) invoke("set_zoom", { factor: clamped });
+}
+function stepZoom(dir) {
+  // Nearest step in the requested direction, so an odd saved value still
+  // lands back on the ladder.
+  const next = dir > 0
+    ? ZOOM_STEPS.find(z => z > currentZoom + 0.001)
+    : [...ZOOM_STEPS].reverse().find(z => z < currentZoom - 0.001);
+  if (next) applyZoom(next);
+}
+function initZoom(saved) {
+  applyZoom(saved, false); // reflect what Rust already applied at startup
+  if ($("zoom-in")) $("zoom-in").onclick = () => stepZoom(1);
+  if ($("zoom-out")) $("zoom-out").onclick = () => stepZoom(-1);
+  if ($("zoom-reset")) $("zoom-reset").onclick = () => applyZoom(1);
+}
+// Ctrl +/-/0, including the numpad and the shift-less "=" key.
+window.addEventListener("keydown", (e) => {
+  if (!e.ctrlKey) return;
+  if (e.key === "+" || e.key === "=" || e.code === "NumpadAdd") { e.preventDefault(); stepZoom(1); }
+  else if (e.key === "-" || e.code === "NumpadSubtract") { e.preventDefault(); stepZoom(-1); }
+  else if (e.key === "0" || e.code === "Numpad0") { e.preventDefault(); applyZoom(1); }
+});
 
 // ── hotkey picker ──
 const CODE_ALIAS = {
@@ -841,6 +921,7 @@ async function boot() {
     // `start` opens directories in Explorer just like URLs in the browser.
     $("open-folder").onclick = () => invoke("open_url", { url: s.dataDir || "" });
   }
+  initZoom(s.zoom || 1);
   if ($("data-folder-path") && s.dataDir) {
     $("data-folder-path").textContent = s.dataDir;
   }
