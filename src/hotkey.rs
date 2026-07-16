@@ -20,6 +20,9 @@ pub enum DictationEvent {
     /// Re-run the current polish tier + dictionary over existing text (the
     /// ↻ on a history row) and put the result on the clipboard.
     Repolish(String),
+    /// Drop the stashed take without retrying it — Home's "Dismiss". Only the
+    /// worker owns the stash, so this has to travel the same channel.
+    Dismiss,
 }
 
 /// A hotkey binding source — either a keyboard key or a mouse button. The

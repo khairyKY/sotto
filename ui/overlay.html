@@ -17,7 +17,12 @@
         pointer-events: none;
         user-select: none;
       }
-      #pill { display: block; width: 100%; height: 100%; }
+      /* The window itself is click-through except while the cursor is over the
+         pill (see spawn_overlay_hittest in main.rs). Once a click does reach
+         the webview it still has to reach the canvas — body sets
+         pointer-events:none and that property inherits, so without this the
+         ✕/↻ click handler never fires. */
+      #pill { display: block; width: 100%; height: 100%; pointer-events: auto; }
     </style>
   </head>
   <body>

@@ -123,16 +123,19 @@ function retryBtn(xr, yc, r, alpha, dark) {
   ctx.restore();
 }
 
+// Auto-dismiss countdown, hugging the pill's bottom edge. Takes the PILL's
+// rect (not the bar's) and clips to it: the pill is a CR-radius round-rect, so
+// at the bottom 3px its body is ~25px narrower than its bounding box on each
+// side. Drawing the bar to the bounding box left it hanging outside the pill.
 function countdownBar(x, y, w, h, pct, dark) {
-  const bg = dark ? CL.baseDark : CL.base;
-  const fg = dark ? '#8F859A' : '#B5ADA0';
+  const bh = 3, by = y + h - bh;
   ctx.save();
-  rr(x, y, w, h, h / 2);
-  ctx.fillStyle = bg;
-  ctx.fill();
-  rr(x, y, w * pct, h, h / 2);
-  ctx.fillStyle = fg;
-  ctx.fill();
+  rr(x, y, w, h, CR);
+  ctx.clip();
+  ctx.fillStyle = dark ? CL.baseDark : CL.base;
+  ctx.fillRect(x, by, w, bh);
+  ctx.fillStyle = dark ? '#8F859A' : '#B5ADA0';
+  ctx.fillRect(x, by, w * pct, bh);
   ctx.restore();
 }
 
@@ -340,9 +343,7 @@ function drawState(x, y, w, h, now) {
     ctx.fillText("Didn't catch that", gx + 18, yc);
     retryBtn(xr, yc, btnR, alpha, dark);
     activeBtn = { x: xr, y: yc, r: btnR, action: 'retry' };
-    const pct = Math.max(0, 1 - sincePhase / 6000);
-    const barY = y + h - 3;
-    countdownBar(x + 2, barY, w - 4, 3, pct, dark);
+    countdownBar(x, y, w, h, Math.max(0, 1 - sincePhase / 6000), dark);
   } else if (name === 'cancelled') {
     const gx = contentL + 8;
     ctx.save();
@@ -367,9 +368,7 @@ function drawState(x, y, w, h, now) {
     ctx.fillText('Cancelled', gx + 20, yc);
     retryBtn(xr, yc, btnR, alpha, dark);
     activeBtn = { x: xr, y: yc, r: btnR, action: 'retry' };
-    const pct = Math.max(0, 1 - sincePhase / 6000);
-    const barY = y + h - 3;
-    countdownBar(x + 2, barY, w - 4, 3, pct, dark);
+    countdownBar(x, y, w, h, Math.max(0, 1 - sincePhase / 6000), dark);
   } else if (name === 'nomodel') {
     // First-run: the speech model is still downloading. Same neutral toast
     // shape as Cancelled — the take is stashed, so ↻ works once it lands.
@@ -397,9 +396,7 @@ function drawState(x, y, w, h, now) {
     ctx.fillText('Model downloading…', gx + 20, yc);
     retryBtn(xr, yc, btnR, alpha, dark);
     activeBtn = { x: xr, y: yc, r: btnR, action: 'retry' };
-    const pct = Math.max(0, 1 - sincePhase / 6000);
-    const barY = y + h - 3;
-    countdownBar(x + 2, barY, w - 4, 3, pct, dark);
+    countdownBar(x, y, w, h, Math.max(0, 1 - sincePhase / 6000), dark);
   }
   ctx.globalAlpha = 1;
 }

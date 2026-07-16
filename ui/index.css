@@ -173,6 +173,10 @@ body {
 .stat-label { font: 400 12px "Hanken Grotesk"; color: var(--mm-muted-3); margin-top: 3px; }
 
 /* ── alert card ────────────────────────────── */
+/* Author `display` beats the UA sheet's [hidden]{display:none}, so this has to
+   restate it — same trap the update banner hit. Without it the card is welded
+   on-screen and Dismiss (which just sets .hidden) does nothing. */
+.alert-card[hidden] { display: none; }
 .alert-card {
   background: var(--mm-fg);
   border-radius: 15px;

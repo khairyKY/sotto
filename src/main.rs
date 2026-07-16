@@ -73,9 +73,20 @@ pub struct Controls {
     pub overlay_state: Arc<Mutex<String>>,
     /// Soft start/stop recording ticks — live-toggled from settings.
     pub sound_enabled: Arc<AtomicBool>,
-    /// True while a retryable take is stashed — drives the tray menu's
-    /// "Retry last dictation" enablement honestly.
-    pub has_take: Arc<AtomicBool>,
+    /// The stashed-but-undelivered take, if any — drives the tray menu's
+    /// "Retry last dictation" enablement and Home's alert card. `None` means
+    /// the last dictation landed (or there hasn't been one).
+    pub take_info: Arc<Mutex<Option<TakeInfo>>>,
+}
+
+/// What Home's alert card and the tray need to know about a stashed take.
+/// `words` is 0 when the take never got as far as a transcript (cancelled
+/// mid-recording), in which case the UI falls back to the audio length.
+#[derive(Clone, serde::Serialize)]
+pub struct TakeInfo {
+    reason: String,
+    words: usize,
+    audio_ms: u64,
 }
 
 impl Controls {
@@ -98,7 +109,7 @@ impl Controls {
             microphone: Arc::new(Mutex::new(cfg.microphone.clone())),
             overlay_state: Arc::new(Mutex::new("idle".to_string())),
             sound_enabled: Arc::new(AtomicBool::new(cfg.sound_enabled)),
-            has_take: Arc::new(AtomicBool::new(false)),
+            take_info: Arc::new(Mutex::new(None)),
         }
     }
 }
@@ -162,6 +173,8 @@ struct SettingsPayload {
     paused: bool,
     sound_enabled: bool,
     has_take: bool,
+    /// Details for Home's "last dictation wasn't delivered" card.
+    take_info: Option<TakeInfo>,
     /// Where models/config live, for the settings "Open folder" link.
     data_dir: String,
     zoom: f64,
@@ -215,7 +228,8 @@ fn get_settings(state: tauri::State<'_, AppState>) -> SettingsPayload {
         microphone_options: audio::list_input_devices(),
         paused: c.paused.load(Ordering::Relaxed),
         sound_enabled: c.sound_enabled.load(Ordering::Relaxed),
-        has_take: c.has_take.load(Ordering::Relaxed),
+        has_take: c.take_info.lock().unwrap().is_some(),
+        take_info: c.take_info.lock().unwrap().clone(),
         data_dir: config::data_dir().display().to_string(),
         zoom: cfg.zoom,
     }
@@ -354,6 +368,13 @@ fn cancel_dictation(state: tauri::State<'_, AppState>) {
     let _ = state.tx.send(DictationEvent::Cancel);
 }
 
+/// Home's "Dismiss" — throw the stashed take away so the alert card stays gone
+/// instead of coming back on the next refresh.
+#[tauri::command]
+fn dismiss_take(state: tauri::State<'_, AppState>) {
+    let _ = state.tx.send(DictationEvent::Dismiss);
+}
+
 /// A history row's ↻ — re-run the current polish tier + dictionary over that
 /// row's text and leave the result on the clipboard.
 #[tauri::command]
@@ -415,7 +436,8 @@ fn main() -> anyhow::Result<()> {
         .invoke_handler(tauri::generate_handler![
             get_settings, set_hotkey, set_activation, set_polish, set_threshold,
             set_dictionary, set_launch_login, set_start_hidden, set_theme, copy_text,
-            open_url, check_update, install_update, retry_last, cancel_dictation, repolish_copy,
+            open_url, check_update, install_update, retry_last, cancel_dictation, dismiss_take,
+            repolish_copy,
             get_stats, clear_stats, set_stats_enabled, set_microphone, set_sound_enabled, set_zoom,
             menu_action,
             assets::assets_status, assets::download_assets
@@ -660,7 +682,7 @@ fn spawn_pipeline(
     let stats_enabled = controls.stats_enabled.clone();
     let microphone = controls.microphone.clone();
     let sound_enabled = controls.sound_enabled.clone();
-    let has_take = controls.has_take.clone();
+    let take_info = controls.take_info.clone();
     std::thread::spawn(move || {
         let mut recorder = audio::Recorder::new(level, microphone);
         let mut asr = asr::Asr::new();
@@ -708,12 +730,13 @@ fn spawn_pipeline(
                         }
                         let samples = recorder.stop().unwrap_or_default();
                         cancelled.store(false, Ordering::SeqCst); // consumed here
-                        let take = Take::new(samples, focus_target.swap(0, Ordering::Relaxed), &polisher);
+                        let mut take = Take::new(samples, focus_target.swap(0, Ordering::Relaxed), &polisher);
                         emit_state(&app, "cancelled");
                         tracing::info!("dictation cancelled while recording");
                         // Only worth stashing if there's enough audio to retry.
                         if take.samples.len() >= MIN_CLIP_SAMPLES {
                             record_outcome(&take, &stats_enabled, "cancelled");
+                            take.reason = "Cancelled";
                             stash = Some(take);
                         }
                     }
@@ -738,11 +761,12 @@ fn spawn_pipeline(
                         emit_state(&app, "idle");
                         continue;
                     }
-                    let take = Take::new(samples, focus_target.swap(0, Ordering::Relaxed), &polisher);
+                    let mut take = Take::new(samples, focus_target.swap(0, Ordering::Relaxed), &polisher);
                     // Cancel arrived during/right after recording.
                     if cancelled.swap(false, Ordering::SeqCst) {
                         emit_state(&app, "cancelled");
                         record_outcome(&take, &stats_enabled, "cancelled");
+                        take.reason = "Cancelled";
                         stash = Some(take);
                         continue;
                     }
@@ -764,6 +788,9 @@ fn spawn_pipeline(
                         tracing::info!("retry requested but nothing stashed");
                     }
                 }
+                DictationEvent::Dismiss => {
+                    stash = None;
+                }
                 DictationEvent::Repolish(text) => {
                     let out = polisher.polish(&text);
                     if !out.text.is_empty() {
@@ -778,8 +805,13 @@ fn spawn_pipeline(
                     }
                 }
             }
-            // Keep the tray menu's "Retry last dictation" honest.
-            has_take.store(stash.is_some(), Ordering::Relaxed);
+            // Single choke point for every path above — keeps the tray menu's
+            // "Retry last dictation" and Home's alert card honest, and pushes
+            // the change to an already-open window instead of waiting for a
+            // refresh.
+            let info = stash.as_ref().map(TakeInfo::from);
+            *take_info.lock().unwrap() = info.clone();
+            let _ = app.emit("take-changed", info);
         }
     });
 }
@@ -793,13 +825,33 @@ struct Take {
     focus_target: isize,
     audio_ms: u64,
     tier: String,
+    /// Why this take wasn't delivered, in the user's words — set at whichever
+    /// stash site caught it, shown verbatim by Home's alert card.
+    reason: &'static str,
+}
+
+impl From<&Take> for TakeInfo {
+    fn from(t: &Take) -> Self {
+        TakeInfo {
+            reason: t.reason.to_string(),
+            words: t.raw_text.as_deref().map_or(0, |s| s.split_whitespace().count()),
+            audio_ms: t.audio_ms,
+        }
+    }
 }
 
 impl Take {
     fn new(samples: Vec<f32>, focus_target: isize, polisher: &polish::Polisher) -> Self {
         // Recorder returns 16 kHz mono, so ms = samples / 16.
         let audio_ms = samples.len() as u64 * 1000 / 16_000;
-        Take { samples, raw_text: None, focus_target, audio_ms, tier: mode_str(polisher.mode()).into() }
+        Take {
+            samples,
+            raw_text: None,
+            focus_target,
+            audio_ms,
+            tier: mode_str(polisher.mode()).into(),
+            reason: "",
+        }
     }
 }
 
@@ -850,6 +902,7 @@ fn process_take(
                     !config::model_dir().join("encoder-model.int8.onnx").exists();
                 emit_state(app, if model_missing { "nomodel" } else { "error" });
                 record_outcome(&take, stats_enabled, "error");
+                take.reason = if model_missing { "Speech model still downloading" } else { "Couldn't transcribe it" };
                 *stash = Some(take);
                 return;
             }
@@ -858,6 +911,7 @@ fn process_take(
     if cancelled.swap(false, Ordering::SeqCst) {
         emit_state(app, "cancelled");
         record_outcome(&take, stats_enabled, "cancelled");
+        take.reason = "Cancelled";
         *stash = Some(take);
         return;
     }
@@ -865,6 +919,7 @@ fn process_take(
     if raw.trim().is_empty() {
         emit_state(app, "error");
         record_outcome(&take, stats_enabled, "error");
+        take.reason = "Didn't catch any speech";
         *stash = Some(take);
         return;
     }
@@ -877,12 +932,14 @@ fn process_take(
     if cancelled.swap(false, Ordering::SeqCst) {
         emit_state(app, "cancelled");
         record_outcome(&take, stats_enabled, "cancelled");
+        take.reason = "Cancelled";
         *stash = Some(take);
         return;
     }
     if result.text.is_empty() {
         emit_state(app, "error");
         record_outcome(&take, stats_enabled, "error");
+        take.reason = "Polish came back empty";
         *stash = Some(take);
         return;
     }
@@ -920,6 +977,7 @@ fn process_take(
             tracing::error!(?err, "injection failed");
             emit_state(app, "error");
             record_outcome(&take, stats_enabled, "error");
+            take.reason = "Couldn't paste into that app";
             *stash = Some(take);
         }
     }
@@ -1066,5 +1124,38 @@ fn init_ort() {
         tracing::info!(path = %dll.display(), "ORT_DYLIB_PATH set");
     } else {
         tracing::warn!(path = %dll.display(), "onnxruntime.dll not found — dictation will fail until installed");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn take(raw: Option<&str>, audio_ms: u64, reason: &'static str) -> Take {
+        Take {
+            samples: vec![],
+            raw_text: raw.map(String::from),
+            focus_target: 0,
+            audio_ms,
+            tier: "off".into(),
+            reason,
+        }
+    }
+
+    #[test]
+    fn take_info_counts_words_once_transcribed() {
+        let i = TakeInfo::from(&take(Some("hello there my friend"), 4000, "Couldn't paste into that app"));
+        assert_eq!(i.words, 4);
+        assert_eq!(i.reason, "Couldn't paste into that app");
+    }
+
+    #[test]
+    fn take_info_has_no_word_count_before_transcription() {
+        // Cancelled mid-recording: there is no transcript, so the card has to
+        // fall back to audio length. Reporting "0 words" would be a lie about
+        // what's actually sitting in the stash.
+        let i = TakeInfo::from(&take(None, 4200, "Cancelled"));
+        assert_eq!(i.words, 0);
+        assert_eq!(i.audio_ms, 4200);
     }
 }

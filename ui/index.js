@@ -860,8 +860,24 @@ async function initAssets() {
 }
 
 // ── alert card ──
-$("alert-dismiss").onclick = () => { $("alert-card").hidden = true; };
-$("alert-retry").onclick = () => { invoke("retry_last"); };
+// Shown only while the worker is actually holding an undelivered take. Both
+// buttons drop that stash (retry consumes it, dismiss throws it away), so the
+// card hides itself via the take-changed event rather than optimistically here.
+function renderTakeAlert(info) {
+  const card = $("alert-card");
+  if (!card) return;
+  if (!info) { card.hidden = true; return; }
+  $("alert-title").textContent = `Last dictation wasn't delivered`;
+  // words is 0 when the take never reached a transcript — fall back to how
+  // much audio is sitting in the stash, which is all we actually know.
+  const size = info.words > 0
+    ? `${info.words} word${info.words === 1 ? "" : "s"}`
+    : `${Math.max(1, Math.round(info.audio_ms / 1000))}s of audio`;
+  $("alert-sub").textContent = `${info.reason} · ${size}`;
+  card.hidden = false;
+}
+$("alert-dismiss").onclick = () => invoke("dismiss_take");
+$("alert-retry").onclick = () => invoke("retry_last");
 
 
 function formatTime(date) {
@@ -883,6 +899,7 @@ async function boot() {
 
   // Home page initial data
   loadHome();
+  renderTakeAlert(s.takeInfo || s.take_info || null);
 
   // Theme
   function applyTheme(theme) {
@@ -991,6 +1008,9 @@ async function boot() {
       const page = e.payload;
       if (page && document.querySelector(`.nav-item[data-page="${page}"]`)) navigate(page);
     });
+    // Fires on every worker outcome — null once a take is delivered, retried,
+    // or dismissed, which is what actually takes the card off the screen.
+    T.event.listen("take-changed", (e) => renderTakeAlert(e.payload || null));
   }
 
   initUpdates();
