@@ -664,6 +664,10 @@ fn spawn_pipeline(
     std::thread::spawn(move || {
         let mut recorder = audio::Recorder::new(level, microphone);
         let mut asr = asr::Asr::new();
+        // Warm the ASR model on this thread before serving events, so the
+        // first dictation doesn't eat the ~5s load. Any Start that arrives
+        // meanwhile just queues on the channel.
+        asr.preload();
         // The last dictation, kept in memory so Escape/error is recoverable
         // via Retry. Overwritten by the next Start; cleared on successful
         // delivery.

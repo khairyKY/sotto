@@ -1,14 +1,26 @@
+<!-- Sotto app icon — Marshmallow "treatment A" (cream / lilac) per the design
+     doc's #icons section:
+       squircle, border-radius 22%
+       background linear-gradient(145deg, #F6F0E6, #E6DFD4)
+       centered 4-hump wave-mark, viewBox 0 0 56 24, stroke #8E74D0 @ 4.5,
+       rendered at ~46% of the box width
+     No baked drop shadow — Windows composites its own for the taskbar and
+     Start menu, and a baked one reads as dirt at small sizes. -->
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
   <defs>
-    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0%" stop-color="#F0E9DF"/>
+    <!-- CSS 145deg → direction (sin145, -cos145) = (0.574, 0.819); the line is
+         centred, so the stops sit at 0.5 ∓ 0.5·component. -->
+    <linearGradient id="bg" x1="21.3%" y1="9.0%" x2="78.7%" y2="91.0%">
+      <stop offset="0%" stop-color="#F6F0E6"/>
       <stop offset="100%" stop-color="#E6DFD4"/>
     </linearGradient>
   </defs>
-  <rect width="1024" height="1024" rx="200" ry="200" fill="url(#bg)"/>
-  <g transform="translate(512,512)">
-    <g transform="scale(14)">
-      <path d="M4 12 Q10 3 16 12 T28 12 T40 12 T52 12" fill="none" stroke="#8E74D0" stroke-width="4.5" stroke-linecap="round" stroke-linejoin="round"/>
-    </g>
+  <rect width="1024" height="1024" rx="225" ry="225" fill="url(#bg)"/>
+  <!-- 471px wide = 46% of 1024 → scale 471/56 = 8.411. The inner translate
+       re-centres the path's own midpoint (28,12) on the canvas centre. -->
+  <g transform="translate(512,512) scale(8.411) translate(-28,-12)">
+    <path d="M4 12 Q10 3 16 12 T28 12 T40 12 T52 12"
+          fill="none" stroke="#8E74D0" stroke-width="4.5"
+          stroke-linecap="round" stroke-linejoin="round"/>
   </g>
 </svg>

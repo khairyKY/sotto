@@ -250,188 +250,199 @@
         </section>
 
         <!-- ===================== SETTINGS ===================== -->
-        <section class="page" id="page-settings">
-          <h1 class="page-title" style="margin:0 0 16px">Settings</h1>
-
-          <div class="banner" id="update-banner" hidden>
-            <span class="banner-dot"></span>
-            <span class="banner-text" id="update-text">A new version of Sotto is available.</span>
-            <span class="banner-actions">
-              <button class="btn primary" id="update-install">Install &amp; restart</button>
-            </span>
-            <button class="banner-close" id="update-close" title="Dismiss">
-              <svg width="10" height="10"><line x1="1" y1="1" x2="9" y2="9" /><line x1="9" y1="1" x2="1" y2="9" /></svg>
-            </button>
-          </div>
-          <div class="banner" id="assets-banner" hidden>
-            <span class="banner-dot amber"></span>
-            <span class="banner-text" id="assets-text">Downloading voice models&hellip;</span>
-            <span class="banner-bar"><span class="banner-fill" id="assets-fill"></span></span>
-          </div>
-
-          <div class="settings-container">
-            <div class="settings-section-title">Dictation</div>
-            <div class="card-raised settings-card">
-              <div class="settings-row bare">
-                <div class="row-label">
-                  <div class="label">Dictation key</div>
-                  <div class="sub">Hold to talk &mdash; release to transcribe</div>
-                </div>
-                <div class="row-control" id="hotkey-control">
-                  <span class="keycap" id="hotkey-keycap">Right Ctrl</span>
-                  <span class="link-change" id="hotkey-open">Change&hellip;</span>
-                </div>
-              </div>
-              <div class="divider"></div>
-              <div class="settings-row bare">
-                <div class="row-label">
-                  <div class="label">Mode</div>
-                  <div class="sub">Hold the key while speaking, or tap to start &amp; stop</div>
-                </div>
-                <div class="segmented" id="activation" data-value="hold">
-                  <button data-value="hold">Hold</button>
-                  <button data-value="toggle">Toggle</button>
-                </div>
-              </div>
-              <div class="divider"></div>
-              <div class="settings-row bare">
-                <div class="row-label">
-                  <div class="label">Microphone</div>
-                  <div class="sub">Which mic Sotto listens to</div>
-                </div>
-                <div class="row-control">
-                  <div class="select-wrapper">
-                    <select class="select-native" id="mic-select"></select>
-                    <span class="select-arrow">&#9660;</span>
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            <div class="settings-section-title">Polish</div>
-            <div class="card-raised settings-card">
-              <div class="settings-row bare">
-                <div class="row-label">
-                  <div class="label">Cleanup</div>
-                  <div class="sub">Off &middot; Rules (instant, local) &middot; AI (local LLM rewrite)</div>
-                </div>
-                <div class="segmented" id="polish" data-value="ai">
-                  <button data-value="off">Off</button>
-                  <button data-value="rules">Rules</button>
-                  <button data-value="ai">AI</button>
-                </div>
-              </div>
-              <div class="divider"></div>
-              <div class="settings-row bare">
-                <div class="row-label nowrap">
-                  <div class="label">Use AI past</div>
-                  <div class="sub">shorter clips stay on instant rules</div>
-                </div>
-                <div class="slider-wrap">
-                  <input type="range" id="threshold" min="0" max="60" value="18" />
-                  <span class="mono" id="threshold-val">18 words</span>
-                </div>
-              </div>
-            </div>
-
-            <div class="settings-section-title">Speech model</div>
-            <div class="card-raised settings-card" id="model-list">
-              <!-- Dynamically populated by JS -->
-            </div>
-
-            <div class="settings-section-title">Appearance</div>
-            <div class="card-raised settings-card">
-              <div class="settings-row bare">
-                <div class="row-label">
-                  <div class="label">Theme</div>
-                  <div class="sub">System follows your Windows light/dark setting</div>
-                </div>
-                <div class="segmented" id="theme" data-value="system">
-                  <button data-value="light">Light</button>
-                  <button data-value="dark">Dark</button>
-                  <button data-value="system">System</button>
-                </div>
-              </div>
-              <div class="divider"></div>
-              <div class="settings-row bare">
-                <div class="row-label">
-                  <div class="label">Zoom</div>
-                  <div class="sub">Scale the app window &mdash; or use Ctrl +, Ctrl &minus;, Ctrl 0</div>
-                </div>
-                <div class="zoom-control">
-                  <button class="zoom-btn" id="zoom-out" title="Zoom out (Ctrl −)">&minus;</button>
-                  <span class="zoom-val" id="zoom-val">100%</span>
-                  <button class="zoom-btn" id="zoom-in" title="Zoom in (Ctrl +)">+</button>
-                  <button class="zoom-reset" id="zoom-reset" title="Reset to 100% (Ctrl 0)">Reset</button>
-                </div>
-              </div>
-            </div>
-
-            <div class="settings-section-title">Sound</div>
-            <div class="card-raised settings-card">
-              <div class="toggle-row">
-                <div class="row-label">
-                  <div class="label">Dictation sounds</div>
-                  <div class="sub">A soft tick when recording starts and stops</div>
-                </div>
-                <button class="switch" id="sound-sounds" role="switch" aria-checked="true"><span class="knob"></span></button>
-              </div>
-            </div>
-
-            <div class="settings-section-title">Startup</div>
-            <div class="card-raised settings-card">
-              <div class="toggle-row">
-                <span class="label">Launch Sotto at login</span>
-                <button class="switch" id="launch-login" role="switch" aria-checked="true"><span class="knob"></span></button>
-              </div>
-              <div class="divider"></div>
-              <div class="toggle-row">
-                <span class="label">Start hidden in the tray</span>
-                <button class="switch" id="start-hidden" role="switch" aria-checked="true"><span class="knob"></span></button>
-              </div>
-            </div>
-
-            <div class="settings-section-title">Updates</div>
-            <div class="card-raised settings-card">
-              <div class="settings-row bare">
-                <div class="row-label">
-                  <div class="label">Sotto <span class="mono-inline" id="app-version"></span></div>
-                  <div class="sub" id="update-status">Checking for updates&hellip;</div>
-                </div>
-                <button class="btn btn-outline" id="check-update">Check for updates</button>
-              </div>
-            </div>
-
-            <div class="settings-section-title">Data &amp; privacy</div>
-            <div class="card-raised settings-card">
-              <div class="toggle-row">
-                <div class="row-label">
-                  <div class="label">Usage stats</div>
-                  <div class="sub">Counts words and timing on this device to power Insights. Never your words’ content, never uploaded.</div>
-                </div>
-                <button class="switch" id="stats-enabled-toggle" role="switch" aria-checked="true"><span class="knob"></span></button>
-              </div>
-              <div class="divider"></div>
-              <div class="settings-row bare">
-                <div class="row-label">
-                  <div class="label">Clear stats</div>
-                  <div class="sub">Delete all Insights data</div>
-                </div>
-                <button class="btn btn-secondary-danger" id="clear-stats-btn">Clear stats</button>
-              </div>
-              <div class="divider"></div>
-              <div class="settings-row bare">
-                <div class="row-label">
-                  <div class="label">Data folder</div>
-                  <div class="sub" id="data-folder-path">&mdash;</div>
-                </div>
-                <span class="link-change" id="open-folder">Open folder</span>
-              </div>
-            </div>
-          </div>
         </section>
 
       </main>
+    </div>
+
+    <!-- Settings modal — opens over the app with the shell dimmed behind it -->
+    <div class="modal-scrim settings-scrim" id="settings-scrim" hidden>
+      <div class="modal-card settings-modal" role="dialog" aria-modal="true" aria-labelledby="settings-modal-title">
+        <div class="modal-head">
+          <span class="modal-title" id="settings-modal-title">Settings</span>
+          <button class="winbtn" id="settings-modal-close" title="Close" aria-label="Close settings"><svg width="10" height="10"><line x1="1" y1="1" x2="9" y2="9" /><line x1="9" y1="1" x2="1" y2="9" /></svg></button>
+        </div>
+        <div class="modal-body settings-modal-body">
+
+            <div class="banner" id="update-banner" hidden>
+              <span class="banner-dot"></span>
+              <span class="banner-text" id="update-text">A new version of Sotto is available.</span>
+              <span class="banner-actions">
+                <button class="btn primary" id="update-install">Install &amp; restart</button>
+              </span>
+              <button class="banner-close" id="update-close" title="Dismiss">
+                <svg width="10" height="10"><line x1="1" y1="1" x2="9" y2="9" /><line x1="9" y1="1" x2="1" y2="9" /></svg>
+              </button>
+            </div>
+            <div class="banner" id="assets-banner" hidden>
+              <span class="banner-dot amber"></span>
+              <span class="banner-text" id="assets-text">Downloading voice models&hellip;</span>
+              <span class="banner-bar"><span class="banner-fill" id="assets-fill"></span></span>
+            </div>
+
+            <div class="settings-container">
+              <div class="settings-section-title">Dictation</div>
+              <div class="card-raised settings-card">
+                <div class="settings-row bare">
+                  <div class="row-label">
+                    <div class="label">Dictation key</div>
+                    <div class="sub">Hold to talk &mdash; release to transcribe</div>
+                  </div>
+                  <div class="row-control" id="hotkey-control">
+                    <span class="keycap" id="hotkey-keycap">Right Ctrl</span>
+                    <span class="link-change" id="hotkey-open">Change&hellip;</span>
+                  </div>
+                </div>
+                <div class="divider"></div>
+                <div class="settings-row bare">
+                  <div class="row-label">
+                    <div class="label">Mode</div>
+                    <div class="sub">Hold the key while speaking, or tap to start &amp; stop</div>
+                  </div>
+                  <div class="segmented" id="activation" data-value="hold">
+                    <button data-value="hold">Hold</button>
+                    <button data-value="toggle">Toggle</button>
+                  </div>
+                </div>
+                <div class="divider"></div>
+                <div class="settings-row bare">
+                  <div class="row-label">
+                    <div class="label">Microphone</div>
+                    <div class="sub">Which mic Sotto listens to</div>
+                  </div>
+                  <div class="row-control">
+                    <div class="select-wrapper">
+                      <select class="select-native" id="mic-select"></select>
+                      <span class="select-arrow">&#9660;</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div class="settings-section-title">Polish</div>
+              <div class="card-raised settings-card">
+                <div class="settings-row bare">
+                  <div class="row-label">
+                    <div class="label">Cleanup</div>
+                    <div class="sub">Off &middot; Rules (instant, local) &middot; AI (local LLM rewrite)</div>
+                  </div>
+                  <div class="segmented" id="polish" data-value="ai">
+                    <button data-value="off">Off</button>
+                    <button data-value="rules">Rules</button>
+                    <button data-value="ai">AI</button>
+                  </div>
+                </div>
+                <div class="divider"></div>
+                <div class="settings-row bare">
+                  <div class="row-label nowrap">
+                    <div class="label">Use AI past</div>
+                    <div class="sub">shorter clips stay on instant rules</div>
+                  </div>
+                  <div class="slider-wrap">
+                    <input type="range" id="threshold" min="0" max="60" value="18" />
+                    <span class="mono" id="threshold-val">18 words</span>
+                  </div>
+                </div>
+              </div>
+
+              <div class="settings-section-title">Speech model</div>
+              <div class="card-raised settings-card" id="model-list">
+                <!-- Dynamically populated by JS -->
+              </div>
+
+              <div class="settings-section-title">Appearance</div>
+              <div class="card-raised settings-card">
+                <div class="settings-row bare">
+                  <div class="row-label">
+                    <div class="label">Theme</div>
+                    <div class="sub">System follows your Windows light/dark setting</div>
+                  </div>
+                  <div class="segmented" id="theme" data-value="system">
+                    <button data-value="light">Light</button>
+                    <button data-value="dark">Dark</button>
+                    <button data-value="system">System</button>
+                  </div>
+                </div>
+                <div class="divider"></div>
+                <div class="settings-row bare">
+                  <div class="row-label">
+                    <div class="label">Zoom</div>
+                    <div class="sub">Scale the app window &mdash; or use Ctrl +, Ctrl &minus;, Ctrl 0</div>
+                  </div>
+                  <div class="zoom-control">
+                    <button class="zoom-btn" id="zoom-out" title="Zoom out (Ctrl −)">&minus;</button>
+                    <span class="zoom-val" id="zoom-val">100%</span>
+                    <button class="zoom-btn" id="zoom-in" title="Zoom in (Ctrl +)">+</button>
+                    <button class="zoom-reset" id="zoom-reset" title="Reset to 100% (Ctrl 0)">Reset</button>
+                  </div>
+                </div>
+              </div>
+
+              <div class="settings-section-title">Sound</div>
+              <div class="card-raised settings-card">
+                <div class="toggle-row">
+                  <div class="row-label">
+                    <div class="label">Dictation sounds</div>
+                    <div class="sub">A soft tick when recording starts and stops</div>
+                  </div>
+                  <button class="switch" id="sound-sounds" role="switch" aria-checked="true"><span class="knob"></span></button>
+                </div>
+              </div>
+
+              <div class="settings-section-title">Startup</div>
+              <div class="card-raised settings-card">
+                <div class="toggle-row">
+                  <span class="label">Launch Sotto at login</span>
+                  <button class="switch" id="launch-login" role="switch" aria-checked="true"><span class="knob"></span></button>
+                </div>
+                <div class="divider"></div>
+                <div class="toggle-row">
+                  <span class="label">Start hidden in the tray</span>
+                  <button class="switch" id="start-hidden" role="switch" aria-checked="true"><span class="knob"></span></button>
+                </div>
+              </div>
+
+              <div class="settings-section-title">Updates</div>
+              <div class="card-raised settings-card">
+                <div class="settings-row bare">
+                  <div class="row-label">
+                    <div class="label">Sotto <span class="mono-inline" id="app-version"></span></div>
+                    <div class="sub" id="update-status">Checking for updates&hellip;</div>
+                  </div>
+                  <button class="btn btn-outline" id="check-update">Check for updates</button>
+                </div>
+              </div>
+
+              <div class="settings-section-title">Data &amp; privacy</div>
+              <div class="card-raised settings-card">
+                <div class="toggle-row">
+                  <div class="row-label">
+                    <div class="label">Usage stats</div>
+                    <div class="sub">Counts words and timing on this device to power Insights. Never your words’ content, never uploaded.</div>
+                  </div>
+                  <button class="switch" id="stats-enabled-toggle" role="switch" aria-checked="true"><span class="knob"></span></button>
+                </div>
+                <div class="divider"></div>
+                <div class="settings-row bare">
+                  <div class="row-label">
+                    <div class="label">Clear stats</div>
+                    <div class="sub">Delete all Insights data</div>
+                  </div>
+                  <button class="btn btn-secondary-danger" id="clear-stats-btn">Clear stats</button>
+                </div>
+                <div class="divider"></div>
+                <div class="settings-row bare">
+                  <div class="row-label">
+                    <div class="label">Data folder</div>
+                    <div class="sub" id="data-folder-path">&mdash;</div>
+                  </div>
+                  <span class="link-change" id="open-folder">Open folder</span>
+                </div>
+              </div>
+            </div>
+        
+        </div>
+      </div>
     </div>
 
     <!-- Hotkey picker modal -->

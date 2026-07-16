@@ -21,7 +21,11 @@
         box-sizing: border-box;
       }
       #menu-container {
-        padding: 26px 22px;
+        /* Just enough margin for the tight drop shadow below. The old 26/22px
+           ring existed to give a 44px-blur shadow room to feather — that halo
+           is what read as a weird glow, since a transparent window renders it
+           straight onto the desktop. */
+        padding: 8px;
         width: 100%;
         height: 100%;
         box-sizing: border-box;
@@ -35,18 +39,20 @@
         transition: background 0.15s, border 0.15s, box-shadow 0.15s;
       }
       
-      /* Light Theme styles */
+      /* Light Theme styles — crisp panel: a defined 1px edge plus a tight,
+         close drop shadow. No wide blur, so the outline reads as a clean
+         line rather than a feathered glow. */
       :root[data-theme="light"] .menu-box, :root:not([data-theme="dark"]) .menu-box {
         background: #F4EEE4;
-        border: 1px solid rgba(150, 128, 104, 0.14);
-        box-shadow: 0 18px 44px rgba(150, 128, 104, 0.28);
+        border: 1px solid rgba(150, 128, 104, 0.30);
+        box-shadow: 0 2px 6px rgba(90, 74, 58, 0.18);
       }
-      
+
       /* Dark Theme styles */
       :root[data-theme="dark"] .menu-box {
         background: #2C2634;
-        border: 1px solid rgba(255, 255, 255, 0.07);
-        box-shadow: 0 18px 44px rgba(0, 0, 0, 0.55);
+        border: 1px solid rgba(255, 255, 255, 0.13);
+        box-shadow: 0 2px 6px rgba(0, 0, 0, 0.45);
       }
       
       .menu-header {

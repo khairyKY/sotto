@@ -544,6 +544,13 @@ input[type="range"]::-webkit-slider-thumb {
 .switch[aria-checked="true"] .knob { left: 18px; }
 
 /* ── banners ───────────────────────────────── */
+/* `display:flex` from an author sheet beats the UA's `[hidden]{display:none}`,
+   so without this the `hidden` attribute did nothing: both banners rendered
+   permanently — the update one stuck on its placeholder "A new version is
+   available" text even when up to date, and Install & restart then failed
+   with "no update available". Everything toggling these via .hidden depends
+   on this rule. */
+.banner[hidden] { display: none; }
 .banner {
   display: flex;
   align-items: center;
@@ -1226,3 +1233,27 @@ input[type="range"]::-webkit-slider-thumb {
   color: var(--mm-muted-2);
   font-weight: 400;
 }
+
+/* ── settings modal ────────────────────────────────── */
+/* Settings opens over the app rather than replacing the content area, with
+   the shell dimmed + blurred behind it (the .modal-scrim base handles that). */
+.settings-scrim { z-index: 90; }
+#hotkey-modal { z-index: 110; } /* opened from within settings — must sit above */
+.settings-modal {
+  width: min(660px, calc(100% - 56px));
+  max-height: min(720px, calc(100vh - 72px));
+  box-shadow: 0 24px 60px rgba(30, 22, 40, 0.34), 0 6px 16px rgba(30, 22, 40, 0.2);
+}
+:root[data-theme="dark"] .settings-modal,
+:root.dark .settings-modal {
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.62), 0 6px 16px rgba(0, 0, 0, 0.4);
+}
+.settings-modal .modal-title { font: 500 17px Newsreader; color: var(--mm-ink); }
+.settings-modal-body {
+  padding: 20px 22px 22px;
+  gap: 0;
+  background: var(--mm-window);
+}
+/* The modal is the page frame now, so the section stack doesn't need the
+   page's outer margins. */
+.settings-modal-body .settings-container { gap: 16px; }

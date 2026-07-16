@@ -41,6 +41,17 @@ impl Asr {
         Ok(self.model.as_mut().unwrap())
     }
 
+    /// Load the model now instead of on the first dictation. It costs ~5s, and
+    /// paying that *after* the user has already spoken is the worst-feeling
+    /// delay in the app. Called on the worker thread at startup; a failure here
+    /// is fine and silent — the model may simply not be downloaded yet, and
+    /// `transcribe` will retry lazily.
+    pub fn preload(&mut self) {
+        if let Err(err) = self.ensure_loaded() {
+            tracing::info!(%err, "ASR preload skipped — will load on first use");
+        }
+    }
+
     /// Transcribe 16 kHz mono f32 samples into trimmed text.
     pub fn transcribe(&mut self, samples: &[f32]) -> anyhow::Result<String> {
         let model = self.ensure_loaded()?;

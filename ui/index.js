@@ -41,8 +41,22 @@ let HOTKEY_RISKY = {};
 
 const $ = (id) => document.getElementById(id);
 
+// ── settings modal ──
+// Settings opens over the app (shell dimmed behind) rather than replacing the
+// content area, so you never lose your place in Home/Insights/etc.
+function openSettings() {
+  $("settings-scrim").hidden = false;
+  document.querySelector('.nav-item[data-page="settings"]')?.classList.add("active");
+}
+function closeSettings() {
+  $("settings-scrim").hidden = true;
+  document.querySelector('.nav-item[data-page="settings"]')?.classList.remove("active");
+}
+const settingsOpen = () => !$("settings-scrim").hidden;
+
 // ── page routing ──
 function navigate(page) {
+  if (page === 'settings') { openSettings(); return; }
   document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
   document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
   const pg = $(`page-${page}`);
@@ -55,6 +69,14 @@ function navigate(page) {
 }
 document.querySelectorAll('.nav-item').forEach(item => {
   item.onclick = (e) => { e.preventDefault(); navigate(item.dataset.page); };
+});
+$("settings-modal-close").onclick = closeSettings;
+$("settings-scrim").onclick = (e) => { if (e.target === $("settings-scrim")) closeSettings(); };
+// Escape closes the topmost layer only — the hotkey picker sits above settings.
+window.addEventListener("keydown", (e) => {
+  if (e.key !== "Escape") return;
+  if (!$("hotkey-modal").hidden) return; // its own handler deals with it
+  if (settingsOpen()) { e.preventDefault(); closeSettings(); }
 });
 
 // ── window controls ──
@@ -765,7 +787,7 @@ async function initUpdates() {
   const showUpdate = (version) => {
     $("update-text").textContent = `Sotto v${version} is available.`;
     banner.hidden = false;
-    banner.style.display = "";
+   
     $("update-install").disabled = false;
   };
   async function refresh(manual) {
@@ -790,7 +812,7 @@ async function initUpdates() {
       $("update-install").disabled = false;
     }
   };
-  $("update-close").onclick = () => { banner.hidden = true; banner.style.display = "none"; };
+  $("update-close").onclick = () => { banner.hidden = true; };
   $("check-update").onclick = () => refresh(true);
   if (hasTauri && T.event) {
     T.event.listen("update-available", (e) => showUpdate(e.payload));
@@ -809,30 +831,30 @@ async function initAssets() {
   const fill = $("assets-fill");
   const text = $("assets-text");
   banner.hidden = true;
-  banner.style.display = "none";
+ 
   if (hasTauri && T.event) {
     T.event.listen("asset-progress", (e) => {
       const p = e.payload || {};
       const pct = p.total ? Math.round((p.received / p.total) * 100) : 0;
       const mbNow = (p.received / 1048576).toFixed(0);
       const mbAll = p.total ? (p.total / 1048576).toFixed(0) : "?";
-      banner.hidden = false; banner.style.display = "";
+      banner.hidden = false;
       fill.style.width = pct + "%";
       text.textContent = `Downloading ${p.name}… ${pct}% (${mbNow} / ${mbAll} MB)`;
     });
     T.event.listen("assets-ready", () => {
       fill.style.width = "100%";
       text.textContent = "All models ready.";
-      setTimeout(() => { banner.hidden = true; banner.style.display = "none"; }, 1500);
+      setTimeout(() => { banner.hidden = true; }, 1500);
     });
     T.event.listen("asset-error", (e) => {
-      banner.hidden = false; banner.style.display = "";
+      banner.hidden = false;
       text.textContent = "Download failed: " + e.payload + " — restart Sotto to retry.";
     });
   }
   const status = await invoke("assets_status");
   if (!status || status.ready) return;
-  banner.hidden = false; banner.style.display = "";
+  banner.hidden = false;
   const missing = (status.missing || []).join(", ");
   text.textContent = `Downloading ${missing || "voice models"}…`;
 }
