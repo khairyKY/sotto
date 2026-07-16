@@ -154,9 +154,9 @@ function renderRecent(entries) {
       <span class="recent-time">${e.time}</span>
       <span class="recent-text">${escapeHtml(e.text)}</span>
       <span class="recent-copy" title="Copy">⧉</span>
-      <span class="recent-retry" title="Retry">↻</span>`;
+      <span class="recent-retry" title="Re-polish &amp; copy">↻</span>`;
     row.querySelector(".recent-copy").onclick = (ev) => { ev.stopPropagation(); copyText(e.text); };
-    row.querySelector(".recent-retry").onclick = (ev) => { ev.stopPropagation(); invoke("retry_last"); };
+    row.querySelector(".recent-retry").onclick = (ev) => { ev.stopPropagation(); invoke("repolish_copy", { text: e.text }); };
     host.appendChild(row);
   });
 }
@@ -485,8 +485,9 @@ function renderHistoryPage(entries) {
   entries.forEach((e, i) => {
     const row = document.createElement("div");
     row.className = "hist-row";
-    row.innerHTML = `<span class="time">${e.time}</span><span class="txt">${escapeHtml(e.text)}</span><span class="copy" title="Copy">⧉</span>`;
+    row.innerHTML = `<span class="time">${e.time}</span><span class="txt">${escapeHtml(e.text)}</span><span class="copy" title="Copy">⧉</span><span class="retry" title="Re-polish &amp; copy">↻</span>`;
     row.querySelector(".copy").onclick = (ev) => { ev.stopPropagation(); copyText(e.text); };
+    row.querySelector(".retry").onclick = (ev) => { ev.stopPropagation(); invoke("repolish_copy", { text: e.text }); };
     row.onclick = () => copyText(e.text);
     host.appendChild(row);
   });
@@ -818,7 +819,10 @@ async function boot() {
   // Settings: segmented controls & fields
   selectSegment($("activation"), s.activation);
   selectSegment($("polish"), s.polish);
-  selectSegment($("theme"), s.theme || "system");
+  // The theme picker has no UI (theme follows the OS per the design doc), but
+  // guard rather than assume: an unguarded null here killed the whole rest of
+  // boot() — settings, dictionary, snippets, history — in one TypeError.
+  if ($("theme")) selectSegment($("theme"), s.theme || "system");
   setThresholdUI(s.threshold);
   renderModels(s.models || []);
   populateMicPicker(s.microphone_options || s.microphoneOptions || [], s.microphone || "");
@@ -855,7 +859,7 @@ async function boot() {
 
   initSegmented($("activation"), (v) => invoke("set_activation", { mode: v }));
   initSegmented($("polish"), (v) => invoke("set_polish", { mode: v }));
-  initSegmented($("theme"), (v) => {
+  if ($("theme")) initSegmented($("theme"), (v) => {
     applyTheme(v);
     invoke("set_theme", { theme: v });
     if (hasTauri && T.event) T.event.emit("theme-changed", v);

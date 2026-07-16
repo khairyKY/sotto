@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use crate::config::ActivationMode;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DictationEvent {
     Start,
     Stop,
@@ -17,6 +17,9 @@ pub enum DictationEvent {
     /// dictation", and later the overlay's ↺ button). Never emitted by the
     /// key listener itself.
     Retry,
+    /// Re-run the current polish tier + dictionary over existing text (the
+    /// ↻ on a history row) and put the result on the clipboard.
+    Repolish(String),
 }
 
 /// A hotkey binding source — either a keyboard key or a mouse button. The

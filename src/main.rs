@@ -333,6 +333,13 @@ fn cancel_dictation(state: tauri::State<'_, AppState>) {
     let _ = state.tx.send(DictationEvent::Cancel);
 }
 
+/// A history row's ↻ — re-run the current polish tier + dictionary over that
+/// row's text and leave the result on the clipboard.
+#[tauri::command]
+fn repolish_copy(text: String, state: tauri::State<'_, AppState>) {
+    let _ = state.tx.send(DictationEvent::Repolish(text));
+}
+
 /// Aggregated usage stats for the Insights dashboard. Cheap enough to compute
 /// on every call — no caching until it measurably matters.
 #[tauri::command]
@@ -387,7 +394,7 @@ fn main() -> anyhow::Result<()> {
         .invoke_handler(tauri::generate_handler![
             get_settings, set_hotkey, set_activation, set_polish, set_threshold,
             set_dictionary, set_launch_login, set_start_hidden, set_theme, copy_text,
-            open_url, check_update, install_update, retry_last, cancel_dictation,
+            open_url, check_update, install_update, retry_last, cancel_dictation, repolish_copy,
             get_stats, clear_stats, set_stats_enabled, set_microphone, set_sound_enabled,
             menu_action,
             assets::assets_status, assets::download_assets
@@ -727,6 +734,19 @@ fn spawn_pipeline(
                         );
                     } else {
                         tracing::info!("retry requested but nothing stashed");
+                    }
+                }
+                DictationEvent::Repolish(text) => {
+                    let out = polisher.polish(&text);
+                    if !out.text.is_empty() {
+                        if let Ok(mut cb) = arboard::Clipboard::new() {
+                            let _ = cb.set_text(out.text.clone());
+                        }
+                        // Brief "done" pill as the only feedback — the result
+                        // is on the clipboard, nothing is injected.
+                        show_overlay(&app);
+                        emit_state(&app, "done");
+                        tracing::info!("re-polished and copied {} chars", out.text.len());
                     }
                 }
             }

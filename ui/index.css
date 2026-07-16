@@ -411,6 +411,8 @@ body {
 .hist-row .txt { flex: 1; font: 400 12.5px/1.45 "Hanken Grotesk"; color: var(--mm-text); }
 .hist-row .copy { color: var(--mm-muted-2); flex: none; font-size: 12px; cursor: pointer; }
 .hist-row .copy:hover { color: var(--mm-accent-ink); }
+.hist-row .retry { color: var(--mm-accent); flex: none; font-size: 12px; cursor: pointer; font-weight: 600; }
+.hist-row .retry:hover { filter: brightness(1.2); }
 
 /* ── settings ──────────────────────────────── */
 .settings-section { margin-bottom: 20px; }
