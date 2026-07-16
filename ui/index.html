@@ -1,0 +1,501 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Sotto</title>
+    <link rel="stylesheet" href="./fonts.css" />
+    <link rel="stylesheet" href="./theme.css" />
+    <link rel="stylesheet" href="./index.css" />
+  </head>
+  <body>
+    <!-- Custom title bar -->
+    <header class="titlebar" data-tauri-drag-region>
+      <div class="titlebar-left" data-tauri-drag-region>
+        <span class="mark-tile">
+          <svg viewBox="0 0 20 20" width="16" height="16" aria-hidden="true">
+            <path d="M2.5 10 Q5 4.6 7.5 10 T12.5 10 T17.5 10" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+        </span>
+        <span class="title" data-tauri-drag-region>Sotto</span>
+      </div>
+      <div class="titlebar-controls">
+        <button class="winbtn" id="win-min" title="Minimize" aria-label="Minimize"><svg width="10" height="10"><line x1="1" y1="5" x2="9" y2="5" /></svg></button>
+        <button class="winbtn" id="win-max" title="Maximize" aria-label="Maximize"><svg width="10" height="10"><rect x="1" y="1" width="8" height="8" fill="none" /></svg></button>
+        <button class="winbtn close" id="win-close" title="Close" aria-label="Close"><svg width="10" height="10"><line x1="1" y1="1" x2="9" y2="9" /><line x1="9" y1="1" x2="1" y2="9" /></svg></button>
+      </div>
+    </header>
+
+    <div class="shell">
+      <!-- Sidebar -->
+      <aside class="sidebar" id="sidebar">
+        <nav class="nav">
+          <a class="nav-item active" data-page="home" href="#">
+            <svg viewBox="0 0 20 20" width="17" height="17"><path d="M3.6 9.3 L10 4 L16.4 9.3 M5.4 8.3 V16 H14.6 V8.3" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            <span>Home</span>
+          </a>
+          <a class="nav-item" data-page="insights" href="#">
+            <svg viewBox="0 0 20 20" width="17" height="17"><path d="M3.6 16.4 H16.4 M5.7 16 V11 M10 16 V5.6 M14.3 16 V8.6" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>
+            <span>Insights</span>
+          </a>
+          <a class="nav-item" data-page="dictionary" href="#">
+            <svg viewBox="0 0 20 20" width="17" height="17"><path d="M10 5.3 C8.4 4.3 6 4.1 4.2 4.5 V15.4 C6 15 8.4 15.2 10 16.2 C11.6 15.2 14 15 15.8 15.4 V4.5 C14 4.1 11.6 4.3 10 5.3 Z M10 5.3 V16.2" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>
+            <span>Dictionary</span>
+          </a>
+          <a class="nav-item" data-page="snippets" href="#">
+            <svg viewBox="0 0 20 20" width="17" height="17"><path d="M5 6.5 H15 M5 10 H15 M5 13.5 H11" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>
+            <span>Snippets</span>
+          </a>
+          <a class="nav-item" data-page="history" href="#">
+            <svg viewBox="0 0 20 20" width="17" height="17"><circle cx="10" cy="10" r="6.2" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M10 6.6 V10 L12.5 11.7" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            <span>History</span>
+          </a>
+          <a class="nav-item" data-page="transforms" href="#">
+            <svg viewBox="0 0 20 20" width="17" height="17"><path d="M8 4 H5 A1 1 0 0 0 4 5 V15 A1 1 0 0 0 5 16 H8 M12 7 L15.5 10 L12 13 M15.5 10 H7.5" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            <span>Transforms</span>
+          </a>
+          <a class="nav-item" data-page="scratchpad" href="#">
+            <svg viewBox="0 0 20 20" width="17" height="17"><path d="M4 4 H16 V16 H4 Z M7 8 H13 M7 11 H11" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            <span>Scratchpad</span>
+          </a>
+        </nav>
+        <nav class="nav nav-bottom">
+          <div class="nav-divider"></div>
+          <a class="nav-item" data-page="settings" href="#">
+            <svg viewBox="0 0 20 20" width="17" height="17"><circle cx="10" cy="10" r="3.1" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M10 2.6v2.3M10 15.1v2.3M2.6 10h2.3M15.1 10h2.3M4.8 4.8l1.6 1.6M13.6 13.6l1.6 1.6M15.2 4.8l-1.6 1.6M6.4 13.6l-1.6 1.6" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>
+            <span>Settings</span>
+          </a>
+        </nav>
+      </aside>
+
+      <!-- Content area -->
+      <main class="content" id="content">
+
+        <!-- ===================== HOME ===================== -->
+        <section class="page active" id="page-home">
+          <h1 class="page-title" id="greeting">Good morning.</h1>
+          <p class="page-sub" id="hotkey-hint">Hold <span class="keycap-mini" id="keycap-display">Right Ctrl</span> and speak.</p>
+
+          <div class="stat-row" id="stat-row">
+            <div class="card-raised stat-card">
+              <div class="stat-num" id="stat-words">0</div>
+              <div class="stat-label">words today</div>
+            </div>
+            <div class="card-raised stat-card">
+              <div class="stat-num" id="stat-wpm">0</div>
+              <div class="stat-label">wpm avg</div>
+            </div>
+            <div class="card-raised stat-card">
+              <div class="stat-num" id="stat-streak">0<span class="stat-suffix">d</span></div>
+              <div class="stat-label">streak</div>
+            </div>
+          </div>
+
+          <div class="alert-card" id="alert-card" hidden>
+            <span class="alert-icon">!</span>
+            <div class="alert-body">
+              <div class="alert-title" id="alert-title">Last dictation wasn't delivered</div>
+              <div class="alert-sub" id="alert-sub">Cancelled &middot; 34 words</div>
+            </div>
+            <div class="alert-actions">
+              <button class="btn btn-ghost" id="alert-dismiss">Dismiss</button>
+              <button class="btn btn-primary" id="alert-retry">Retry</button>
+            </div>
+          </div>
+
+          <div class="section-label">Recent</div>
+          <div class="recent-list" id="recent-list">
+            <div class="recent-empty">Nothing dictated yet this session</div>
+          </div>
+
+          <div class="status-bar" id="status-bar">
+            <span class="status-dot"></span>
+            <span class="status-text" id="status-text">Parakeet v3 &middot; AI polish on &middot; mic: —</span>
+          </div>
+        </section>
+
+        <!-- ===================== INSIGHTS ===================== -->
+        <section class="page" id="page-insights">
+          <div class="page-head-row">
+            <h1 class="page-title" style="margin:0">Insights</h1>
+            <div class="segmented" id="insights-period" data-value="week">
+              <button data-value="week">Week</button>
+              <button data-value="month">Month</button>
+            </div>
+          </div>
+          <p class="page-sub">All numbers live on this device. Nothing is uploaded &mdash; ever.</p>
+
+          <div class="insight-grid">
+            <div class="card-raised insight-card">
+              <div class="insight-card-label">Speaking speed</div>
+              <div class="gauge-wrap" id="speed-gauge">
+                <svg viewBox="0 0 130 74" width="130" height="74" style="display:block">
+                  <path d="M11 66 A54 54 0 0 1 119 66" fill="none" stroke="var(--mm-gauge-bg)" stroke-width="11" stroke-linecap="round"/>
+                  <path d="M11 66 A54 54 0 0 1 119 66" fill="none" stroke="var(--mm-accent)" stroke-width="11" stroke-linecap="round" stroke-dasharray="169.6" stroke-dashoffset="21.2" id="speed-arc"/>
+                </svg>
+                <div class="gauge-center"><span class="gauge-val" id="speed-val">0</span></div>
+              </div>
+              <div class="insight-meta" id="speed-label">words per minute</div>
+              <div class="insight-personal-best">&#9670; personal best <span id="speed-pb">128</span></div>
+            </div>
+            <div class="card-raised insight-card">
+              <div class="insight-card-label">Fixes made by Sotto</div>
+              <div class="insight-big" id="fixes-val">0</div>
+              <div class="insight-detail-row" id="fixes-words-row"><span class="bold" id="fixes-words-val">0</span> words corrected</div>
+              <div class="insight-detail-row" id="fixes-dict-row"><span class="bold" id="fixes-dict-val">0</span> dictionary fixes</div>
+            </div>
+            <div class="card-raised insight-card">
+              <div class="insight-card-label">Total words</div>
+              <div class="insight-big" id="total-words-val">0</div>
+              <div class="insight-detail-row" id="total-period-row"><span class="bold" id="total-period-val">0</span> this week</div>
+              <div class="insight-detail-row" id="total-saved-row">&asymp; <span class="bold" id="total-saved-val">0</span> min saved vs. typing</div>
+            </div>
+          </div>
+
+          <div class="insight-row-bottom">
+            <div class="card-raised insight-card-bottom">
+              <div class="insight-head-between">
+                <div class="insight-card-label">Where you dictate</div>
+                <div class="insight-card-sublabel">30 days</div>
+              </div>
+              <div class="app-list" id="app-list"></div>
+            </div>
+            <div class="card-raised insight-card-bottom" style="display: flex; flex-direction: column;">
+              <div class="insight-head-between">
+                <div class="insight-card-label-large" id="streak-title">12-day streak</div>
+                <div class="insight-card-sublabel" id="longest-streak-title">longest 21 days</div>
+              </div>
+              <div class="calendar-wrap" id="calendar-wrap"></div>
+              <div class="calendar-legend">
+                <span>Less</span>
+                <span class="legend-box level-0"></span>
+                <span class="legend-box level-1"></span>
+                <span class="legend-box level-2"></span>
+                <span class="legend-box level-3"></span>
+                <span class="legend-box level-4"></span>
+                <span>More</span>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- ===================== DICTIONARY ===================== -->
+        <section class="page" id="page-dictionary">
+          <div class="page-head-row" style="margin-bottom:14px">
+            <h1 class="page-title" style="margin:0">Dictionary</h1>
+            <span class="btn-add-header" id="dict-add">+ Add word</span>
+          </div>
+
+          <div class="dict-warn-card" id="dict-warn-card">
+            <div class="dict-warn-close" id="dict-warn-close">&#10005;</div>
+            <div class="dict-warn-title">Sotto spells the way you do.</div>
+            <div class="dict-warn-desc">Teach it names, jargon, and terms it keeps getting wrong &mdash; say the word, get your spelling. Everything stays on this device.</div>
+            <div class="dict-warn-tags">
+              <span class="dict-warn-tag">"gee pee tee" &rarr; GPT</span>
+              <span class="dict-warn-tag">"khairy" &rarr; Khairy</span>
+              <span class="dict-warn-tag">"arrow" &rarr; &rarr;</span>
+            </div>
+          </div>
+
+          <div class="search-bar">
+            <svg viewBox="0 0 20 20" width="15" height="15" class="search-icon"><circle cx="8.5" cy="8.5" r="5.5" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M12.5 12.5 L17 17" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>
+            <input type="text" class="search-input" id="dict-search" placeholder="Search your words…" />
+          </div>
+
+          <div class="card-recessed dict-entries-container">
+            <div class="dict-entries-list" id="dict-entries"></div>
+          </div>
+        </section>
+
+        <!-- ===================== SNIPPETS ===================== -->
+        <section class="page" id="page-snippets">
+          <div class="page-head-row" style="margin-bottom:14px">
+            <h1 class="page-title" style="margin:0">Snippets</h1>
+            <span class="btn-add-header" id="snip-add">+ Add snippet</span>
+          </div>
+
+          <div class="dict-warn-card" id="snip-warn-card">
+            <div class="dict-warn-close" id="snip-warn-close">&#10005;</div>
+            <div class="dict-warn-title">The stuff you shouldn't have to re-type.</div>
+            <div class="dict-warn-desc">Save text you use often &mdash; your email, an intro, a prompt &mdash; then say the trigger phrase to drop it in instantly.</div>
+            <div class="dict-warn-tags">
+              <span class="dict-warn-tag">"my email" &rarr; khairy@&hellip;</span>
+              <span class="dict-warn-tag">"intro line" &rarr; Hey, great&hellip;</span>
+            </div>
+          </div>
+
+          <div class="search-bar">
+            <svg viewBox="0 0 20 20" width="15" height="15" class="search-icon"><circle cx="8.5" cy="8.5" r="5.5" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M12.5 12.5 L17 17" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>
+            <input type="text" class="search-input" id="snip-search" placeholder="Search your snippets…" />
+          </div>
+
+          <div class="card-recessed dict-entries-container">
+            <div class="dict-entries-list" id="snip-entries"></div>
+          </div>
+        </section>
+
+        <!-- ===================== HISTORY ===================== -->
+        <section class="page" id="page-history">
+          <div class="page-head-row" style="margin-bottom:14px">
+            <h1 class="page-title" style="margin:0">History</h1>
+            <span class="section-hint" style="color: var(--mm-muted-3); font-size: 11.5px;">Click any entry to copy it again</span>
+          </div>
+          <p class="page-sub">Session log &middot; copy or re-polish any line.</p>
+
+          <div class="card-recessed history-entries-container">
+            <div class="history-list" id="history-list">
+              <div class="hist-empty">Nothing dictated yet this session</div>
+            </div>
+          </div>
+
+          <div class="history-footnote">
+            <svg viewBox="0 0 20 20" width="13" height="13"><rect x="4.5" y="8.5" width="11" height="7.5" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M7 8.5 V6.3 A3 3 0 0 1 13 6.3 V8.5" fill="none" stroke="currentColor" stroke-width="1.5"/></svg>
+            <span>History lives in memory and clears when Sotto quits. Nothing is written to disk.</span>
+          </div>
+        </section>
+
+        <!-- ===================== TRANSFORMS (phase 2) ===================== -->
+        <section class="page" id="page-transforms">
+          <div class="page-head-row" style="margin-bottom:6px">
+            <div style="display:flex;align-items:center;gap:10px">
+              <h1 class="page-title" style="margin:0">Transforms</h1>
+              <span class="badge-beta">BETA</span>
+            </div>
+            <div style="display:flex;align-items:center;gap:9px">
+              <span class="page-sub" style="margin:0">Enabled</span>
+              <button class="switch" id="transforms-enabled" role="switch" aria-checked="true"><span class="knob"></span></button>
+            </div>
+          </div>
+          <div style="max-width:440px;margin-bottom:18px">
+            <div style="font:500 15px Newsreader;color:var(--mm-text);margin-bottom:4px">Rewrite anywhere you write.</div>
+            <div class="page-sub" style="margin:0;line-height:1.55">Select text in any app, press the shortcut, and Sotto’s local AI rewrites it in place. Your text never leaves this device.</div>
+          </div>
+          <div class="transforms-grid">
+            <div class="card-raised transform-card">
+              <div class="transform-keys">
+                <span class="keycap-mini">Ctrl</span><span class="key-plus">+</span><span class="keycap-mini">Alt</span><span class="key-plus">+</span><span class="keycap-mini">1</span>
+              </div>
+              <div class="transform-title">Polish</div>
+              <div class="transform-desc">Tightens and clarifies without changing your meaning.</div>
+            </div>
+            <div class="card-raised transform-card">
+              <div class="transform-keys">
+                <span class="keycap-mini">Ctrl</span><span class="key-plus">+</span><span class="key-plus">+</span><span class="keycap-mini">Alt</span><span class="key-plus">+</span><span class="keycap-mini">2</span>
+              </div>
+              <div class="transform-title">Prompt engineer</div>
+              <div class="transform-desc">Restructures your idea into a strong AI prompt.</div>
+            </div>
+            <div class="transform-card dashed">
+              <span class="plus-icon">+</span>
+              <div class="transform-title color-accent">Create your own</div>
+              <div class="transform-desc">bring your own prompt</div>
+            </div>
+          </div>
+          <div style="display:flex;gap:10px;margin-top:auto;padding-top:18px">
+            <button class="btn btn-ghost" style="padding-left:0;font-weight:500;color:var(--mm-muted)">Reset to defaults</button>
+            <div style="flex:1"></div>
+            <button class="btn btn-primary" id="btn-create-transform">+ Create new</button>
+          </div>
+        </section>
+
+        <!-- ===================== SCRATCHPAD (phase 2) ===================== -->
+        <section class="page" id="page-scratchpad" style="height: 100%;">
+          <div class="page-head-row" style="margin-bottom: 14px;">
+            <h1 class="page-title" style="margin:0">Scratchpad</h1>
+            <span class="btn-add-header" id="scratchpad-new">+ New note</span>
+          </div>
+          <div class="scratchpad-split">
+            <!-- Left column: list of notes -->
+            <div class="scratchpad-list" id="scratchpad-list">
+              <!-- Dynamically populated by JS -->
+            </div>
+            <!-- Right column: note editor -->
+            <div class="card-recessed scratchpad-editor-wrap">
+              <input type="text" class="scratchpad-title-input" id="scratchpad-note-title" placeholder="Untitled Note" />
+              <div class="scratchpad-meta" id="scratchpad-note-meta">Edited 2:14 PM · stored on this device</div>
+              <div class="scratchpad-textarea-container">
+                <textarea class="scratchpad-textarea" id="scratchpad-note-body" placeholder="Start dictating or typing..."></textarea>
+                <div class="scratchpad-custom-cursor" id="scratchpad-cursor"></div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- ===================== SETTINGS ===================== -->
+        <section class="page" id="page-settings">
+          <h1 class="page-title" style="margin:0 0 16px">Settings</h1>
+
+          <div class="banner" id="update-banner" hidden>
+            <span class="banner-dot"></span>
+            <span class="banner-text" id="update-text">A new version of Sotto is available.</span>
+            <span class="banner-actions">
+              <button class="btn primary" id="update-install">Install &amp; restart</button>
+            </span>
+            <button class="banner-close" id="update-close" title="Dismiss">
+              <svg width="10" height="10"><line x1="1" y1="1" x2="9" y2="9" /><line x1="9" y1="1" x2="1" y2="9" /></svg>
+            </button>
+          </div>
+          <div class="banner" id="assets-banner" hidden>
+            <span class="banner-dot amber"></span>
+            <span class="banner-text" id="assets-text">Downloading voice models&hellip;</span>
+            <span class="banner-bar"><span class="banner-fill" id="assets-fill"></span></span>
+          </div>
+
+          <div class="settings-container">
+            <div class="settings-section-title">Dictation</div>
+            <div class="card-raised settings-card">
+              <div class="settings-row bare">
+                <div class="row-label">
+                  <div class="label">Dictation key</div>
+                  <div class="sub">Hold to talk &mdash; release to transcribe</div>
+                </div>
+                <div class="row-control" id="hotkey-control">
+                  <span class="keycap" id="hotkey-keycap">Right Ctrl</span>
+                  <span class="link-change" id="hotkey-open">Change&hellip;</span>
+                </div>
+              </div>
+              <div class="divider"></div>
+              <div class="settings-row bare">
+                <div class="row-label">
+                  <div class="label">Mode</div>
+                  <div class="sub">Hold the key while speaking, or tap to start &amp; stop</div>
+                </div>
+                <div class="segmented" id="activation" data-value="hold">
+                  <button data-value="hold">Hold</button>
+                  <button data-value="toggle">Toggle</button>
+                </div>
+              </div>
+              <div class="divider"></div>
+              <div class="settings-row bare">
+                <div class="row-label">
+                  <div class="label">Microphone</div>
+                  <div class="sub">Which mic Sotto listens to</div>
+                </div>
+                <div class="row-control">
+                  <div class="select-wrapper">
+                    <select class="select-native" id="mic-select"></select>
+                    <span class="select-arrow">&#9660;</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div class="settings-section-title">Polish</div>
+            <div class="card-raised settings-card">
+              <div class="settings-row bare">
+                <div class="row-label">
+                  <div class="label">Cleanup</div>
+                  <div class="sub">Off &middot; Rules (instant, local) &middot; AI (local LLM rewrite)</div>
+                </div>
+                <div class="segmented" id="polish" data-value="ai">
+                  <button data-value="off">Off</button>
+                  <button data-value="rules">Rules</button>
+                  <button data-value="ai">AI</button>
+                </div>
+              </div>
+              <div class="divider"></div>
+              <div class="settings-row bare">
+                <div class="row-label nowrap">
+                  <div class="label">Use AI past</div>
+                  <div class="sub">shorter clips stay on instant rules</div>
+                </div>
+                <div class="slider-wrap">
+                  <input type="range" id="threshold" min="0" max="60" value="18" />
+                  <span class="mono" id="threshold-val">18 words</span>
+                </div>
+              </div>
+            </div>
+
+            <div class="settings-section-title">Speech model</div>
+            <div class="card-raised settings-card" id="model-list">
+              <!-- Dynamically populated by JS -->
+            </div>
+
+            <div class="settings-section-title">Sound</div>
+            <div class="card-raised settings-card">
+              <div class="toggle-row">
+                <div class="row-label">
+                  <div class="label">Dictation sounds</div>
+                  <div class="sub">A soft tick when recording starts and stops</div>
+                </div>
+                <button class="switch" id="sound-sounds" role="switch" aria-checked="true"><span class="knob"></span></button>
+              </div>
+            </div>
+
+            <div class="settings-section-title">Startup</div>
+            <div class="card-raised settings-card">
+              <div class="toggle-row">
+                <span class="label">Launch Sotto at login</span>
+                <button class="switch" id="launch-login" role="switch" aria-checked="true"><span class="knob"></span></button>
+              </div>
+              <div class="divider"></div>
+              <div class="toggle-row">
+                <span class="label">Start hidden in the tray</span>
+                <button class="switch" id="start-hidden" role="switch" aria-checked="true"><span class="knob"></span></button>
+              </div>
+            </div>
+
+            <div class="settings-section-title">Updates</div>
+            <div class="card-raised settings-card">
+              <div class="settings-row bare">
+                <div class="row-label">
+                  <div class="label">Sotto <span id="app-version">2.0.0</span></div>
+                  <div class="sub" id="update-status">You’re up to date</div>
+                </div>
+                <button class="btn btn-primary" id="check-update" style="font-size:12px; padding:6px 13px; border-radius:9px; font-weight:500;">Check for updates</button>
+              </div>
+            </div>
+
+            <div class="settings-section-title">Data &amp; privacy</div>
+            <div class="card-raised settings-card">
+              <div class="toggle-row">
+                <div class="row-label">
+                  <div class="label">Usage stats</div>
+                  <div class="sub">Counts words and timing on this device to power Insights. Never your words’ content, never uploaded.</div>
+                </div>
+                <button class="switch" id="stats-enabled-toggle" role="switch" aria-checked="true"><span class="knob"></span></button>
+              </div>
+              <div class="divider"></div>
+              <div class="settings-row bare">
+                <div class="row-label">
+                  <div class="label">Clear stats</div>
+                  <div class="sub">Delete all Insights data</div>
+                </div>
+                <button class="btn btn-secondary-danger" id="clear-stats-btn" style="font-size:12px; padding:6px 13px; border-radius:9px; font-weight:500;">Clear stats</button>
+              </div>
+              <div class="divider"></div>
+              <div class="settings-row bare">
+                <div class="row-label">
+                  <div class="label">Data folder</div>
+                  <div class="sub">~/Library/Application Support/sotto</div>
+                </div>
+                <span class="link-change" id="open-releases">Open folder</span>
+              </div>
+            </div>
+          </div>
+        </section>
+
+      </main>
+    </div>
+
+    <!-- Hotkey picker modal -->
+    <div class="modal-scrim" id="hotkey-modal" hidden>
+      <div class="modal-card" role="dialog" aria-labelledby="hotkey-modal-title">
+        <div class="modal-head">
+          <span class="modal-title" id="hotkey-modal-title">Choose your dictation hotkey</span>
+          <button class="winbtn" id="hotkey-modal-close" title="Cancel"><svg width="10" height="10"><line x1="1" y1="1" x2="9" y2="9" /><line x1="9" y1="1" x2="1" y2="9" /></svg></button>
+        </div>
+        <div class="modal-body">
+          <div class="capture" id="hotkey-capture" tabindex="0">
+            <div class="capture-title" id="capture-title">Press any key or mouse button</div>
+            <div class="capture-sub" id="capture-sub">Focus this box, then tap the key you want. Streamdeck / macro pads work if they emit a standard key.</div>
+          </div>
+          <div class="hotkey-list-head">or pick from the list</div>
+          <div class="hotkey-list" id="hotkey-list"></div>
+        </div>
+      </div>
+    </div>
+
+    <script src="./index.js"></script>
+  </body>
+</html>

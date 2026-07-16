@@ -95,7 +95,7 @@ Sotto is structured as a Tauri v2 application:
   ```powershell
   node scripts/serve-ui.mjs
   ```
-  *(Preview at `http://localhost:5173/settings.html` and `http://localhost:5173/preview.html`)*
+  *(Preview at `http://localhost:5173/index.html`, `/menu.html`, and `/preview.html`)*
 
 - **Headless ASR on a WAV file:**
   ```powershell

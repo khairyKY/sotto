@@ -58,6 +58,9 @@ pub struct Controls {
     /// Live "record usage stats" flag — flipped from settings without a
     /// restart, read by the worker at record time.
     pub stats_enabled: Arc<AtomicBool>,
+    /// Selected input device name, or `None` for the OS default. Read by
+    /// `Recorder::start` on every dictation, so a change applies immediately.
+    pub microphone: Arc<Mutex<Option<String>>>,
 }
 
 impl Controls {
@@ -77,6 +80,7 @@ impl Controls {
             focus_target: Arc::new(AtomicIsize::new(0)),
             cancelled: Arc::new(AtomicBool::new(false)),
             stats_enabled: Arc::new(AtomicBool::new(cfg.stats_enabled)),
+            microphone: Arc::new(Mutex::new(cfg.microphone.clone())),
         }
     }
 }
@@ -133,6 +137,11 @@ struct SettingsPayload {
     history: Vec<HistoryDto>,
     models: Vec<ModelDto>,
     hotkey_options: Vec<HotkeyOption>,
+    theme: String,
+    /// Current input device name, or "" for the OS default.
+    microphone: String,
+    microphone_options: Vec<String>,
+    paused: bool,
 }
 
 // ── commands ───────────────────────────────────────────────────────────
@@ -178,7 +187,20 @@ fn get_settings(state: tauri::State<'_, AppState>) -> SettingsPayload {
             size,
             selected: installed,
         }],
+        theme: cfg.theme.clone(),
+        microphone: c.microphone.lock().unwrap().clone().unwrap_or_default(),
+        microphone_options: audio::list_input_devices(),
+        paused: c.paused.load(Ordering::Relaxed),
     }
+}
+
+#[tauri::command]
+fn set_microphone(name: String, state: tauri::State<'_, AppState>) {
+    let picked = if name.is_empty() { None } else { Some(name) };
+    *state.controls.microphone.lock().unwrap() = picked.clone();
+    let mut cfg = state.cfg.lock().unwrap();
+    cfg.microphone = picked;
+    let _ = cfg.save();
 }
 
 #[tauri::command]
@@ -240,6 +262,15 @@ fn set_start_hidden(enabled: bool, state: tauri::State<'_, AppState>) {
     let _ = cfg.save();
 }
 #[tauri::command]
+fn set_theme(theme: String, state: tauri::State<'_, AppState>) {
+    let valid = theme == "light" || theme == "dark" || theme == "system";
+    if !valid { return; }
+    let mut cfg = state.cfg.lock().unwrap();
+    cfg.theme = theme;
+    let _ = cfg.save();
+}
+
+#[tauri::command]
 fn copy_text(text: String) {
     if let Ok(mut cb) = arboard::Clipboard::new() {
         let _ = cb.set_text(text);
@@ -265,6 +296,13 @@ fn open_url(url: String) {
 #[tauri::command]
 fn retry_last(state: tauri::State<'_, AppState>) {
     let _ = state.tx.send(DictationEvent::Retry);
+}
+
+/// The overlay's ✕ button — same effect as pressing Escape, but reachable by
+/// mouse for anyone who'd rather click than remember the shortcut.
+#[tauri::command]
+fn cancel_dictation(state: tauri::State<'_, AppState>) {
+    let _ = state.tx.send(DictationEvent::Cancel);
 }
 
 /// Aggregated usage stats for the Insights dashboard. Cheap enough to compute
@@ -320,9 +358,10 @@ fn main() -> anyhow::Result<()> {
         .manage(state)
         .invoke_handler(tauri::generate_handler![
             get_settings, set_hotkey, set_activation, set_polish, set_threshold,
-            set_dictionary, set_launch_login, set_start_hidden, copy_text,
-            open_url, check_update, install_update, retry_last,
-            get_stats, clear_stats, set_stats_enabled,
+            set_dictionary, set_launch_login, set_start_hidden, set_theme, copy_text,
+            open_url, check_update, install_update, retry_last, cancel_dictation,
+            get_stats, clear_stats, set_stats_enabled, set_microphone,
+            menu_action,
             assets::assets_status, assets::download_assets
         ])
         .setup(move |app| {
@@ -349,57 +388,68 @@ fn main() -> anyhow::Result<()> {
 
 /// Builds the tray icon + menu and wires its actions.
 fn build_tray(app: &tauri::App) -> tauri::Result<()> {
-    use tauri::menu::{CheckMenuItemBuilder, MenuBuilder, MenuItemBuilder, SubmenuBuilder};
     use tauri::tray::TrayIconBuilder;
-
-    let cur = PolishMode::from_u8(app.state::<AppState>().controls.polish_mode.load(Ordering::Relaxed));
-    let pause = CheckMenuItemBuilder::with_id("pause", "Pause dictation").checked(false).build(app)?;
-    let p_off = CheckMenuItemBuilder::with_id("polish_off", "Off").checked(cur == PolishMode::Off).build(app)?;
-    let p_rules = CheckMenuItemBuilder::with_id("polish_rules", "Rules only").checked(cur == PolishMode::Rules).build(app)?;
-    let p_ai = CheckMenuItemBuilder::with_id("polish_ai", "AI").checked(cur == PolishMode::Ai).build(app)?;
-    let polish = SubmenuBuilder::new(app, "Polish").item(&p_off).item(&p_rules).item(&p_ai).build()?;
-    let retry = MenuItemBuilder::with_id("retry", "Retry last dictation").build(app)?;
-    let settings = MenuItemBuilder::with_id("settings", "Settings…").build(app)?;
-    let quit = MenuItemBuilder::with_id("quit", "Quit Sotto").build(app)?;
-    let menu = MenuBuilder::new(app)
-        .item(&pause)
-        .item(&polish)
-        .separator()
-        .item(&retry)
-        .item(&settings)
-        .separator()
-        .item(&quit)
-        .build()?;
 
     TrayIconBuilder::with_id("main")
         .icon(tray::idle_icon())
         .tooltip("Sotto")
-        .menu(&menu)
-        .on_menu_event(|app, event| match event.id().as_ref() {
-            "settings" => {
-                if let Some(w) = app.get_webview_window("settings") {
-                    let _ = w.show();
-                    let _ = w.set_focus();
+        .show_menu_on_left_click(false)
+        .on_tray_icon_event(|tray, event| {
+            match event {
+                tauri::tray::TrayIconEvent::Click {
+                    button: tauri::tray::MouseButton::Left,
+                    button_state: tauri::tray::MouseButtonState::Up,
+                    ..
+                } => {
+                    if let Some(w) = tray.app_handle().get_webview_window("settings") {
+                        let _ = w.show();
+                        let _ = w.set_focus();
+                    }
                 }
+                tauri::tray::TrayIconEvent::Click {
+                    button: tauri::tray::MouseButton::Right,
+                    button_state: tauri::tray::MouseButtonState::Up,
+                    position,
+                    ..
+                } => {
+                    if let Some(w) = tray.app_handle().get_webview_window("menu") {
+                        let scale = w.current_monitor().ok().flatten().map(|m| m.scale_factor()).unwrap_or(1.0);
+                        let mw = 230.0 * scale;
+                        let mh = 260.0 * scale;
+                        let x = (position.x - mw + 10.0) as i32;
+                        let y = (position.y - mh - 5.0) as i32;
+                        let _ = w.set_position(tauri::PhysicalPosition::new(x, y));
+                        let _ = w.show();
+                        let _ = w.set_focus();
+                    }
+                }
+                _ => {}
             }
-            "quit" => app.exit(0),
-            "pause" => {
-                let c = &app.state::<AppState>().controls;
-                let paused = !c.paused.load(Ordering::Relaxed);
-                c.paused.store(paused, Ordering::Relaxed);
-                tracing::info!(paused, "pause toggled from tray");
-            }
-            "polish_off" => set_polish_runtime(app, PolishMode::Off),
-            "polish_rules" => set_polish_runtime(app, PolishMode::Rules),
-            "polish_ai" => set_polish_runtime(app, PolishMode::Ai),
-            "retry" => {
-                // No-op inside the worker if nothing is stashed.
-                let _ = app.state::<AppState>().tx.send(DictationEvent::Retry);
-            }
-            _ => {}
         })
         .build(app)?;
     Ok(())
+}
+
+#[tauri::command]
+fn menu_action(app: tauri::AppHandle, action: String) {
+    if action == "quit" {
+        app.exit(0);
+    } else if action == "retry" {
+        let _ = app.state::<AppState>().tx.send(DictationEvent::Retry);
+    } else if action == "pause" {
+        let c = &app.state::<AppState>().controls;
+        let paused = !c.paused.load(Ordering::Relaxed);
+        c.paused.store(paused, Ordering::Relaxed);
+        tracing::info!(paused, "pause toggled from tray");
+    } else {
+        if let Some(w) = app.get_webview_window("settings") {
+            let _ = w.show();
+            let _ = w.set_focus();
+            if action != "settings" {
+                let _ = w.emit("navigate", action);
+            }
+        }
+    }
 }
 
 #[derive(serde::Serialize)]
@@ -485,14 +535,6 @@ fn spawn_update_check(app: tauri::AppHandle) {
     });
 }
 
-fn set_polish_runtime(app: &tauri::AppHandle, mode: PolishMode) {
-    let st = app.state::<AppState>();
-    st.controls.polish_mode.store(mode.as_u8(), Ordering::Relaxed);
-    let mut cfg = st.cfg.lock().unwrap();
-    cfg.polish.mode = mode;
-    let _ = cfg.save();
-}
-
 /// Position the (always-on-top, transparent) overlay window bottom-center.
 fn position_overlay(w: &tauri::WebviewWindow) {
     if let Ok(Some(mon)) = w.current_monitor() {
@@ -552,8 +594,9 @@ fn spawn_pipeline(
     let focus_target = controls.focus_target.clone();
     let cancelled = controls.cancelled.clone();
     let stats_enabled = controls.stats_enabled.clone();
+    let microphone = controls.microphone.clone();
     std::thread::spawn(move || {
-        let mut recorder = audio::Recorder::new(level);
+        let mut recorder = audio::Recorder::new(level, microphone);
         let mut asr = asr::Asr::new();
         // The last dictation, kept in memory so Escape/error is recoverable
         // via Retry. Overwritten by the next Start; cleared on successful
@@ -783,16 +826,31 @@ fn process_take(
 fn emit_state(app: &tauri::AppHandle, s: &str) {
     let _ = app.emit("overlay-state", s);
     if let Some(tray) = app.tray_by_id("main") {
-        let icon = if s == "listening" { tray::active_icon() } else { tray::idle_icon() };
+        let theme = app.state::<AppState>().cfg.lock().unwrap().theme.clone();
+        let dark = theme == "dark";
+        let icon = if s == "listening" {
+            if dark { tray::active_icon_dark() } else { tray::active_icon() }
+        } else {
+            if dark { tray::idle_icon_dark() } else { tray::idle_icon() }
+        };
         let _ = tray.set_icon(Some(icon));
     }
     if s != "idle" {
         show_overlay(app);
     }
+    // The overlay is click-through by default so it never blocks the app
+    // underneath. Every state but idle/done draws a ✕ or ↻ button (see
+    // overlay.js), so those states need real clicks — done is instant/no
+    // button and idle is invisible, so both stay pass-through.
+    if let Some(w) = app.get_webview_window("overlay") {
+        let clickable = s != "idle" && s != "done";
+        let _ = w.set_ignore_cursor_events(!clickable);
+    }
 }
 
 fn show_overlay(app: &tauri::AppHandle) {
     if let Some(w) = app.get_webview_window("overlay") {
+        position_overlay(&w);
         let _ = w.show();
     }
 }

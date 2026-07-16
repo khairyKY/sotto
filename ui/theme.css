@@ -1,0 +1,92 @@
+/* Marshmallow design tokens — palette + neumorphic recipes for both themes. */
+
+:root {
+  /* ── Light palette ── */
+  --mm-window: #DED5C7;
+  --mm-base: #E6DFD4;
+  --mm-surface: #F0E9DF;
+  --mm-tint: #ECE5F4;
+  --mm-accent-ink: #6E58A8;
+  --mm-accent: #8E74D0;
+  --mm-blush: #F0BFCF;
+  --mm-ink: #332E3A;
+  --mm-muted: #8E847A;
+  --mm-muted-2: #A79E95;
+  --mm-muted-3: #948C86;
+  --mm-header: #8E847A;
+  --mm-text: #3A3540;
+  --mm-text-secondary: #645d68;
+  --mm-divider: rgba(150, 128, 104, 0.13);
+  --mm-border: rgba(150, 128, 104, 0.12);
+  --mm-status-green: #8FBF9F;
+  --mm-coral: #A85874;
+  --mm-gauge-bg: #DED2C0;
+
+  /* Neumorphic shadows — light */
+  --mm-raised: 5px 5px 11px rgba(196, 183, 165, 0.34), -5px -5px 11px rgba(255, 254, 250, 0.55);
+  --mm-raised-sm: 4px 4px 10px rgba(196, 183, 165, 0.40), -4px -4px 10px rgba(255, 254, 250, 0.60);
+  --mm-inset: inset 3px 3px 7px rgba(196, 183, 165, 0.32), inset -3px -3px 7px rgba(255, 254, 250, 0.52);
+  --mm-inset-sm: inset 2px 2px 4px rgba(188, 172, 206, 0.30), inset -2px -2px 4px rgba(255, 254, 250, 0.55);
+  --mm-fg: #F0E9DF;
+  --mm-bg: #E6DFD4;
+}
+:root[data-theme="dark"],
+:root.dark {
+  /* ── Dark palette ── */
+  --mm-window: #1E1A24;
+  --mm-base: #241F2A;
+  --mm-surface: #2C2634;
+  --mm-tint: #3A3340;
+  --mm-accent-ink: #CBB9F0;
+  --mm-accent: #C9B8EE;
+  --mm-blush: #5B3F4E;
+  --mm-ink: #EFE9F1;
+  --mm-muted: #9A8FA0;
+  --mm-muted-2: #7C7386;
+  --mm-muted-3: #8F859A;
+  --mm-header: #7C7386;
+  --mm-text: #CDC5D2;
+  --mm-text-secondary: #948AA0;
+  --mm-divider: rgba(255, 255, 255, 0.055);
+  --mm-border: rgba(255, 255, 255, 0.05);
+  --mm-status-green: #6FA080;
+  --mm-coral: #F0C3D2;
+  --mm-gauge-bg: #201B26;
+
+  /* Neumorphic shadows — dark */
+  --mm-raised: 5px 5px 11px rgba(0, 0, 0, 0.5), -5px -5px 11px rgba(255, 255, 255, 0.035);
+  --mm-raised-sm: 4px 4px 10px rgba(0, 0, 0, 0.5), -4px -4px 10px rgba(255, 255, 255, 0.035);
+  --mm-inset: inset 3px 3px 7px rgba(0, 0, 0, 0.5), inset -3px -3px 7px rgba(255, 255, 255, 0.035);
+  --mm-inset-sm: inset 2px 2px 4px rgba(0, 0, 0, 0.5), inset -2px -2px 4px rgba(255, 255, 255, 0.045);
+  --mm-fg: #2C2634;
+  --mm-bg: #241F2A;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]):not(.light) {
+    --mm-window: #1E1A24;
+    --mm-base: #241F2A;
+    --mm-surface: #2C2634;
+    --mm-tint: #3A3340;
+    --mm-accent-ink: #CBB9F0;
+    --mm-accent: #C9B8EE;
+    --mm-blush: #5B3F4E;
+    --mm-ink: #EFE9F1;
+    --mm-muted: #9A8FA0;
+    --mm-muted-2: #7C7386;
+    --mm-muted-3: #8F859A;
+    --mm-header: #7C7386;
+    --mm-text: #CDC5D2;
+    --mm-text-secondary: #948AA0;
+    --mm-divider: rgba(255, 255, 255, 0.055);
+    --mm-border: rgba(255, 255, 255, 0.05);
+    --mm-status-green: #6FA080;
+    --mm-coral: #F0C3D2;
+    --mm-gauge-bg: #201B26;
+    --mm-raised: 5px 5px 11px rgba(0, 0, 0, 0.5), -5px -5px 11px rgba(255, 255, 255, 0.035);
+    --mm-raised-sm: 4px 4px 10px rgba(0, 0, 0, 0.5), -4px -4px 10px rgba(255, 255, 255, 0.035);
+    --mm-inset: inset 3px 3px 7px rgba(0, 0, 0, 0.5), inset -3px -3px 7px rgba(255, 255, 255, 0.035);
+    --mm-inset-sm: inset 2px 2px 4px rgba(0, 0, 0, 0.5), inset -2px -2px 4px rgba(255, 255, 255, 0.045);
+    --mm-fg: #2C2634;
+    --mm-bg: #241F2A;
+  }
+}

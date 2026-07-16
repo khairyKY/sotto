@@ -17,6 +17,15 @@ use std::sync::{Arc, Mutex};
 /// Sample rate the ASR engine expects.
 const TARGET_RATE: u32 = 16_000;
 
+/// Names of every available input device, for the settings microphone picker.
+/// cpal 0.18 dropped `Device::name()` in favor of `Display` — `to_string()`
+/// is the name.
+pub fn list_input_devices() -> Vec<String> {
+    let host = cpal::default_host();
+    let Ok(devices) = host.input_devices() else { return Vec::new() };
+    devices.map(|d| d.to_string()).collect()
+}
+
 pub struct Recorder {
     stream: Option<cpal::Stream>,
     buffer: Arc<Mutex<Vec<f32>>>,
@@ -24,16 +33,21 @@ pub struct Recorder {
     /// the overlay's Listening waveform. Zeroed when capture stops.
     level: Arc<AtomicU32>,
     device_rate: u32,
+    /// User-selected input device name, or `None` for the OS default. Read
+    /// live from settings so a change applies on the next dictation, no restart.
+    device_name: Arc<Mutex<Option<String>>>,
 }
 
 impl Recorder {
     /// `level` receives the live capture RMS (f32 bits) each audio callback.
-    pub fn new(level: Arc<AtomicU32>) -> Self {
+    /// `device_name` is shared with the settings command that changes it.
+    pub fn new(level: Arc<AtomicU32>, device_name: Arc<Mutex<Option<String>>>) -> Self {
         Self {
             stream: None,
             buffer: Arc::new(Mutex::new(Vec::new())),
             level,
             device_rate: 0,
+            device_name,
         }
     }
 
@@ -43,9 +57,20 @@ impl Recorder {
         self.buffer.lock().unwrap().clear();
 
         let host = cpal::default_host();
-        let device = host
-            .default_input_device()
-            .context("no default input device found")?;
+        let wanted = self.device_name.lock().unwrap().clone();
+        let device = match wanted {
+            Some(name) => host
+                .input_devices()
+                .ok()
+                .and_then(|mut ds| ds.find(|d| d.to_string() == name))
+                // Falls back to default if the named device vanished (e.g.
+                // unplugged) rather than failing dictation outright.
+                .or_else(|| host.default_input_device())
+                .context("no input device found")?,
+            None => host
+                .default_input_device()
+                .context("no default input device found")?,
+        };
         let supported = device
             .default_input_config()
             .context("no default input config")?;

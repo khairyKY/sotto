@@ -28,15 +28,29 @@
       },
       {
         "label": "settings",
-        "url": "settings.html",
-        "title": "Sotto — Settings",
-        "width": 580,
-        "height": 720,
-        "minWidth": 548,
-        "minHeight": 480,
+        "url": "index.html",
+        "title": "Sotto",
+        "width": 980,
+        "height": 700,
+        "minWidth": 760,
+        "minHeight": 520,
         "decorations": false,
         "resizable": true,
         "center": true,
+        "visible": false
+      },
+      {
+        "label": "menu",
+        "url": "menu.html",
+        "width": 230,
+        "height": 260,
+        "transparent": true,
+        "decorations": false,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "resizable": false,
+        "shadow": false,
+        "focus": true,
         "visible": false
       }
     ]

@@ -1,27 +1,54 @@
-/* Bundled fonts — Inter + JetBrains Mono, the exact families the Claude Design
-   reference uses. Local woff2 (OFL licensed) so the app matches the design and
-   works fully offline (no CDN, CSP-safe). */
+/* Bundled fonts — Newsreader + Hanken Grotesk + JetBrains Mono.
+   Local woff2 (OFL licensed) so the app works fully offline. */
 
 @font-face {
-  font-family: "Inter";
+  font-family: "Newsreader";
   font-style: normal;
   font-weight: 400;
   font-display: swap;
-  src: url("./fonts/inter-400.woff2") format("woff2");
+  src: url("./fonts/newsreader-400.woff2") format("woff2");
 }
 @font-face {
-  font-family: "Inter";
+  font-family: "Newsreader";
   font-style: normal;
   font-weight: 500;
   font-display: swap;
-  src: url("./fonts/inter-500.woff2") format("woff2");
+  src: url("./fonts/newsreader-500.woff2") format("woff2");
 }
 @font-face {
-  font-family: "Inter";
+  font-family: "Newsreader";
   font-style: normal;
   font-weight: 600;
   font-display: swap;
-  src: url("./fonts/inter-600.woff2") format("woff2");
+  src: url("./fonts/newsreader-600.woff2") format("woff2");
+}
+@font-face {
+  font-family: "Hanken Grotesk";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("./fonts/hanken-grotesk-400.woff2") format("woff2");
+}
+@font-face {
+  font-family: "Hanken Grotesk";
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url("./fonts/hanken-grotesk-500.woff2") format("woff2");
+}
+@font-face {
+  font-family: "Hanken Grotesk";
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url("./fonts/hanken-grotesk-600.woff2") format("woff2");
+}
+@font-face {
+  font-family: "Hanken Grotesk";
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url("./fonts/hanken-grotesk-700.woff2") format("woff2");
 }
 @font-face {
   font-family: "JetBrains Mono";

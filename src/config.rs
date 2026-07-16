@@ -147,6 +147,16 @@ pub struct Config {
     /// Insights dashboard. Fully local either way.
     #[serde(default = "default_true")]
     pub stats_enabled: bool,
+    /// UI theme: "light", "dark", or "system" (follow OS preference).
+    #[serde(default = "default_theme")]
+    pub theme: String,
+    /// Input device name to record from, or `None` for the OS default.
+    #[serde(default)]
+    pub microphone: Option<String>,
+}
+
+fn default_theme() -> String {
+    "system".to_string()
 }
 
 fn default_true() -> bool {
@@ -166,6 +176,8 @@ impl Default for Config {
             dictionary: Vec::new(),
             start_hidden: true,
             stats_enabled: true,
+            theme: default_theme(),
+            microphone: None,
         }
     }
 }
