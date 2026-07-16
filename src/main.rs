@@ -18,6 +18,7 @@ mod job;
 mod llm;
 mod polish;
 mod single_instance;
+mod sounds;
 mod startup;
 mod stats;
 mod tray;
@@ -61,6 +62,15 @@ pub struct Controls {
     /// Selected input device name, or `None` for the OS default. Read by
     /// `Recorder::start` on every dictation, so a change applies immediately.
     pub microphone: Arc<Mutex<Option<String>>>,
+    /// Current overlay pill state ("idle", "listening", …) — written by
+    /// emit_state, read by the overlay hit-test poll to know the pill's
+    /// width and whether it currently shows a clickable button.
+    pub overlay_state: Arc<Mutex<String>>,
+    /// Soft start/stop recording ticks — live-toggled from settings.
+    pub sound_enabled: Arc<AtomicBool>,
+    /// True while a retryable take is stashed — drives the tray menu's
+    /// "Retry last dictation" enablement honestly.
+    pub has_take: Arc<AtomicBool>,
 }
 
 impl Controls {
@@ -81,6 +91,9 @@ impl Controls {
             cancelled: Arc::new(AtomicBool::new(false)),
             stats_enabled: Arc::new(AtomicBool::new(cfg.stats_enabled)),
             microphone: Arc::new(Mutex::new(cfg.microphone.clone())),
+            overlay_state: Arc::new(Mutex::new("idle".to_string())),
+            sound_enabled: Arc::new(AtomicBool::new(cfg.sound_enabled)),
+            has_take: Arc::new(AtomicBool::new(false)),
         }
     }
 }
@@ -142,6 +155,10 @@ struct SettingsPayload {
     microphone: String,
     microphone_options: Vec<String>,
     paused: bool,
+    sound_enabled: bool,
+    has_take: bool,
+    /// Where models/config live, for the settings "Open folder" link.
+    data_dir: String,
 }
 
 // ── commands ───────────────────────────────────────────────────────────
@@ -191,7 +208,18 @@ fn get_settings(state: tauri::State<'_, AppState>) -> SettingsPayload {
         microphone: c.microphone.lock().unwrap().clone().unwrap_or_default(),
         microphone_options: audio::list_input_devices(),
         paused: c.paused.load(Ordering::Relaxed),
+        sound_enabled: c.sound_enabled.load(Ordering::Relaxed),
+        has_take: c.has_take.load(Ordering::Relaxed),
+        data_dir: config::data_dir().display().to_string(),
     }
+}
+
+#[tauri::command]
+fn set_sound_enabled(enabled: bool, state: tauri::State<'_, AppState>) {
+    state.controls.sound_enabled.store(enabled, Ordering::Relaxed);
+    let mut cfg = state.cfg.lock().unwrap();
+    cfg.sound_enabled = enabled;
+    let _ = cfg.save();
 }
 
 #[tauri::command]
@@ -360,7 +388,7 @@ fn main() -> anyhow::Result<()> {
             get_settings, set_hotkey, set_activation, set_polish, set_threshold,
             set_dictionary, set_launch_login, set_start_hidden, set_theme, copy_text,
             open_url, check_update, install_update, retry_last, cancel_dictation,
-            get_stats, clear_stats, set_stats_enabled, set_microphone,
+            get_stats, clear_stats, set_stats_enabled, set_microphone, set_sound_enabled,
             menu_action,
             assets::assets_status, assets::download_assets
         ])
@@ -376,6 +404,7 @@ fn main() -> anyhow::Result<()> {
                 }
             }
             spawn_pipeline(app.handle().clone(), controls.clone(), cfg.clone(), tx.clone(), rx.clone());
+            spawn_overlay_hittest(app.handle().clone(), controls.overlay_state.clone());
             spawn_update_check(app.handle().clone());
             assets::spawn_provision_if_missing(app.handle().clone());
             tracing::info!("Sotto ready — hold the hotkey and speak");
@@ -413,9 +442,13 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
                     ..
                 } => {
                     if let Some(w) = tray.app_handle().get_webview_window("menu") {
-                        let scale = w.current_monitor().ok().flatten().map(|m| m.scale_factor()).unwrap_or(1.0);
-                        let mw = 230.0 * scale;
-                        let mh = 260.0 * scale;
+                        // Use the window's real size (already physical px) so
+                        // this never drifts from tauri.conf.json / menu.html —
+                        // hardcoded 230x260 here is what chipped the menu.
+                        let (mw, mh) = w
+                            .outer_size()
+                            .map(|s| (s.width as f64, s.height as f64))
+                            .unwrap_or((230.0, 380.0));
                         let x = (position.x - mw + 10.0) as i32;
                         let y = (position.y - mh - 5.0) as i32;
                         let _ = w.set_position(tauri::PhysicalPosition::new(x, y));
@@ -595,6 +628,8 @@ fn spawn_pipeline(
     let cancelled = controls.cancelled.clone();
     let stats_enabled = controls.stats_enabled.clone();
     let microphone = controls.microphone.clone();
+    let sound_enabled = controls.sound_enabled.clone();
+    let has_take = controls.has_take.clone();
     std::thread::spawn(move || {
         let mut recorder = audio::Recorder::new(level, microphone);
         let mut asr = asr::Asr::new();
@@ -610,6 +645,9 @@ fn spawn_pipeline(
                     match recorder.start() {
                         Ok(()) => {
                             listening.store(true, Ordering::Relaxed);
+                            if sound_enabled.load(Ordering::Relaxed) {
+                                sounds::tick();
+                            }
                             // Capture the focus target NOW so an Alt-Tab during
                             // dictation doesn't reroute the injection.
                             focus_target.store(inject::capture_focus(), Ordering::Relaxed);
@@ -630,6 +668,9 @@ fn spawn_pipeline(
                     // polish is handled by the stage-boundary flag checks in
                     // process_take (the flag was already set by the listener).
                     if listening.swap(false, Ordering::Relaxed) {
+                        if sound_enabled.load(Ordering::Relaxed) {
+                            sounds::tock();
+                        }
                         let samples = recorder.stop().unwrap_or_default();
                         cancelled.store(false, Ordering::SeqCst); // consumed here
                         let take = Take::new(samples, focus_target.swap(0, Ordering::Relaxed), &polisher);
@@ -643,7 +684,13 @@ fn spawn_pipeline(
                     }
                 }
                 DictationEvent::Stop => {
-                    listening.store(false, Ordering::Relaxed);
+                    // Only tock if we were actually recording (a stray Stop —
+                    // e.g. toggle-mode release edge — shouldn't chirp).
+                    if listening.swap(false, Ordering::Relaxed)
+                        && sound_enabled.load(Ordering::Relaxed)
+                    {
+                        sounds::tock();
+                    }
                     let samples = match recorder.stop() {
                         Ok(s) => s,
                         Err(err) => {
@@ -683,6 +730,8 @@ fn spawn_pipeline(
                     }
                 }
             }
+            // Keep the tray menu's "Retry last dictation" honest.
+            has_take.store(stash.is_some(), Ordering::Relaxed);
         }
     });
 }
@@ -746,7 +795,12 @@ fn process_take(
             Ok(t) => take.raw_text = Some(t),
             Err(err) => {
                 tracing::error!(?err, "transcription failed");
-                emit_state(app, "error");
+                // Distinguish "the model isn't on disk yet" (first-run
+                // download still in flight) from a real failure — the take is
+                // stashed either way, so ↻ works once the download lands.
+                let model_missing =
+                    !config::model_dir().join("encoder-model.int8.onnx").exists();
+                emit_state(app, if model_missing { "nomodel" } else { "error" });
                 record_outcome(&take, stats_enabled, "error");
                 *stash = Some(take);
                 return;
@@ -825,6 +879,7 @@ fn process_take(
 
 fn emit_state(app: &tauri::AppHandle, s: &str) {
     let _ = app.emit("overlay-state", s);
+    *app.state::<AppState>().controls.overlay_state.lock().unwrap() = s.to_string();
     if let Some(tray) = app.tray_by_id("main") {
         let theme = app.state::<AppState>().cfg.lock().unwrap().theme.clone();
         let dark = theme == "dark";
@@ -838,14 +893,64 @@ fn emit_state(app: &tauri::AppHandle, s: &str) {
     if s != "idle" {
         show_overlay(app);
     }
-    // The overlay is click-through by default so it never blocks the app
-    // underneath. Every state but idle/done draws a ✕ or ↻ button (see
-    // overlay.js), so those states need real clicks — done is instant/no
-    // button and idle is invisible, so both stay pass-through.
-    if let Some(w) = app.get_webview_window("overlay") {
-        let clickable = s != "idle" && s != "done";
-        let _ = w.set_ignore_cursor_events(!clickable);
-    }
+}
+
+/// Makes the overlay's ✕/↻ buttons clickable without the invisible window
+/// margins eating clicks: the window stays click-through except while the
+/// cursor is actually inside the pill's rectangle. A 30 ms cursor poll is the
+/// only way to do this — mouse events can't reach the webview while
+/// click-through is on, so JS can't hit-test for us.
+fn spawn_overlay_hittest(app: tauri::AppHandle, ui_state: Arc<Mutex<String>>) {
+    use windows::Win32::Foundation::POINT;
+    use windows::Win32::UI::WindowsAndMessaging::GetCursorPos;
+    std::thread::spawn(move || {
+        let mut ignoring = true; // window starts click-through
+        loop {
+            // Pill width per state — must mirror pillWidthFor() in overlay.js.
+            let pill_w = match ui_state.lock().unwrap().as_str() {
+                "error" => Some(236.0),
+                "cancelled" => Some(220.0),
+                "nomodel" => Some(248.0),
+                "listening" | "transcribing" | "polishing" => Some(148.0),
+                _ => None, // idle/done: no buttons
+            };
+            let Some(pill_w) = pill_w else {
+                if !ignoring {
+                    if let Some(w) = app.get_webview_window("overlay") {
+                        let _ = w.set_ignore_cursor_events(true);
+                    }
+                    ignoring = true;
+                }
+                std::thread::sleep(Duration::from_millis(150));
+                continue;
+            };
+            if let Some(w) = app.get_webview_window("overlay") {
+                let inside = (|| {
+                    let pos = w.outer_position().ok()?;
+                    let size = w.outer_size().ok()?;
+                    let scale = w.scale_factor().ok()?;
+                    let mut pt = POINT::default();
+                    unsafe { GetCursorPos(&mut pt).ok()? };
+                    let (pw, ph) = (pill_w * scale, 40.0 * scale);
+                    let cx = pos.x as f64 + size.width as f64 / 2.0;
+                    let cy = pos.y as f64 + size.height as f64 / 2.0;
+                    let pad = 4.0 * scale;
+                    Some(
+                        (pt.x as f64) >= cx - pw / 2.0 - pad
+                            && (pt.x as f64) <= cx + pw / 2.0 + pad
+                            && (pt.y as f64) >= cy - ph / 2.0 - pad
+                            && (pt.y as f64) <= cy + ph / 2.0 + pad,
+                    )
+                })()
+                .unwrap_or(false);
+                if inside == ignoring {
+                    let _ = w.set_ignore_cursor_events(!inside);
+                    ignoring = !inside;
+                }
+            }
+            std::thread::sleep(Duration::from_millis(30));
+        }
+    });
 }
 
 fn show_overlay(app: &tauri::AppHandle) {

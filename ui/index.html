@@ -50,14 +50,9 @@
             <svg viewBox="0 0 20 20" width="17" height="17"><circle cx="10" cy="10" r="6.2" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M10 6.6 V10 L12.5 11.7" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>
             <span>History</span>
           </a>
-          <a class="nav-item" data-page="transforms" href="#">
-            <svg viewBox="0 0 20 20" width="17" height="17"><path d="M8 4 H5 A1 1 0 0 0 4 5 V15 A1 1 0 0 0 5 16 H8 M12 7 L15.5 10 L12 13 M15.5 10 H7.5" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>
-            <span>Transforms</span>
-          </a>
-          <a class="nav-item" data-page="scratchpad" href="#">
-            <svg viewBox="0 0 20 20" width="17" height="17"><path d="M4 4 H16 V16 H4 Z M7 8 H13 M7 11 H11" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>
-            <span>Scratchpad</span>
-          </a>
+          <!-- Transforms and Scratchpad are phase-2 features: their pages were
+               static mockups, and the design doc's sidebar doesn't include
+               them. Removed from the shipped nav until they're real. -->
         </nav>
         <nav class="nav nav-bottom">
           <div class="nav-divider"></div>
@@ -254,73 +249,6 @@
           </div>
         </section>
 
-        <!-- ===================== TRANSFORMS (phase 2) ===================== -->
-        <section class="page" id="page-transforms">
-          <div class="page-head-row" style="margin-bottom:6px">
-            <div style="display:flex;align-items:center;gap:10px">
-              <h1 class="page-title" style="margin:0">Transforms</h1>
-              <span class="badge-beta">BETA</span>
-            </div>
-            <div style="display:flex;align-items:center;gap:9px">
-              <span class="page-sub" style="margin:0">Enabled</span>
-              <button class="switch" id="transforms-enabled" role="switch" aria-checked="true"><span class="knob"></span></button>
-            </div>
-          </div>
-          <div style="max-width:440px;margin-bottom:18px">
-            <div style="font:500 15px Newsreader;color:var(--mm-text);margin-bottom:4px">Rewrite anywhere you write.</div>
-            <div class="page-sub" style="margin:0;line-height:1.55">Select text in any app, press the shortcut, and Sotto’s local AI rewrites it in place. Your text never leaves this device.</div>
-          </div>
-          <div class="transforms-grid">
-            <div class="card-raised transform-card">
-              <div class="transform-keys">
-                <span class="keycap-mini">Ctrl</span><span class="key-plus">+</span><span class="keycap-mini">Alt</span><span class="key-plus">+</span><span class="keycap-mini">1</span>
-              </div>
-              <div class="transform-title">Polish</div>
-              <div class="transform-desc">Tightens and clarifies without changing your meaning.</div>
-            </div>
-            <div class="card-raised transform-card">
-              <div class="transform-keys">
-                <span class="keycap-mini">Ctrl</span><span class="key-plus">+</span><span class="key-plus">+</span><span class="keycap-mini">Alt</span><span class="key-plus">+</span><span class="keycap-mini">2</span>
-              </div>
-              <div class="transform-title">Prompt engineer</div>
-              <div class="transform-desc">Restructures your idea into a strong AI prompt.</div>
-            </div>
-            <div class="transform-card dashed">
-              <span class="plus-icon">+</span>
-              <div class="transform-title color-accent">Create your own</div>
-              <div class="transform-desc">bring your own prompt</div>
-            </div>
-          </div>
-          <div style="display:flex;gap:10px;margin-top:auto;padding-top:18px">
-            <button class="btn btn-ghost" style="padding-left:0;font-weight:500;color:var(--mm-muted)">Reset to defaults</button>
-            <div style="flex:1"></div>
-            <button class="btn btn-primary" id="btn-create-transform">+ Create new</button>
-          </div>
-        </section>
-
-        <!-- ===================== SCRATCHPAD (phase 2) ===================== -->
-        <section class="page" id="page-scratchpad" style="height: 100%;">
-          <div class="page-head-row" style="margin-bottom: 14px;">
-            <h1 class="page-title" style="margin:0">Scratchpad</h1>
-            <span class="btn-add-header" id="scratchpad-new">+ New note</span>
-          </div>
-          <div class="scratchpad-split">
-            <!-- Left column: list of notes -->
-            <div class="scratchpad-list" id="scratchpad-list">
-              <!-- Dynamically populated by JS -->
-            </div>
-            <!-- Right column: note editor -->
-            <div class="card-recessed scratchpad-editor-wrap">
-              <input type="text" class="scratchpad-title-input" id="scratchpad-note-title" placeholder="Untitled Note" />
-              <div class="scratchpad-meta" id="scratchpad-note-meta">Edited 2:14 PM · stored on this device</div>
-              <div class="scratchpad-textarea-container">
-                <textarea class="scratchpad-textarea" id="scratchpad-note-body" placeholder="Start dictating or typing..."></textarea>
-                <div class="scratchpad-custom-cursor" id="scratchpad-cursor"></div>
-              </div>
-            </div>
-          </div>
-        </section>
-
         <!-- ===================== SETTINGS ===================== -->
         <section class="page" id="page-settings">
           <h1 class="page-title" style="margin:0 0 16px">Settings</h1>
@@ -467,9 +395,9 @@
               <div class="settings-row bare">
                 <div class="row-label">
                   <div class="label">Data folder</div>
-                  <div class="sub">~/Library/Application Support/sotto</div>
+                  <div class="sub" id="data-folder-path">&mdash;</div>
                 </div>
-                <span class="link-change" id="open-releases">Open folder</span>
+                <span class="link-change" id="open-folder">Open folder</span>
               </div>
             </div>
           </div>

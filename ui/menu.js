@@ -13,44 +13,39 @@ function applyTheme(theme) {
   }
 }
 
-// Initialize state
-async function init() {
-  if (hasTauri) {
-    // Get settings to set initial theme and check history
-    try {
-      const s = await invoke("get_settings");
-      if (s && s.theme) {
-        applyTheme(s.theme);
-      }
-      
-      // Check if there is history to enable Retry
-      if (s && s.history && s.history.length > 0) {
-        const last = s.history[0];
-        const retry = document.getElementById("retry-item");
-        retry.classList.remove("disabled");
-        document.getElementById("retry-meta").textContent = last.time;
-      }
-
-      if (s) setPauseUI(!!s.paused);
-    } catch(err) {
-      console.error("Failed to load Sotto settings:", err);
-    }
-    
-    // Listen for theme changes
-    T.event.listen("theme-changed", (e) => applyTheme(e.payload));
-    
-    // Hide menu window when it loses focus (click away)
-    currentWin.onFocusChanged((event) => {
-      if (!event.payload) {
-        currentWin.hide();
-      }
-    });
-  }
-}
-
 function setPauseUI(paused) {
   document.getElementById("pause-item").classList.toggle("checked", paused);
   document.getElementById("pause-label").textContent = paused ? "Resume dictation" : "Pause dictation";
+  document.getElementById("status-text").textContent = paused ? "Paused" : "Ready";
+}
+
+// Pull live state (theme, paused, retry availability). The menu window
+// persists across opens — it's hidden, not destroyed — so this must run on
+// every show, not just once at load.
+async function refreshState() {
+  if (!hasTauri) return;
+  try {
+    const s = await invoke("get_settings");
+    if (!s) return;
+    if (s.theme) applyTheme(s.theme);
+    // Enable Retry only when the worker actually has a stashed take —
+    // history alone doesn't mean there's anything to retry.
+    const retry = document.getElementById("retry-item");
+    retry.classList.toggle("disabled", !s.hasTake);
+    document.getElementById("retry-meta").textContent = s.hasTake ? "ready" : "none yet";
+    setPauseUI(!!s.paused);
+  } catch (err) {
+    console.error("Failed to load Sotto settings:", err);
+  }
+}
+
+if (hasTauri) {
+  T.event.listen("theme-changed", (e) => applyTheme(e.payload));
+  // Refresh on every show; hide when clicking away.
+  currentWin.onFocusChanged((event) => {
+    if (event.payload) refreshState();
+    else currentWin.hide();
+  });
 }
 
 // Click Handlers
@@ -76,4 +71,4 @@ document.querySelectorAll(".menu-item").forEach(item => {
   };
 });
 
-init();
+refreshState();

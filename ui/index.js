@@ -52,7 +52,6 @@ function navigate(page) {
   if (page === 'insights') loadInsights();
   if (page === 'history') loadHistory();
   if (page === 'home') loadHome();
-  if (page === 'scratchpad') loadScratchpad();
 }
 document.querySelectorAll('.nav-item').forEach(item => {
   item.onclick = (e) => { e.preventDefault(); navigate(item.dataset.page); };
@@ -137,7 +136,7 @@ function updateStatusBar(s) {
   if (s?.polish === "ai") parts.push("AI polish on");
   else if (s?.polish === "rules") parts.push("rules polish");
   else parts.push("polish off");
-  parts.push("mic: —");
+  parts.push("mic: " + (s?.microphone || "system default"));
   $("status-text").textContent = parts.join(" · ");
 }
 
@@ -172,6 +171,7 @@ async function loadInsights() {
     $("speed-val").textContent = wpm;
     const offset = Math.max(0, 169.6 - (wpm / 200) * 169.6);
     $("speed-arc").setAttribute("stroke-dashoffset", offset);
+    $("speed-pb").textContent = stats.bestWpm || "—";
     
     $("fixes-val").textContent = (stats.fixesTotal || 0).toLocaleString();
     const dictHits = stats.dictHitsTotal || 0;
@@ -711,7 +711,6 @@ async function initUpdates() {
   };
   $("update-close").onclick = () => { banner.hidden = true; banner.style.display = "none"; };
   $("check-update").onclick = () => refresh(true);
-  $("open-releases").onclick = () => openReleases();
   if (hasTauri && T.event) {
     T.event.listen("update-available", (e) => showUpdate(e.payload));
     T.event.listen("update-progress", (e) => {
@@ -761,119 +760,6 @@ async function initAssets() {
 $("alert-dismiss").onclick = () => { $("alert-card").hidden = true; };
 $("alert-retry").onclick = () => { invoke("retry_last"); };
 
-// ── scratchpad CRUD ──
-let scratchpadNotes = [];
-let activeNoteId = null;
-
-function loadScratchpad() {
-  const data = localStorage.getItem("scratchpad-notes");
-  if (data) {
-    try {
-      scratchpadNotes = JSON.parse(data);
-    } catch(e) {
-      scratchpadNotes = [];
-    }
-  }
-  if (!scratchpadNotes || !scratchpadNotes.length) {
-    scratchpadNotes = [
-      {
-        id: "note-1",
-        title: "Launch checklist",
-        content: "Ship the overlay states first, then the icon set. Double-check the retry stash survives an accidental Escape. Reskin the tray to the flat marshmallow mark before the build call.",
-        timestamp: "2:14 PM"
-      },
-      {
-        id: "note-2",
-        title: "Marshmallow notes",
-        content: "Clean, elegant neumorphic UI layout for Sotto. Local models, private data, fast execution. Always follow the Marshmallow specs.",
-        timestamp: "Yesterday"
-      }
-    ];
-    saveScratchpadNotes();
-  }
-  
-  if (!activeNoteId && scratchpadNotes.length > 0) {
-    activeNoteId = scratchpadNotes[0].id;
-  }
-  
-  renderScratchpadList();
-  renderActiveNote();
-}
-
-function saveScratchpadNotes() {
-  localStorage.setItem("scratchpad-notes", JSON.stringify(scratchpadNotes));
-}
-
-function renderScratchpadList() {
-  const host = $("scratchpad-list");
-  host.innerHTML = "";
-  scratchpadNotes.forEach(n => {
-    const item = document.createElement("div");
-    item.className = `scratchpad-item ${n.id === activeNoteId ? "active" : ""}`;
-    item.innerHTML = `
-      <div class="title">${escapeHtml(n.title || "Untitled Note")}</div>
-      <div class="time">${n.timestamp}</div>
-    `;
-    item.onclick = () => {
-      activeNoteId = n.id;
-      renderScratchpadList();
-      renderActiveNote();
-    };
-    host.appendChild(item);
-  });
-}
-
-function renderActiveNote() {
-  const note = scratchpadNotes.find(n => n.id === activeNoteId);
-  if (!note) {
-    $("scratchpad-note-title").value = "";
-    $("scratchpad-note-body").value = "";
-    $("scratchpad-note-meta").textContent = "";
-    return;
-  }
-  
-  $("scratchpad-note-title").value = note.title || "";
-  $("scratchpad-note-body").value = note.content || "";
-  $("scratchpad-note-meta").textContent = `Edited ${note.timestamp} · stored on this device`;
-}
-
-// Scratchpad inputs wiring
-$("scratchpad-note-title").oninput = (e) => {
-  const note = scratchpadNotes.find(n => n.id === activeNoteId);
-  if (note) {
-    note.title = e.target.value;
-    note.timestamp = formatTime(new Date());
-    saveScratchpadNotes();
-    renderScratchpadList();
-    $("scratchpad-note-meta").textContent = `Edited ${note.timestamp} · stored on this device`;
-  }
-};
-
-$("scratchpad-note-body").oninput = (e) => {
-  const note = scratchpadNotes.find(n => n.id === activeNoteId);
-  if (note) {
-    note.content = e.target.value;
-    note.timestamp = formatTime(new Date());
-    saveScratchpadNotes();
-    renderScratchpadList();
-    $("scratchpad-note-meta").textContent = `Edited ${note.timestamp} · stored on this device`;
-  }
-};
-
-$("scratchpad-new").onclick = () => {
-  const newNote = {
-    id: "note-" + Date.now(),
-    title: "Untitled Note",
-    content: "",
-    timestamp: formatTime(new Date())
-  };
-  scratchpadNotes.unshift(newNote);
-  activeNoteId = newNote.id;
-  saveScratchpadNotes();
-  renderScratchpadList();
-  renderActiveNote();
-  $("scratchpad-note-title").focus();
-};
 
 function formatTime(date) {
   let hours = date.getHours();
@@ -943,8 +829,16 @@ async function boot() {
     $("stats-enabled-toggle").setAttribute("aria-checked", String(!!s.statsEnabled));
     initSwitch($("stats-enabled-toggle"), (on) => invoke("set_stats_enabled", { enabled: on }));
   }
-  if ($("transforms-enabled")) {
-    initSwitch($("transforms-enabled"), (on) => { console.log("Transforms toggle:", on); });
+  if ($("sound-sounds")) {
+    $("sound-sounds").setAttribute("aria-checked", String(!!s.soundEnabled));
+    initSwitch($("sound-sounds"), (on) => invoke("set_sound_enabled", { enabled: on }));
+  }
+  if ($("open-folder")) {
+    // `start` opens directories in Explorer just like URLs in the browser.
+    $("open-folder").onclick = () => invoke("open_url", { url: s.dataDir || "" });
+  }
+  if ($("data-folder-path") && s.dataDir) {
+    $("data-folder-path").textContent = s.dataDir;
   }
 
   // Clear stats button wiring

@@ -153,6 +153,9 @@ pub struct Config {
     /// Input device name to record from, or `None` for the OS default.
     #[serde(default)]
     pub microphone: Option<String>,
+    /// Soft tick when recording starts and stops.
+    #[serde(default = "default_true")]
+    pub sound_enabled: bool,
 }
 
 fn default_theme() -> String {
@@ -178,6 +181,7 @@ impl Default for Config {
             stats_enabled: true,
             theme: default_theme(),
             microphone: None,
+            sound_enabled: true,
         }
     }
 }

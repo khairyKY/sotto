@@ -153,7 +153,7 @@ function drawState(x, y, w, h, now) {
     if (sincePhase > 5400) { const f = Math.min(1, (sincePhase - 5400) / 300); alpha *= 1 - f; dy += f * 4; }
     if (sincePhase >= 5700) { setState('idle'); return; }
   }
-  if (name === 'cancelled') {
+  if (name === 'cancelled' || name === 'nomodel') {
     if (sincePhase > 5400) { const f = Math.min(1, (sincePhase - 5400) / 300); alpha *= 1 - f; dy += f * 4; }
     if (sincePhase >= 5700) { setState('idle'); return; }
   }
@@ -370,8 +370,47 @@ function drawState(x, y, w, h, now) {
     const pct = Math.max(0, 1 - sincePhase / 6000);
     const barY = y + h - 3;
     countdownBar(x + 2, barY, w - 4, 3, pct, dark);
+  } else if (name === 'nomodel') {
+    // First-run: the speech model is still downloading. Same neutral toast
+    // shape as Cancelled — the take is stashed, so ↻ works once it lands.
+    const gx = contentL + 8;
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    ctx.fillStyle = dark ? '#3A3340' : '#E6DFD4';
+    ctx.beginPath();
+    ctx.arc(gx + 8, yc, 10, 0, Math.PI * 2);
+    ctx.fill();
+    // Down-arrow glyph: downloading.
+    ctx.strokeStyle = muted;
+    ctx.lineWidth = 1.8;
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    ctx.beginPath();
+    ctx.moveTo(gx + 8, yc - 5); ctx.lineTo(gx + 8, yc + 4);
+    ctx.moveTo(gx + 4.5, yc + 0.5); ctx.lineTo(gx + 8, yc + 4); ctx.lineTo(gx + 11.5, yc + 0.5);
+    ctx.stroke();
+    ctx.restore();
+    ctx.font = '500 12px "Hanken Grotesk", system-ui, sans-serif';
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle = txt;
+    ctx.fillText('Model downloading…', gx + 20, yc);
+    retryBtn(xr, yc, btnR, alpha, dark);
+    activeBtn = { x: xr, y: yc, r: btnR, action: 'retry' };
+    const pct = Math.max(0, 1 - sincePhase / 6000);
+    const barY = y + h - 3;
+    countdownBar(x + 2, barY, w - 4, 3, pct, dark);
   }
   ctx.globalAlpha = 1;
+}
+
+// Toasts widen to fit their label + retry button (design spec: cancelled
+// 220px, error 236px); live states keep the compact 148px pill.
+function pillWidthFor(name) {
+  if (name === 'error') return 236;
+  if (name === 'cancelled') return 220;
+  if (name === 'nomodel') return 248;
+  return PW;
 }
 
 function frame(now) {
@@ -382,9 +421,10 @@ function frame(now) {
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.clearRect(0, 0, cw, ch);
   if (state.name !== 'idle') {
-    const px = Math.round((cw - PW) / 2);
+    const w = pillWidthFor(state.name);
+    const px = Math.round((cw - w) / 2);
     const py = Math.round((ch - PH) / 2);
-    drawState(px, py, PW, PH, now);
+    drawState(px, py, w, PH, now);
   }
   requestAnimationFrame(frame);
 }

@@ -147,6 +147,22 @@ pub fn spawn_provision_if_missing(app: AppHandle) {
         }
         let names: Vec<&str> = missing.iter().map(|a| a.name).collect();
         tracing::info!(?names, "provisioning missing assets from GitHub");
+        // Clear leftovers from interrupted runs (downloads restart from zero,
+        // so a stale .part / zip is pure disk garbage).
+        for a in &missing {
+            let dir = match &a.kind {
+                Kind::File { dest } => dest().parent().map(|p| p.to_path_buf()),
+                Kind::Zip { dir, .. } => Some(dir()),
+            };
+            let Some(dir) = dir else { continue };
+            let Ok(entries) = fs::read_dir(&dir) else { continue };
+            for e in entries.flatten() {
+                let name = e.file_name().to_string_lossy().into_owned();
+                if name.ends_with(".part") || name == "_download.zip" {
+                    let _ = fs::remove_file(e.path());
+                }
+            }
+        }
         let result = provision(&app, &missing);
         IN_PROGRESS.store(false, Ordering::SeqCst);
         match result {
