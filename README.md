@@ -53,7 +53,20 @@ Sotto uses the **Marshmallow** design language — a soft cream/lilac palette, N
 ## 📦 Getting Started (For Users)
 
 ### 1. Install (~4 MB)
-Grab the latest signed installer from the [**Releases page**](https://github.com/khairyKY/sotto/releases/latest) — pick `Sotto_x.y.z_x64-setup.exe` and run it.
+Grab the latest installer from the [**Releases page**](https://github.com/khairyKY/sotto/releases/latest) — pick `Sotto_x.y.z_x64-setup.exe` and run it.
+
+> [!IMPORTANT]
+> **Windows will warn you before it runs.** You'll see a blue **"Windows protected your PC"** screen. Click **More info → Run anyway**.
+>
+> This is expected, and it does **not** mean Sotto is malware. Windows shows that screen for any installer that isn't signed with a paid Authenticode certificate (~$100–200/year), which this project doesn't have — it's free and open source. SmartScreen is reporting *"I don't recognise this publisher"*, not *"this is dangerous"*.
+>
+> Don't just take our word for it. You can check:
+> - **Read the source.** All of it is in this repo, MIT licensed. The installer is built from exactly this code.
+> - **Scan it.** Upload the `.exe` to [VirusTotal](https://www.virustotal.com/) before running it.
+> - **Watch the network.** Sotto contacts exactly two URLs, both on `github.com`: the [release feed](https://github.com/khairyKY/sotto/releases/latest/download/latest.json) (update check) and the [`assets-v1` release](https://github.com/khairyKY/sotto/releases/tag/assets-v1) (models, first run only). There is no telemetry or analytics of any kind — grep the source. It also talks to `127.0.0.1:8177`, which is the AI-polish model running on your own machine; that's loopback and never leaves your PC. Once the models are downloaded, pull your network cable and it still works.
+> - **Check the signature.** Every release *is* cryptographically signed with [minisign](https://jedisct1.github.io/minisign/) for the auto-updater; that's what stops a tampered update from installing. It's just not the certificate flavour SmartScreen recognises.
+>
+> If you'd rather trust nothing, build it yourself — see [Development](#️-development--building-from-source).
 
 ### 2. First launch — one-time model download (~2.1 GB)
 The installer is intentionally tiny because the models aren't in it. On first launch Sotto opens Settings and downloads them once into `%APPDATA%\sotto`, with a progress banner. After that, dictation works fully offline, and app updates never re-download any of it.
@@ -91,6 +104,26 @@ Sotto checks GitHub on launch. When a newer version is out, the app window shows
 
 ### 5. Uninstalling
 Uninstall Sotto from **Settings → Apps** or via `Sotto_*_x64-setup.exe /uninstall`. The uninstaller removes the app, disables launch-at-login, and asks whether to also delete the ~2.8 GB of downloaded models and your settings (default: **keep**, so a reinstall is instant).
+
+---
+
+## 🩺 Troubleshooting
+
+**Something's wrong — where's the log?**
+
+`%APPDATA%\sotto\logs\sotto.log` (paste that into the Explorer address bar). Settings → **Data folder** → *Open folder* gets you there too.
+
+- `sotto.log` — the current run. `sotto.log.1` — the previous one. Plain text; open it in Notepad.
+- It records the app version, where it's reading models from, and what failed. **When reporting a bug, attach it** — it's the difference between a fix and a guessing game.
+- It never contains your dictated text. Counts and timings only.
+- Need more detail? Set `SOTTO_LOG=debug` and relaunch. `llama-server.log` in the same folder covers the AI polish sidecar.
+
+| Symptom | Likely cause |
+| :--- | :--- |
+| Tray icon there, hotkey does nothing | Another app grabbed the same key — rebind it in Settings. |
+| "Model downloading…" on the pill | First-run download hasn't finished. The take is stashed; press ↻ when it lands. |
+| Transcription is slow | Expected today — inference is CPU-only, roughly real-time. GPU support is planned. |
+| Text lands in the wrong window | Sotto pastes into whatever was focused when you *started* talking. It's also on your clipboard. |
 
 ---
 

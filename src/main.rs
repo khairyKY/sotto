@@ -31,6 +31,7 @@ use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicU32, AtomicU8, AtomicUsiz
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tauri::{Emitter, Manager};
+use tracing_subscriber::fmt::writer::MakeWriterExt;
 
 /// Ignore captured clips shorter than this — almost always an accidental tap.
 const MIN_CLIP_SAMPLES: usize = 16_000 / 2; // 0.5s at 16 kHz
@@ -414,11 +415,60 @@ fn set_stats_enabled(enabled: bool, state: tauri::State<'_, AppState>) {
     let _ = cfg.save();
 }
 
+/// Send tracing to a file, not just stdout.
+///
+/// Release builds are `windows_subsystem = "windows"` — there is no console, so
+/// every log line was going nowhere. When someone reported "it doesn't work"
+/// there was literally nothing to read: no file to ask for, no way to diagnose
+/// anything remotely. That's untenable once other people are running this.
+///
+/// Two files, no rotation crate: the current run and the previous one. The
+/// interesting failure is often the run *before* the user thought to complain.
+fn init_logging() {
+    // ORT's info-level logging is ~345 lines per launch of internal graph
+    // detail, which buries the handful of lines that actually explain a
+    // failure. Keep its warnings and errors, drop the narration.
+    // `SOTTO_LOG=debug` (or `ort::logging=info`) brings it all back.
+    let filter = std::env::var("SOTTO_LOG").unwrap_or_else(|_| "info,ort::logging=warn".into());
+    let dir = config::data_dir().join("logs");
+    let file = std::fs::create_dir_all(&dir).ok().and_then(|_| {
+        let path = dir.join("sotto.log");
+        let _ = std::fs::rename(&path, dir.join("sotto.log.1"));
+        std::fs::File::create(&path).ok()
+    });
+    match file {
+        // Tee: the file is for users, stdout still works under `cargo run` and
+        // for the --transcribe/--polish CLI paths.
+        Some(f) => tracing_subscriber::fmt()
+            .with_env_filter(filter)
+            // No ANSI escapes — this file gets opened in Notepad and pasted
+            // into a chat window.
+            .with_ansi(false)
+            .with_writer(std::io::stdout.and(std::sync::Arc::new(f)))
+            .init(),
+        // Couldn't open the log (read-only dir, disk full). Still run.
+        None => tracing_subscriber::fmt().with_env_filter(filter).init(),
+    }
+
+    // A panic is exactly the case where the log has to survive, and the default
+    // hook prints to a stderr that doesn't exist in a windowed build.
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        tracing::error!("PANIC: {info}");
+        default_hook(info);
+    }));
+
+    tracing::info!(
+        version = env!("CARGO_PKG_VERSION"),
+        data_dir = %config::data_dir().display(),
+        assets_dir = %config::assets_dir().display(),
+        "Sotto starting"
+    );
+}
+
 // ── main ───────────────────────────────────────────────────────────────
 fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(std::env::var("SOTTO_LOG").unwrap_or_else(|_| "info".into()))
-        .init();
+    init_logging();
     init_ort();
 
     if let Some(path) = arg_value("--transcribe") {
