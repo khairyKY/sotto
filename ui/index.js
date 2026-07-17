@@ -964,6 +964,13 @@ async function boot() {
   if ($("data-folder-path") && s.dataDir) {
     $("data-folder-path").textContent = s.dataDir;
   }
+  // Only worth its own row when the models actually live somewhere else —
+  // otherwise it'd just repeat the line above.
+  if (s.assetsDir && s.assetsDir !== s.dataDir) {
+    $("models-folder-path").textContent = s.assetsDir;
+    $("models-folder-row").hidden = false;
+    $("open-models-folder").onclick = () => invoke("open_url", { url: s.assetsDir });
+  }
 
   // Clear stats button wiring
   if ($("clear-stats-btn")) {

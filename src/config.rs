@@ -160,6 +160,16 @@ pub struct Config {
     /// so layout stays correct at any factor.
     #[serde(default = "default_zoom")]
     pub zoom: f64,
+    /// Where the ~2.8 GB of models + llama runtime live. Empty = keep them
+    /// next to this config in `data_dir()`.
+    ///
+    /// This exists because the assets are ~2.8 GB and the config is ~400 bytes:
+    /// anyone whose system drive is tight needs to put the big half elsewhere
+    /// (`D:\sotto`, an external disk, …) without moving their settings. Only
+    /// the assets are relocatable — config/stats/logs always stay in
+    /// `data_dir()`, because `config.toml` can't tell us where `config.toml` is.
+    #[serde(default)]
+    pub assets_dir: String,
 }
 
 fn default_zoom() -> f64 {
@@ -191,19 +201,18 @@ impl Default for Config {
             microphone: None,
             sound_enabled: true,
             zoom: default_zoom(),
+            assets_dir: String::new(),
         }
     }
 }
 
-/// Helper to find a read-only asset either in SOTTO_DATA_DIR, the app's local resources directory,
-/// or falling back to the default D:\sotto location.
+/// Locate a downloaded asset (model / runtime DLL). Resolution order:
+/// `SOTTO_DATA_DIR` env → a `resources/` dir next to the exe (portable builds)
+/// → `assets_dir()`.
 fn find_asset(relative_path: PathBuf) -> PathBuf {
-    // 1. Check if SOTTO_DATA_DIR is set
     if let Ok(dir) = std::env::var("SOTTO_DATA_DIR") {
         return PathBuf::from(dir).join(&relative_path);
     }
-    
-    // 2. Check if the resources directory next to the executable exists and contains the asset
     if let Ok(exe_path) = std::env::current_exe() {
         if let Some(exe_dir) = exe_path.parent() {
             let asset_path = exe_dir.join("resources").join(&relative_path);
@@ -212,27 +221,52 @@ fn find_asset(relative_path: PathBuf) -> PathBuf {
             }
         }
     }
-    
-    // 3. Fallback to data_dir()
-    data_dir().join(&relative_path)
+    assets_dir().join(&relative_path)
 }
 
-/// Writable root directory for Sotto configurations and logs.
+/// Writable root for Sotto's *small* state: config.toml, stats.jsonl, logs.
+/// A few hundred KB, and always in the OS-standard per-user location.
 ///
-/// Defaults to `D:\sotto` if it exists. Otherwise, falls back to the user's
-/// `%APPDATA%\sotto` directory. Override with the `SOTTO_DATA_DIR` environment variable.
+/// This deliberately can't be configured: `Config::path()` is
+/// `data_dir()/config.toml`, so anything that decided this location would have
+/// to be read before we know where the config is. The big, relocatable half is
+/// `assets_dir()` instead — that's the ~2.8 GB that actually needs a choice.
+///
+/// Override with `SOTTO_DATA_DIR` (tests, portable installs).
 pub fn data_dir() -> PathBuf {
     if let Ok(dir) = std::env::var("SOTTO_DATA_DIR") {
         return PathBuf::from(dir);
     }
-    let d_sotto = PathBuf::from(r"D:\sotto");
-    if d_sotto.exists() {
-        return d_sotto;
+    match std::env::var("APPDATA") {
+        Ok(appdata) => PathBuf::from(appdata).join("sotto"),
+        // APPDATA is always set on a real Windows session; this only trips in
+        // odd service contexts. Keep the app runnable rather than panicking.
+        Err(_) => PathBuf::from(r"C:\ProgramData\sotto"),
     }
-    if let Ok(appdata) = std::env::var("APPDATA") {
-        return PathBuf::from(appdata).join("sotto");
+}
+
+/// Root for the ~2.8 GB of downloaded models + llama runtime.
+///
+/// `assets_dir` in config.toml when set (e.g. `D:\sotto` to keep a tight system
+/// drive free), otherwise alongside the config in `data_dir()`.
+///
+/// Read straight from disk rather than from the live `Config` because the ORT
+/// dll path has to be resolved during `init_ort()`, before Tauri state exists.
+/// It's a ~400-byte file read a handful of times at startup.
+pub fn assets_dir() -> PathBuf {
+    if let Ok(dir) = std::env::var("SOTTO_DATA_DIR") {
+        return PathBuf::from(dir);
     }
-    d_sotto
+    let configured = std::fs::read_to_string(Config::path())
+        .ok()
+        .and_then(|s| toml::from_str::<Config>(&s).ok())
+        .map(|c| c.assets_dir)
+        .unwrap_or_default();
+    if configured.trim().is_empty() {
+        data_dir()
+    } else {
+        PathBuf::from(configured.trim())
+    }
 }
 
 /// Directory the Parakeet v3 int8 model files live in.
@@ -288,5 +322,56 @@ impl Config {
         }
         std::fs::write(&path, toml::to_string_pretty(self)?)?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod dir_tests {
+    use super::*;
+
+    /// The whole point of splitting data_dir from assets_dir: config.toml can't
+    /// tell us where config.toml is, so only the big half is relocatable.
+    #[test]
+    fn config_lives_in_data_dir_not_assets_dir() {
+        assert_eq!(Config::path(), data_dir().join("config.toml"));
+    }
+
+    #[test]
+    fn default_does_not_pin_assets_to_a_drive() {
+        assert!(Config::default().assets_dir.is_empty());
+    }
+
+    /// Guards the bug this replaced: a `D:\sotto` literal was baked into path
+    /// resolution, so any machine that happened to have that folder got 2.8 GB
+    /// written to it, and machines without a D: drive had no way to move the
+    /// assets at all. Matches the construct, not prose — doc comments are free
+    /// to name D:\sotto as the example it now is.
+    #[test]
+    fn no_drive_letter_is_hardcoded_in_path_resolution() {
+        let src = include_str!("config.rs");
+        let logic = &src[..src.find("mod dir_tests").unwrap()];
+        let code: String = logic
+            .lines()
+            .filter(|l| !l.trim_start().starts_with("//"))
+            .collect();
+        assert!(
+            !code.contains(r#"PathBuf::from(r"D:"#),
+            "path resolution must not construct a hardcoded drive path"
+        );
+    }
+
+    #[test]
+    fn assets_dir_is_configurable_and_trimmed() {
+        let cfg: Config = toml::from_str(
+            r#"
+hotkey = "ControlRight"
+activation_mode = "toggle"
+injection_mode = "paste"
+assets_dir = '  D:\sotto  '
+"#,
+        )
+        .unwrap();
+        // Trimmed at use, so a stray space in a hand-edited config still works.
+        assert_eq!(cfg.assets_dir.trim(), r"D:\sotto");
     }
 }

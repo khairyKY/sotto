@@ -175,8 +175,11 @@ struct SettingsPayload {
     has_take: bool,
     /// Details for Home's "last dictation wasn't delivered" card.
     take_info: Option<TakeInfo>,
-    /// Where models/config live, for the settings "Open folder" link.
+    /// Where config/stats live, for the settings "Open folder" link.
     data_dir: String,
+    /// Where the ~2.8 GB of models live — the same as `data_dir` unless the
+    /// user pointed `assets_dir` somewhere with more room.
+    assets_dir: String,
     zoom: f64,
 }
 
@@ -238,6 +241,7 @@ fn get_settings(state: tauri::State<'_, AppState>) -> SettingsPayload {
         has_take: take_info.is_some(),
         take_info,
         data_dir: config::data_dir().display().to_string(),
+        assets_dir: config::assets_dir().display().to_string(),
         zoom: cfg.zoom,
     }
 }

@@ -2,7 +2,7 @@
 //! models and the llama.cpp/CUDA runtime — that are deliberately **not** bundled
 //! in the installer, so app updates stay tiny (a few MB instead of ~1.8 GB).
 //!
-//! On first launch anything missing is downloaded once into `data_dir()` from
+//! On first launch anything missing is downloaded once into `assets_dir()` from
 //! the project's stable GitHub "assets" release; thereafter `config::*` finds
 //! the files locally and nothing is re-downloaded. These assets are versioned
 //! independently of the app (see `ASSET_BASE`), so shipping a new app version
@@ -46,7 +46,9 @@ struct Asset {
 }
 
 fn runtime_dir() -> PathBuf {
-    config::data_dir().join("runtime").join("llama")
+    // assets_dir(), not data_dir() — this is ~1.1 GB and must land wherever the
+    // user pointed their assets, matching config::llama_server_exe().
+    config::assets_dir().join("runtime").join("llama")
 }
 
 /// The assets the app needs to function, and where each lands. Markers are the
