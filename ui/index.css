@@ -454,6 +454,7 @@ body {
   text-transform: uppercase;
   color: var(--mm-header);
 }
+.settings-row[hidden] { display: none; }
 .settings-row {
   display: flex;
   align-items: center;
