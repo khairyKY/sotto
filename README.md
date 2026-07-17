@@ -15,32 +15,38 @@ The design philosophy of Sotto is **calm, quiet, precise, and unobtrusive** — 
 ## ✨ Features
 
 - **Push-to-Talk & Toggle Modes:** Hold to speak and release to transcribe, or tap once to start and tap again to stop.
-- **Offline ASR (Speech-to-Text):** Powered by NVIDIA's **Parakeet v3 int8** model running locally via ONNX Runtime. Extremely fast and accurate.
+- **Offline ASR (Speech-to-Text):** Powered by NVIDIA's **Parakeet v3 int8** model running locally via ONNX Runtime.
 - **AI Polish Tier:** Uses a local **Qwen2.5 1.5B Instruct** model via a background `llama.cpp` sidecar to clean up speech, correct grammar, fix stutters, and add punctuation.
 - **Rule-Based Polish Tier:** Fast, instant, zero-cost rules cleanup for short phrases, bypassing the LLM round-trip.
 - **Polish Word-Count Threshold:** Automatically routes shorter phrases through the rules tier and longer dictations through the AI tier.
-- **Custom Dictionary & Snippet Replacements:** Define custom abbreviations or replacements (e.g., `"gee pee tee"` ➔ `GPT`, `"my email"` ➔ `dev@sotto.app`).
-- **Dictation History:** Keeps a local in-memory history of recent dictations in the settings window. Click any history row to re-copy it.
-- **Calm UI Overlay:** A transparent click-through overlay showing a live mic waveform and state colors.
-- **Launch at Login:** Option to start automatically on system boot.
-- **Minimized Launch:** Start hidden directly to the system tray so it doesn't interrupt your flow.
+- **Custom Dictionary & Snippets:** Define custom replacements (e.g., `"gee pee tee"` ➔ `GPT`, `"my email"` ➔ `dev@sotto.app`).
+- **Cancel & Retry:** Press Escape (or click ✕ on the pill) to abort a dictation. The take is kept in memory, so ↻ on the pill — or **Retry last dictation** in the tray — re-runs it without speaking again.
+- **Insights Dashboard:** Words dictated, time saved, WPM, per-app breakdown, and a weekday-aligned streak calendar. Stats are local-only and can be turned off.
+- **Dictation History:** Recent dictations, with one click to re-copy or re-polish any row.
+- **Calm UI Overlay:** A transparent, click-through pill that only accepts clicks when a button is actually under your cursor.
+- **Themes & Zoom:** Light / Dark / follow-system, plus `Ctrl +` / `Ctrl -` / `Ctrl 0` to scale the whole window.
+- **Launch at Login** and **Minimized Launch:** Start automatically, hidden to the system tray.
+- **Clipboard Safety Net:** Every delivered dictation is also left on the clipboard, in case focus moved.
 
 ---
 
 ## 🎨 Visual Identity & State Signaling
 
-Sotto communicates its active status using a custom visual identity. The UI uses the **"Quiet"** overlay direction — a clean transparent pill displaying the S-mark logo and a live waveform, with state indicated by color:
+Sotto uses the **Marshmallow** design language — a soft cream/lilac palette, Newsreader + Hanken Grotesk type, and a calm neumorphic surface treatment. The overlay is a small pill that reports state by **color and motion**, so you can read it peripherally without reading text:
 
-| State | Color | Action / Meaning |
+| State | Color | What the pill shows |
 | :--- | :--- | :--- |
-| 🟢 **Listening** | Cyan (`#4FCFDB`) | S-mark + live waveform active. Ready for your speech. |
-| 🟡 **Transcribing** | Amber (`#E3A857`) | Waveform collapses to a dim track; traveling dot sweeps across. |
-| 🟠 **Polishing** | Gold (`#F0C982`) | Traveling dot changes to gold; small twinkles fade above/below (AI cleanup). |
-| 🔵 **Done** | Cyan (`#4FCFDB`) | Success checkmark draws, stays for a moment, then the pill fades out. |
-| 🔴 **Error** | Rose (`#D0959C`) | Display "!" glyph and "Didn't catch that". Muted, non-alarming. |
+| **Listening** | Lilac (`#8E74D0`) | Five bars dancing to your live mic level, plus a ✕ to cancel. |
+| **Transcribing** | Amber (`#D4A06A`) | Bars give way to dots sweeping left to right. |
+| **Polishing** | Gold (`#E8C78A`) | Drifting blobs with a shimmer and sparkles (AI tier only). |
+| **Done** | Lilac (`#8E74D0`) | A checkmark draws itself, then the pill fades out. |
+| **Cancelled** | Neutral | "Cancelled" + a ↻ to re-run the take. Auto-dismisses in 6s. |
+| **Error** | Blush (`#F0BFCF`) | "Didn't catch that" + ↻. Muted, non-alarming. |
+| **Model downloading** | Neutral | First-run only — the take is stashed, so ↻ works once the download lands. |
 
-> [!NOTE]  
-> The design source prototype is included in the repository at [docs/images/design_handoff_sotto/Sotto.dc.html](file:///D:/Coding/sotto-opencode/docs/images/design_handoff_sotto/Sotto.dc.html). You can open it in any browser to inspect the visual style, hover interactions, color specs, and animations.
+> [!NOTE]
+> The design source is in the repo: **[`Sotto Marshmallow.dc.html`](./Sotto%20Marshmallow.dc.html)** (open it in any browser for the live spec — colors, shadows, type, motion), with a literal extraction at [`docs/marshmallow-spec-extracted.md`](./docs/marshmallow-spec-extracted.md).
+> The earlier, superseded design lives at [`docs/images/design_handoff_sotto/Sotto.dc.html`](./docs/images/design_handoff_sotto/Sotto.dc.html) for reference only — it does **not** describe the current UI.
 
 ---
 
@@ -49,26 +55,37 @@ Sotto communicates its active status using a custom visual identity. The UI uses
 ### 1. Install (~4 MB)
 Grab the latest signed installer from the [**Releases page**](https://github.com/khairyKY/sotto/releases/latest) — pick `Sotto_x.y.z_x64-setup.exe` and run it.
 
-### 2. First launch — one-time model download (~1.8 GB)
-The installer itself is intentionally tiny. On first launch Sotto opens Settings and downloads the voice models + local-LLM runtime once into `%APPDATA%\sotto`; a progress banner keeps you informed. After that, dictation works fully offline and updates never re-download this again.
+### 2. First launch — one-time model download (~2.1 GB)
+The installer is intentionally tiny because the models aren't in it. On first launch Sotto opens Settings and downloads them once into `%APPDATA%\sotto`, with a progress banner. After that, dictation works fully offline, and app updates never re-download any of it.
+
+| Download | On disk | What it is |
+| :--- | :--- | :--- |
+| 1066 MB | 1066 MB | `qwen2.5-1.5b-instruct-q4_k_m.gguf` — the local LLM behind the **AI polish** tier |
+| 446 MB | 639 MB | **Parakeet v3 int8** — the speech-recognition model |
+| 647 MB | 1141 MB | `llama.cpp` runtime (the bulk is CUDA: `ggml-cuda` + `cuBLAS`) |
+| 13 MB | 13 MB | `onnxruntime.dll` — runs the speech model |
+| **~2.1 GB** | **~2.8 GB** | |
+
+> [!TIP]
+> Only the AI polish tier needs the LLM and its CUDA runtime (~1.7 GB of the total). The **Rules** tier is instant and local-only.
 
 ### 3. Use it
-Sotto launches minimized to the **system tray** (check the `^` overflow menu next to the clock). Right-click the tray icon (charcoal S-mark) for **Settings**, **Polish mode**, **Pause**, or **Quit**.
+Sotto launches minimized to the **system tray** (check the `^` overflow menu next to the clock). **Left-click** the tray icon to open the app; **right-click** for a menu with **Settings**, **Insights**, **History**, **Dictionary**, **Retry last dictation**, **Pause**, and **Quit**.
 
-Open any app, hold **Right Ctrl**, speak, release — Sotto transcribes locally and pastes the text into the focused window.
+Open any app, hold **Right Ctrl** (the default — rebindable in Settings), speak, release. Sotto transcribes locally and pastes into the focused window. Press **Escape** to cancel; the take is kept so you can retry it.
 
 ### 4. Updates — one click, ~4 MB
-Sotto checks GitHub on launch. When a newer version is out, a **native Windows toast** appears and the Settings window shows an **Install & restart** banner. Click it — the small installer downloads, verifies its signature, and relaunches. Your models and settings are untouched.
+Sotto checks GitHub on launch. When a newer version is out, the app window shows an **Install & restart** banner (dismissable with ✕). Click it — the small installer downloads, verifies its minisign signature, and relaunches. Your models and settings are untouched.
 
 ### 5. Uninstalling
-Uninstall Sotto from **Settings → Apps** or via `Sotto_*_x64-setup.exe /uninstall`. The uninstaller removes the app, disables launch-at-login, and asks whether to also delete the ~1.8 GB of downloaded models and your settings (default: keep — so a reinstall is instant).
+Uninstall Sotto from **Settings → Apps** or via `Sotto_*_x64-setup.exe /uninstall`. The uninstaller removes the app, disables launch-at-login, and asks whether to also delete the ~2.8 GB of downloaded models and your settings (default: **keep**, so a reinstall is instant).
 
 ---
 
 ## 🛠️ Development & Building from Source
 
 Sotto is structured as a Tauri v2 application:
-- **Rust Core:** Handles hotkey listening (`rdev`), audio recording (`cpal`), ASR model compilation (`transcribe-rs`), local LLM integration, and text injection (`windows-sys`).
+- **Rust Core:** Handles hotkey listening (`rdev`), audio recording (`cpal`), ASR (`transcribe-rs` over ONNX Runtime), local LLM integration (`llama.cpp` sidecar), and text injection (`windows`).
 - **Frontend:** Transparent overlay pill and Settings windows built using HTML, CSS, and vanilla JS (`ui/`).
 
 ### Prerequisites
