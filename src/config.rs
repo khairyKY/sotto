@@ -33,6 +33,16 @@ pub struct DictEntry {
     pub replacement: String,
 }
 
+/// A per-app tone override: `app` is matched case-insensitively against
+/// `stats::app_name()`'s output (the focused app when the take was recorded);
+/// `tone` is the instruction text itself — same free-form string the default
+/// `Config::tone` holds — appended to the AI-polish system prompt.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct AppTone {
+    pub app: String,
+    pub tone: String,
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum InjectionMode {
@@ -163,6 +173,16 @@ pub struct Config {
     /// Dictation dictionary / snippet replacements, edited in the settings window.
     #[serde(default)]
     pub dictionary: Vec<DictEntry>,
+    /// Default tone instruction appended to the AI-polish system prompt.
+    /// Empty = off — today's prompt, byte-identical. AI tier only: Rules/Off
+    /// strip and fix, they don't re-voice a sentence, so this has no effect
+    /// there (see `Polisher::polish_with_tone`).
+    #[serde(default)]
+    pub tone: String,
+    /// Per-app tone overrides. Falls back to `tone` when the focused app
+    /// (matched case-insensitively) has no entry here.
+    #[serde(default)]
+    pub app_tones: Vec<AppTone>,
     /// Start minimized to the tray (no window shown on launch).
     #[serde(default = "default_true")]
     pub start_hidden: bool,
@@ -219,6 +239,8 @@ impl Default for Config {
             llm: LlmConfig::default(),
             asr: AsrConfig::default(),
             dictionary: Vec::new(),
+            tone: String::new(),
+            app_tones: Vec::new(),
             start_hidden: true,
             stats_enabled: true,
             theme: default_theme(),

@@ -15,6 +15,8 @@ const mock = {
     { spoken: "my email", replacement: "dev@sotto.app" },
     { spoken: "arrow", replacement: "→" },
   ],
+  tone: "",
+  appTones: [],
   history: [
     { time: "2:14 PM", text: "Let's ship the overlay states first." },
     { time: "1:58 PM", text: "dev@sotto.app" },
@@ -538,6 +540,170 @@ $("snip-add").onclick = () => {
   renderSnipPage(snipEntries);
 };
 
+// ── tone ──
+// Presets map to instruction strings; the backend just stores whatever
+// string it's given (see set_tone / set_app_tones in main.rs), no enum.
+const TONE_PRESETS = {
+  professional: "Write in a professional, polished tone.",
+  friendly: "Write in a warm, friendly tone.",
+  concise: "Keep it concise and to the point.",
+  casual: "Write in a casual, relaxed tone.",
+};
+function toneKeyForValue(tone) {
+  if (!tone) return "";
+  const hit = Object.entries(TONE_PRESETS).find(([, v]) => v === tone);
+  return hit ? hit[0] : "custom";
+}
+// Lets a per-app tone row's free-text field suggest the same presets as the
+// default-tone select, without a second select+custom widget.
+if ($("tone-preset-datalist")) {
+  $("tone-preset-datalist").innerHTML =
+    Object.values(TONE_PRESETS).map(v => `<option value="${escapeHtml(v)}"></option>`).join("");
+}
+// Tone rewrites voice, which only the AI polish tier can do — Rules just
+// strips/fixes. Greyed out (not hidden) so it reads as "needs a setting",
+// not "broken".
+function updateToneDisabled(polishMode) {
+  const card = $("tone-card");
+  if (!card) return;
+  const enabled = polishMode === "ai";
+  card.classList.toggle("disabled", !enabled);
+  if ($("tone-sub")) {
+    $("tone-sub").textContent = enabled
+      ? "Casual in Slack, professional in email — the Wispr Flow model."
+      : "Needs AI polish — switch Cleanup to AI above to use tones.";
+  }
+}
+function setToneSelectUI(tone) {
+  const key = toneKeyForValue(tone);
+  if ($("tone-select")) $("tone-select").value = key;
+  const isCustom = key === "custom";
+  if ($("tone-custom-row")) $("tone-custom-row").hidden = !isCustom;
+  if ($("tone-custom-input")) $("tone-custom-input").value = isCustom ? tone : "";
+}
+// Suggests apps the user has actually dictated into (reusing the Insights
+// per-app breakdown) via a native <datalist> — free text still works for
+// apps not seen yet.
+async function populateToneAppDatalist() {
+  const dl = $("tone-app-datalist");
+  if (!dl) return;
+  try {
+    const stats = await invoke("get_stats");
+    const apps = (stats?.topApps || []).map(a => a.name).filter(Boolean);
+    dl.innerHTML = apps.map(a => `<option value="${escapeHtml(a)}"></option>`).join("");
+  } catch {}
+}
+
+// Per-app tone rows — same add/edit/remove list shape as the Dictionary page
+// (reuses its dict-row-view / dict-entries-container markup and classes).
+let appTones = [];
+function renderToneAppsPage(entries) {
+  const host = $("tone-apps-list");
+  if (!host) return;
+  host.innerHTML = "";
+  if (!entries.length) {
+    host.innerHTML = '<div style="padding:14px 16px;font-size:12.5px;color:var(--mm-muted-3)">No per-app tones yet</div>';
+    return;
+  }
+  entries.forEach((e) => {
+    const row = document.createElement("div");
+    row.className = "dict-row-view";
+
+    let isEditing = (e.app === "");
+
+    const renderRowContent = () => {
+      if (isEditing) {
+        row.innerHTML = `
+          <input class="spoken" list="tone-app-datalist" value="${escapeHtml(e.app)}" placeholder="app (e.g. Slack)" style="flex:1; margin-right:4px;" />
+          <span class="arrow" style="margin:0 4px; color:var(--mm-muted-3);">&rarr;</span>
+          <input class="replacement" list="tone-preset-datalist" value="${escapeHtml(e.tone)}" placeholder="tone instruction" style="flex:1; margin-right:8px;" />
+          <div class="actions" style="display:flex; gap:10px; align-items:center;">
+            <span class="action-btn save-btn" title="Save" style="color:var(--mm-status-green); font-size:14px; font-weight:bold;">&#10003;</span>
+            <span class="action-btn cancel-btn" title="Cancel" style="color:var(--mm-coral); font-size:14px; font-weight:bold;">&#10005;</span>
+          </div>
+        `;
+        row.querySelector(".save-btn").onclick = (ev) => {
+          ev.stopPropagation();
+          const appName = row.querySelector(".spoken").value.trim();
+          const tone = row.querySelector(".replacement").value.trim();
+          if (appName) {
+            e.app = appName;
+            e.tone = tone;
+            isEditing = false;
+            saveToneApps();
+            renderRowContent();
+          }
+        };
+        row.querySelector(".cancel-btn").onclick = (ev) => {
+          ev.stopPropagation();
+          if (e.app === "") {
+            appTones.splice(appTones.indexOf(e), 1);
+            renderToneAppsPage(appTones);
+          } else {
+            isEditing = false;
+            renderRowContent();
+          }
+        };
+        row.querySelector(".spoken").focus();
+      } else {
+        row.innerHTML = `
+          <span class="term">${escapeHtml(e.app)}</span>
+          <span class="arrow">&rarr;</span>
+          <span class="replace">${escapeHtml(e.tone)}</span>
+          <div class="actions">
+            <span class="action-btn edit-btn" title="Edit">
+              <svg viewBox="0 0 20 20" width="15" height="15"><path d="M13 4 L16 7 L7 16 H4 V13 Z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg>
+            </span>
+            <span class="action-btn del-btn" title="Remove">
+              <svg viewBox="0 0 20 20" width="15" height="15"><path d="M5 5 L15 15 M15 5 L5 15" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+            </span>
+          </div>
+        `;
+        row.querySelector(".edit-btn").onclick = (ev) => {
+          ev.stopPropagation();
+          isEditing = true;
+          renderRowContent();
+        };
+        row.querySelector(".del-btn").onclick = (ev) => {
+          ev.stopPropagation();
+          appTones.splice(appTones.indexOf(e), 1);
+          saveToneApps();
+        };
+      }
+    };
+
+    renderRowContent();
+    host.appendChild(row);
+  });
+}
+function saveToneApps() {
+  appTones = appTones.filter(e => e.app.trim() !== "");
+  invoke("set_app_tones", { tones: appTones });
+  renderToneAppsPage(appTones);
+}
+if ($("tone-app-add")) $("tone-app-add").onclick = () => {
+  appTones.push({ app: "", tone: "" });
+  renderToneAppsPage(appTones);
+};
+if ($("tone-select")) $("tone-select").onchange = () => {
+  const key = $("tone-select").value;
+  const isCustom = key === "custom";
+  if ($("tone-custom-row")) $("tone-custom-row").hidden = !isCustom;
+  const tone = key === "" ? "" : (isCustom ? ($("tone-custom-input")?.value.trim() || "") : TONE_PRESETS[key]);
+  invoke("set_tone", { tone });
+  if (isCustom && $("tone-custom-input")) $("tone-custom-input").focus();
+};
+if ($("tone-custom-input")) $("tone-custom-input").onchange = () => {
+  invoke("set_tone", { tone: $("tone-custom-input").value.trim() });
+};
+function initToneUI(s) {
+  setToneSelectUI(s.tone || "");
+  updateToneDisabled(s.polish);
+  appTones = (s.appTones || []).map(e => ({ ...e }));
+  renderToneAppsPage(appTones);
+  populateToneAppDatalist();
+}
+
 // ── history page ──
 let historyEntries = [];
 function renderHistoryPage(entries) {
@@ -985,6 +1151,7 @@ async function boot() {
   // boot() — settings, dictionary, snippets, history — in one TypeError.
   if ($("theme")) selectSegment($("theme"), s.theme || "system");
   setThresholdUI(s.threshold);
+  initToneUI(s);
   renderModels(s.models || []);
   if ($("asr-language-select")) {
     $("asr-language-select").value = s.asrLanguage || "auto";
@@ -1034,7 +1201,7 @@ async function boot() {
   }
 
   initSegmented($("activation"), (v) => invoke("set_activation", { mode: v }));
-  initSegmented($("polish"), (v) => invoke("set_polish", { mode: v }));
+  initSegmented($("polish"), (v) => { invoke("set_polish", { mode: v }); updateToneDisabled(v); });
   if ($("theme")) initSegmented($("theme"), (v) => {
     applyTheme(v);
     invoke("set_theme", { theme: v });

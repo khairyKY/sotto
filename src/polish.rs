@@ -68,16 +68,48 @@ impl Polisher {
         self.controls.ai_min_words.load(Ordering::Relaxed)
     }
 
-    /// Clean up `raw` according to the configured mode. Never fails: the worst
-    /// case is returning the trimmed raw transcript, so a dictation is never
-    /// lost to a polish error. Alongside the text, reports how many words the
+    /// Clean up `raw` according to the configured mode, using the default
+    /// tone (no app context — this is `repolish_copy`'s path, re-running a
+    /// history row with only its text). Never fails: the worst case is
+    /// returning the trimmed raw transcript, so a dictation is never lost to
+    /// a polish error. Alongside the text, reports how many words the
     /// cleanup changed and how many dictionary replacements fired — the
     /// "fixes made by Sotto" numbers on the Insights dashboard.
     pub fn polish(&self, raw: &str) -> PolishResult {
+        let tone = self.controls.tone.lock().unwrap().clone();
+        self.polish_with_tone(raw, &tone)
+    }
+
+    /// Same as `polish`, but resolves a tone for `app` first: an exact
+    /// case-insensitive match in the per-app overrides wins, else the default
+    /// tone, else no tone at all. Used on the live delivery path, where the
+    /// focused app is known.
+    pub fn polish_for(&self, raw: &str, app: &str) -> PolishResult {
+        let tone = self.resolve_tone(app);
+        self.polish_with_tone(raw, &tone)
+    }
+
+    /// Tone-lookup order: per-app override → default tone → "" (no
+    /// instruction, prompt stays byte-identical to before tones existed).
+    fn resolve_tone(&self, app: &str) -> String {
+        if !app.is_empty() {
+            let app_tones = self.controls.app_tones.lock().unwrap();
+            if let Some((_, tone)) = app_tones.iter().find(|(a, _)| a.eq_ignore_ascii_case(app)) {
+                return tone.clone();
+            }
+        }
+        self.controls.tone.lock().unwrap().clone()
+    }
+
+    fn polish_with_tone(&self, raw: &str, tone: &str) -> PolishResult {
         let cleaned = match self.mode() {
+            // Tone rewrites voice, which only the AI tier can do — Rules just
+            // strips/fixes, it can't re-voice a sentence. `tone` is unused on
+            // these two branches on purpose, so Off/Rules stay byte-identical
+            // to before tones existed.
             PolishMode::Off => raw.trim().to_string(),
             PolishMode::Rules => self.apply_harper(&tier0(raw)),
-            PolishMode::Ai => self.polish_ai(raw),
+            PolishMode::Ai => self.polish_ai(raw, tone),
         };
         // Diff BEFORE the dictionary pass so corrected-words and dict-hits
         // don't double-count the same word.
@@ -132,7 +164,7 @@ impl Polisher {
 
     /// Tier 1: route long-enough dictations through the LLM, falling back to
     /// Tier 0 rules for short clips, a missing sidecar, or any LLM error.
-    fn polish_ai(&self, raw: &str) -> String {
+    fn polish_ai(&self, raw: &str, tone: &str) -> String {
         let rules = tier0(raw);
 
         if word_count(raw) < self.ai_min_words() {
@@ -152,7 +184,7 @@ impl Polisher {
         let Some(llm) = &self.llm else { return rules };
 
         let t = std::time::Instant::now();
-        match llm.polish(raw) {
+        match llm.polish(raw, tone) {
             Ok(text) if !text.trim().is_empty() => {
                 tracing::info!(llm_ms = t.elapsed().as_millis(), "AI polish applied");
                 text
@@ -437,5 +469,46 @@ mod tests {
         assert_eq!(changed_words("ship the crate", "ship the create"), 1);
         // Empty raw vs text.
         assert_eq!(changed_words("", "three new words"), 3);
+    }
+
+    // ── tone resolution ──────────────────────────────────────────────
+    fn test_polisher(default_tone: &str, app_tones: &[(&str, &str)]) -> Polisher {
+        let cfg = crate::config::Config::default();
+        let controls = crate::Controls::from_config(&cfg);
+        *controls.tone.lock().unwrap() = default_tone.to_string();
+        *controls.app_tones.lock().unwrap() =
+            app_tones.iter().map(|(a, t)| (a.to_string(), t.to_string())).collect();
+        Polisher::new(controls, cfg.llm.clone())
+    }
+
+    #[test]
+    fn resolve_tone_prefers_exact_app_match_case_insensitively() {
+        let p = test_polisher("Professional tone.", &[("Slack", "Casual and friendly.")]);
+        assert_eq!(p.resolve_tone("slack"), "Casual and friendly.");
+    }
+
+    #[test]
+    fn resolve_tone_falls_back_to_default_when_no_app_match() {
+        let p = test_polisher("Professional tone.", &[("Slack", "Casual and friendly.")]);
+        assert_eq!(p.resolve_tone("chrome"), "Professional tone.");
+        assert_eq!(p.resolve_tone(""), "Professional tone.");
+    }
+
+    #[test]
+    fn resolve_tone_empty_default_yields_no_tone() {
+        // Off by default, no app entries — matches today's behavior exactly.
+        let p = test_polisher("", &[]);
+        assert_eq!(p.resolve_tone("anything"), "");
+    }
+
+    #[test]
+    fn tone_has_no_effect_outside_ai_mode() {
+        // PolishMode defaults to Rules — tone must not change the output,
+        // since only the AI tier can re-voice a sentence (see
+        // `polish_with_tone`).
+        let p = test_polisher("Casual and friendly.", &[]);
+        let with_app = p.polish_for("um hello there", "slack");
+        let default = p.polish("um hello there");
+        assert_eq!(with_app.text, default.text);
     }
 }

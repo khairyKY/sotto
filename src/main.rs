@@ -23,7 +23,7 @@ mod startup;
 mod stats;
 mod tray;
 
-use config::{ActivationMode, Config, DictEntry, InjectionMode, PolishMode};
+use config::{ActivationMode, AppTone, Config, DictEntry, InjectionMode, PolishMode};
 use hotkey::DictationEvent;
 use single_instance::SingleInstanceGuard;
 use std::path::PathBuf;
@@ -50,6 +50,11 @@ pub struct Controls {
     pub hotkey_idx: Arc<AtomicUsize>,
     pub ai_min_words: Arc<AtomicUsize>,
     pub dictionary: Arc<Mutex<Vec<(String, String)>>>,
+    /// Default tone instruction for AI polish; empty = off. Same live-editable
+    /// shape as `dictionary` — settings writes it, the polisher reads it live.
+    pub tone: Arc<Mutex<String>>,
+    /// Per-app tone overrides: (app name, tone instruction) pairs.
+    pub app_tones: Arc<Mutex<Vec<(String, String)>>>,
     pub history: history::History,
     /// Live mic RMS (f32 bits), written by the audio callback.
     pub level: Arc<AtomicU32>,
@@ -101,6 +106,10 @@ impl Controls {
             dictionary: Arc::new(Mutex::new(
                 cfg.dictionary.iter().map(|e| (e.spoken.clone(), e.replacement.clone())).collect(),
             )),
+            tone: Arc::new(Mutex::new(cfg.tone.clone())),
+            app_tones: Arc::new(Mutex::new(
+                cfg.app_tones.iter().map(|e| (e.app.clone(), e.tone.clone())).collect(),
+            )),
             history: history::History::new(),
             level: Arc::new(AtomicU32::new(0)),
             listening: Arc::new(AtomicBool::new(false)),
@@ -128,6 +137,11 @@ struct AppState {
 struct DictEntryDto {
     spoken: String,
     replacement: String,
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+struct AppToneDto {
+    app: String,
+    tone: String,
 }
 #[derive(serde::Serialize, Clone)]
 struct HistoryDto {
@@ -167,6 +181,9 @@ struct SettingsPayload {
     launch_login: bool,
     start_hidden: bool,
     dictionary: Vec<DictEntryDto>,
+    /// Default tone instruction; "" = off.
+    tone: String,
+    app_tones: Vec<AppToneDto>,
     history: Vec<HistoryDto>,
     models: Vec<ModelDto>,
     hotkey_options: Vec<HotkeyOption>,
@@ -239,6 +256,8 @@ fn get_settings(state: tauri::State<'_, AppState>) -> SettingsPayload {
         launch_login: startup::is_enabled(),
         start_hidden: cfg.start_hidden,
         dictionary: c.dictionary.lock().unwrap().iter().map(|(s, r)| DictEntryDto { spoken: s.clone(), replacement: r.clone() }).collect(),
+        tone: c.tone.lock().unwrap().clone(),
+        app_tones: c.app_tones.lock().unwrap().iter().map(|(a, t)| AppToneDto { app: a.clone(), tone: t.clone() }).collect(),
         history: c.history.snapshot().into_iter().map(|e| HistoryDto { time: e.time, text: e.text }).collect(),
         models: vec![
             ModelDto {
@@ -350,6 +369,25 @@ fn set_dictionary(entries: Vec<DictEntryDto>, state: tauri::State<'_, AppState>)
     *state.controls.dictionary.lock().unwrap() = pairs.clone();
     let mut cfg = state.cfg.lock().unwrap();
     cfg.dictionary = pairs.into_iter().map(|(spoken, replacement)| DictEntry { spoken, replacement }).collect();
+    let _ = cfg.save();
+}
+#[tauri::command]
+fn set_tone(tone: String, state: tauri::State<'_, AppState>) {
+    *state.controls.tone.lock().unwrap() = tone.clone();
+    let mut cfg = state.cfg.lock().unwrap();
+    cfg.tone = tone;
+    let _ = cfg.save();
+}
+#[tauri::command]
+fn set_app_tones(tones: Vec<AppToneDto>, state: tauri::State<'_, AppState>) {
+    let pairs: Vec<(String, String)> = tones
+        .into_iter()
+        .filter(|e| !e.app.trim().is_empty())
+        .map(|e| (e.app, e.tone))
+        .collect();
+    *state.controls.app_tones.lock().unwrap() = pairs.clone();
+    let mut cfg = state.cfg.lock().unwrap();
+    cfg.app_tones = pairs.into_iter().map(|(app, tone)| AppTone { app, tone }).collect();
     let _ = cfg.save();
 }
 #[tauri::command]
@@ -551,7 +589,7 @@ fn main() -> anyhow::Result<()> {
         .manage(state)
         .invoke_handler(tauri::generate_handler![
             get_settings, set_hotkey, set_activation, set_polish, set_threshold,
-            set_dictionary, set_launch_login, set_start_hidden, set_theme, copy_text,
+            set_dictionary, set_tone, set_app_tones, set_launch_login, set_start_hidden, set_theme, copy_text,
             set_asr_model, set_asr_language,
             open_url, check_update, install_update, retry_last, cancel_dictation, dismiss_take,
             repolish_copy,
@@ -1043,11 +1081,14 @@ fn process_take(
         return;
     }
 
-    // Stage 2 — polish.
+    // Stage 2 — polish. Resolve the focused app once, here — it's the tone
+    // lookup key below and the stats line further down, so one syscall covers
+    // both instead of querying Windows twice.
+    let app_name = stats::app_name(take.focus_target);
     if polisher.uses_ai_tier(&raw) {
         emit_state(app, "polishing");
     }
-    let result = polisher.polish(&raw);
+    let result = polisher.polish_for(&raw, &app_name);
     if cancelled.swap(false, Ordering::SeqCst) {
         emit_state(app, "cancelled");
         record_outcome(&take, stats_enabled, "cancelled");
@@ -1082,7 +1123,7 @@ fn process_take(
                 stats::record(&stats::entry_now(
                     words,
                     take.audio_ms,
-                    stats::app_name(take.focus_target),
+                    app_name.clone(),
                     &take.tier,
                     result.corrected_words,
                     result.dict_hits,

@@ -934,6 +934,10 @@ input[type="range"]::-webkit-slider-thumb {
   overflow: hidden;
   padding: 0;
 }
+/* Tone needs the AI polish tier (only it can re-voice a sentence) — greyed
+   out and inert rather than hidden, so it reads as "needs a setting" instead
+   of "broken" or "missing". Same opacity as .select-wrapper.disabled. */
+.settings-card.disabled { opacity: 0.55; pointer-events: none; }
 .select-wrapper {
   display: flex;
   align-items: center;

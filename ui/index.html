@@ -345,6 +345,49 @@
                 </div>
               </div>
 
+              <div class="settings-section-title">Tone</div>
+              <div class="card-raised settings-card" id="tone-card">
+                <div class="settings-row bare">
+                  <div class="row-label">
+                    <div class="label">Default tone</div>
+                    <div class="sub" id="tone-sub">Casual in Slack, professional in email &mdash; the Wispr Flow model.</div>
+                  </div>
+                  <div class="row-control">
+                    <div class="select-wrapper">
+                      <select class="select-native" id="tone-select">
+                        <option value="">Off</option>
+                        <option value="professional">Professional</option>
+                        <option value="friendly">Friendly</option>
+                        <option value="concise">Concise</option>
+                        <option value="casual">Casual</option>
+                        <option value="custom">Custom&hellip;</option>
+                      </select>
+                      <span class="select-arrow">&#9660;</span>
+                    </div>
+                  </div>
+                </div>
+                <div class="settings-row bare" id="tone-custom-row" hidden>
+                  <div class="row-label nowrap">
+                    <div class="label">Instruction</div>
+                  </div>
+                  <input type="text" class="search-input" id="tone-custom-input" placeholder="e.g. Write like a pirate" style="flex:1" />
+                </div>
+                <div class="divider"></div>
+                <div class="settings-row bare" style="flex-direction:column; align-items:stretch; gap:10px">
+                  <div class="page-head-row">
+                    <div class="row-label">
+                      <div class="label">Per-app overrides</div>
+                    </div>
+                    <span class="link-change" id="tone-app-add">+ Add app</span>
+                  </div>
+                  <div class="card-recessed dict-entries-container" style="margin-bottom:0">
+                    <div class="dict-entries-list" id="tone-apps-list"></div>
+                  </div>
+                </div>
+              </div>
+              <datalist id="tone-app-datalist"></datalist>
+              <datalist id="tone-preset-datalist"></datalist>
+
               <div class="settings-section-title">Speech model</div>
               <div class="card-raised settings-card">
                 <div id="model-list">

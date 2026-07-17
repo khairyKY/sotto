@@ -3,3 +3,13 @@
 # (the master/egui fallback).
 [target.x86_64-pc-windows-gnu]
 linker = "D:/Coding/Tools/mingw64/bin/gcc.exe"
+
+[env]
+# Turns ggml's SIMD kernels on — without this, whisper.cpp compiles scalar and
+# takes ~237s to transcribe 1.5s of audio (~160x slower than real-time). See the
+# toolchain file for the full story. It lives here rather than in a shell so
+# every build gets it: an env var you have to remember is one you will forget,
+# and the failure mode is a silently 160x-slower binary, not an error.
+# `relative = true` resolves against this file's directory, so it works on any
+# checkout without hardcoding a machine path.
+CMAKE_TOOLCHAIN_FILE = { value = "scripts/msvc-avx2-toolchain.cmake", relative = true }

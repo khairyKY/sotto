@@ -36,6 +36,19 @@ Clean up this voice-dictation transcript: remove fillers (um, uh, like), keep \
 the speaker's wording, fix punctuation and capitalization. Reply with ONLY the \
 cleaned text, no preamble, no quotes.";
 
+/// Append the resolved tone as one extra clause. `tone` is already a short
+/// instruction sentence (a frontend preset or free-typed text), so this is
+/// just a space-join — no extra wording to protect the latency budget above.
+/// Empty tone (off, or no resolution matched) leaves the prompt untouched.
+fn system_prompt(tone: &str) -> String {
+    let tone = tone.trim();
+    if tone.is_empty() {
+        SYSTEM_PROMPT.to_string()
+    } else {
+        format!("{SYSTEM_PROMPT} {tone}")
+    }
+}
+
 struct Inner {
     child: Option<Child>,
     last_used: Instant,
@@ -93,9 +106,10 @@ impl Llm {
         }
     }
 
-    /// Rewrite `raw` via the LLM. Returns `Err` on any failure so the caller
-    /// can fall back to rules-based cleanup.
-    pub fn polish(&self, raw: &str) -> Result<String> {
+    /// Rewrite `raw` via the LLM, optionally re-voiced per `tone` (an
+    /// instruction sentence, or "" for none). Returns `Err` on any failure so
+    /// the caller can fall back to rules-based cleanup.
+    pub fn polish(&self, raw: &str, tone: &str) -> Result<String> {
         {
             let mut g = self.inner.lock().unwrap();
             self.ensure_spawned(&mut g)?;
@@ -109,7 +123,7 @@ impl Llm {
         // generation). This is the single biggest wall-clock win once warm.
         let words = raw.split_whitespace().count() as u32;
         let max_tokens = (words * 3 + 20).min(self.cfg.max_tokens);
-        let out = self.request_with_timeout(raw, max_tokens)?;
+        let out = self.request_with_timeout(raw, max_tokens, tone)?;
 
         self.inner.lock().unwrap().last_used = Instant::now();
         Ok(clean_output(&out))
@@ -177,11 +191,11 @@ impl Llm {
 
     /// POST the chat completion, bounding it with a hard wall-clock timeout by
     /// running the (blocking) request on a scratch thread.
-    fn request_with_timeout(&self, raw: &str, max_tokens: u32) -> Result<String> {
+    fn request_with_timeout(&self, raw: &str, max_tokens: u32, tone: &str) -> Result<String> {
         let url = format!("http://127.0.0.1:{}/v1/chat/completions", self.cfg.port);
         let body = ChatRequest {
             messages: vec![
-                Message { role: "system", content: SYSTEM_PROMPT.to_string() },
+                Message { role: "system", content: system_prompt(tone) },
                 Message { role: "user", content: raw.to_string() },
             ],
             temperature: self.cfg.temperature,
@@ -255,4 +269,21 @@ struct Choice {
 #[derive(Deserialize)]
 struct ResponseMessage {
     content: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn empty_tone_leaves_system_prompt_unchanged() {
+        assert_eq!(system_prompt(""), SYSTEM_PROMPT);
+        assert_eq!(system_prompt("   "), SYSTEM_PROMPT); // whitespace-only counts as off
+    }
+
+    #[test]
+    fn tone_appends_as_one_extra_clause() {
+        let out = system_prompt("Casual and friendly.");
+        assert_eq!(out, format!("{SYSTEM_PROMPT} Casual and friendly."));
+    }
 }
