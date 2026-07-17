@@ -203,6 +203,13 @@ fn get_settings(state: tauri::State<'_, AppState>) -> SettingsPayload {
         PolishMode::Rules => "rules",
         PolishMode::Ai => "ai",
     };
+    // Lock ONCE, before the struct literal. Every temporary inside a struct
+    // expression lives until the end of the enclosing statement, so two
+    // `take_info.lock()` calls in two fields both hold a guard at the same
+    // time — and std's Mutex isn't reentrant, so the second one deadlocks the
+    // thread. Tauri runs sync commands on the main thread, so that hung the
+    // message loop: no tray, no clicks, no hotkey, nothing.
+    let take_info = c.take_info.lock().unwrap().clone();
     let installed = config::model_dir().exists();
     let size = dir_size_mb(config::model_dir()).map(|mb| format!("{mb} MB")).unwrap_or_default();
     SettingsPayload {
@@ -228,8 +235,8 @@ fn get_settings(state: tauri::State<'_, AppState>) -> SettingsPayload {
         microphone_options: audio::list_input_devices(),
         paused: c.paused.load(Ordering::Relaxed),
         sound_enabled: c.sound_enabled.load(Ordering::Relaxed),
-        has_take: c.take_info.lock().unwrap().is_some(),
-        take_info: c.take_info.lock().unwrap().clone(),
+        has_take: take_info.is_some(),
+        take_info,
         data_dir: config::data_dir().display().to_string(),
         zoom: cfg.zoom,
     }
