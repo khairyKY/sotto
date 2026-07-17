@@ -443,6 +443,8 @@ $("dict-add").onclick = () => {
   dictEntries.push(newEntry);
   renderDictPage(dictEntries);
 };
+// The banner's "+ Add word" chip is a second trigger for the same flow.
+if ($("dict-warn-add")) $("dict-warn-add").onclick = () => $("dict-add").click();
 
 // ── snippets ──
 let snipEntries = [];
@@ -540,6 +542,7 @@ $("snip-add").onclick = () => {
   snipEntries.push(newEntry);
   renderSnipPage(snipEntries);
 };
+if ($("snip-warn-add")) $("snip-warn-add").onclick = () => $("snip-add").click();
 
 // ── tone ──
 // Presets map to instruction strings; the backend just stores whatever

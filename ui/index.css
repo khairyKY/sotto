@@ -686,52 +686,100 @@ input[type="range"]::-webkit-slider-thumb {
   color: var(--mm-accent);
 }
 
-/* ── warning / intro cards ─────────────────────────── */
+/* ── intro banners (Dictionary / Snippets) ──────────────
+   Flow's promo banners re-imagined in Marshmallow: a raised lilac surface with
+   a serif headline, a soft accent glow, and chips that lift on hover. No photo
+   backdrops — the depth is our own neumorphic shadow, so it stays calm. */
 .dict-warn-card {
   position: relative;
-  background: var(--mm-tint);
-  border-radius: 13px;
-  padding: 15px 17px;
-  margin-bottom: 14px;
+  overflow: hidden;
+  background: linear-gradient(135deg, var(--mm-tint), var(--mm-surface));
+  border-radius: 16px;
+  padding: 20px 22px;
+  margin-bottom: 16px;
+  box-shadow: var(--mm-raised);
+}
+/* Soft off-canvas accent glow, top-right — Marshmallow's answer to Flow's
+   blurred photo. Very low alpha so it reads as light, not decoration. */
+.dict-warn-card::before {
+  content: "";
+  position: absolute;
+  top: -60px;
+  right: -40px;
+  width: 200px;
+  height: 200px;
+  border-radius: 50%;
+  background: radial-gradient(circle, var(--mm-accent) 0%, transparent 70%);
+  opacity: 0.16;
+  pointer-events: none;
 }
 .dict-warn-close {
   position: absolute;
-  top: 11px;
-  right: 13px;
-  color: var(--mm-accent-ink);
+  top: 14px;
+  right: 15px;
+  width: 22px;
+  height: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  color: var(--mm-muted);
   font-family: 'Hanken Grotesk', sans-serif;
-  font-size: 13px;
+  font-size: 12px;
   font-weight: 500;
   cursor: pointer;
   background: none;
   border: none;
   padding: 0;
   line-height: 1;
+  transition: background 0.14s, color 0.14s;
 }
+.dict-warn-close:hover { background: rgba(127,127,127,0.12); color: var(--mm-ink); }
 .dict-warn-title {
-  font: 500 14px Newsreader;
-  color: var(--mm-accent-ink);
-  margin-bottom: 5px;
+  position: relative;
+  font: 500 21px/1.15 Newsreader;
+  color: var(--mm-ink);
+  margin-bottom: 7px;
+  letter-spacing: -0.01em;
 }
+/* The italic emphasis word, the way Flow stresses "you". */
+.dict-warn-title em { font-style: italic; color: var(--mm-accent-ink); }
 .dict-warn-desc {
-  font: 400 11.5px/1.55 'Hanken Grotesk';
+  position: relative;
+  font: 400 12.5px/1.6 'Hanken Grotesk';
   color: var(--mm-text-secondary);
-  margin-bottom: 11px;
-  max-width: 420px;
+  margin-bottom: 14px;
+  max-width: 440px;
 }
 .dict-warn-tags {
+  position: relative;
   display: flex;
-  gap: 7px;
+  gap: 8px;
   flex-wrap: wrap;
 }
 .dict-warn-tag {
-  font: 500 10.5px 'JetBrains Mono';
+  font: 500 11px 'JetBrains Mono';
   background: var(--mm-base);
   color: var(--mm-accent-ink);
-  padding: 4px 9px;
-  border-radius: 7px;
+  padding: 6px 11px;
+  border-radius: 9px;
   white-space: nowrap;
+  box-shadow: var(--mm-raised-sm);
+  transition: transform 0.14s ease, box-shadow 0.14s ease, color 0.14s;
 }
+.dict-warn-tag:hover {
+  transform: translateY(-2px);
+  box-shadow: 5px 6px 12px rgba(196, 183, 165, 0.42), -4px -4px 10px rgba(255, 254, 250, 0.62);
+}
+/* The first chip is the call to action — filled accent, presses in on click. */
+.dict-warn-tag.action {
+  background: var(--mm-accent);
+  color: #fff;
+  cursor: pointer;
+}
+:root[data-theme="dark"] .dict-warn-tag.action { color: var(--mm-window); }
+.dict-warn-tag.action:hover { filter: brightness(1.06); }
+.dict-warn-tag.action:active { transform: translateY(0); box-shadow: var(--mm-inset-sm); }
 
 /* ── dictionary & snippets lists ───────────────────── */
 .dict-entries-container, .history-entries-container {

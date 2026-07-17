@@ -32,9 +32,12 @@ const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 // that slows generation). Measured: cutting the previous 5-rule prompt (~90
 // tokens) to this (~35) drops warm total latency ~10% on a 1.5B Q4.
 const SYSTEM_PROMPT: &str = "\
-Clean up this voice-dictation transcript: remove fillers (um, uh, like), keep \
-the speaker's wording, fix punctuation and capitalization. Reply with ONLY the \
-cleaned text, no preamble, no quotes.";
+Clean up this voice-dictation transcript. Fix punctuation and capitalization, \
+and remove speech fillers (um, uh, like, يعني). Keep the speaker's exact words \
+and language — never translate. If the text mixes languages (e.g. Egyptian \
+Arabic with English words), keep each word in the language it was spoken and \
+add the right punctuation for that script. Reply with ONLY the cleaned text, no \
+preamble, no quotes.";
 
 /// Append the resolved tone as one extra clause. `tone` is already a short
 /// instruction sentence (a frontend preset or free-typed text), so this is
@@ -121,8 +124,13 @@ impl Llm {
         // punctuation. Prevents the model from running away (the old flat cap
         // was 1024, which at 118 tok/s on a 3050 = potentially 8s of pointless
         // generation). This is the single biggest wall-clock win once warm.
+        // words * 4, not * 3: Arabic and other non-Latin scripts tokenize to
+        // 2-3x more subword tokens per word than English, so a tighter cap
+        // truncated code-switched Arabic mid-sentence. This is a ceiling, not a
+        // target — the model still stops at end-of-text — so the extra headroom
+        // is free for English and only prevents a real cut-off for Arabic.
         let words = raw.split_whitespace().count() as u32;
-        let max_tokens = (words * 3 + 20).min(self.cfg.max_tokens);
+        let max_tokens = (words * 4 + 24).min(self.cfg.max_tokens);
         let out = self.request_with_timeout(raw, max_tokens, tone)?;
 
         self.inner.lock().unwrap().last_used = Instant::now();
