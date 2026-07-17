@@ -961,11 +961,14 @@ input[type="range"]::-webkit-slider-thumb {
   max-width: 200px;
 }
 .select-native option { background: var(--mm-base); color: var(--mm-text); }
+.select-native:disabled { color: var(--mm-muted-2); cursor: default; }
 .select-arrow {
   color: var(--mm-muted-2);
   font-size: 9px;
   pointer-events: none;
 }
+/* Language picker greyed out when Parakeet (English-only) is selected. */
+.select-wrapper.disabled { opacity: 0.55; cursor: default; }
 
 /* danger button */
 .btn-secondary-danger {

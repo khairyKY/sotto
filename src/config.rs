@@ -127,6 +127,27 @@ impl Default for LlmConfig {
     }
 }
 
+/// Which speech engine to transcribe with, and what language to expect.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AsrConfig {
+    /// "parakeet-v3" (default: English-only, fast, small download) or
+    /// "whisper-turbo" (multilingual, larger download).
+    pub model: String,
+    /// BCP-47 code (e.g. "en", "ar"), or "auto" to let the engine detect it.
+    /// Parakeet is English-only and ignores this either way.
+    pub language: String,
+}
+
+impl Default for AsrConfig {
+    fn default() -> Self {
+        Self {
+            model: "parakeet-v3".to_string(),
+            language: "auto".to_string(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
     /// rdev key name, e.g. "ControlRight", "F13", "AltRight".
@@ -137,6 +158,8 @@ pub struct Config {
     pub polish: PolishConfig,
     #[serde(default)]
     pub llm: LlmConfig,
+    #[serde(default)]
+    pub asr: AsrConfig,
     /// Dictation dictionary / snippet replacements, edited in the settings window.
     #[serde(default)]
     pub dictionary: Vec<DictEntry>,
@@ -194,6 +217,7 @@ impl Default for Config {
             injection_mode: InjectionMode::Paste,
             polish: PolishConfig::default(),
             llm: LlmConfig::default(),
+            asr: AsrConfig::default(),
             dictionary: Vec::new(),
             start_hidden: true,
             stats_enabled: true,
@@ -269,9 +293,42 @@ pub fn assets_dir() -> PathBuf {
     }
 }
 
+/// Which ASR engine is configured, read the same way as `assets_dir()` — a
+/// raw disk read rather than `Config::load_or_init()`, so asset provisioning
+/// (which can run before or without full app state) never has the side
+/// effect of writing a fresh config.toml just to check this.
+pub fn asr_model() -> String {
+    std::fs::read_to_string(Config::path())
+        .ok()
+        .and_then(|s| toml::from_str::<Config>(&s).ok())
+        .map(|c| c.asr.model)
+        .unwrap_or_else(|| AsrConfig::default().model)
+}
+
 /// Directory the Parakeet v3 int8 model files live in.
 pub fn model_dir() -> PathBuf {
     find_asset(PathBuf::from("models").join("parakeet-tdt-0.6b-v3-int8"))
+}
+
+/// GGML model file for the Whisper engine (`asr.model = "whisper-turbo"`).
+/// A single file, unlike Parakeet's directory of ONNX parts.
+pub fn whisper_model_path() -> PathBuf {
+    find_asset(PathBuf::from("models").join("ggml-large-v3-turbo-q5_0.bin"))
+}
+
+/// Is the *configured* speech model actually on disk yet?
+///
+/// Lives here rather than at the call site because the answer differs per
+/// engine — Parakeet is a directory of ONNX parts, Whisper is one .bin — and a
+/// caller that hardcodes either one silently misreports the other. It drives
+/// the "still downloading" vs "real failure" split the overlay shows, so
+/// getting it wrong tells the user to wait for a download that already
+/// finished.
+pub fn asr_model_present() -> bool {
+    match asr_model().as_str() {
+        "whisper-turbo" => whisper_model_path().exists(),
+        _ => model_dir().join("encoder-model.int8.onnx").exists(),
+    }
 }
 
 /// Path to the ONNX Runtime shared library (`ort` load-dynamic target).

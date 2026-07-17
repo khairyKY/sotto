@@ -21,10 +21,11 @@ const mock = {
     { time: "11:02 AM", text: "Refactor the polish tier." },
   ],
   models: [
-    { name: "Parakeet v3", variant: "· English", meta: "NVIDIA · int8 quantized", state: "installed", size: "670 MB", selected: true },
-    { name: "Parakeet v3", variant: "· multilingual", meta: "25 languages · int8", state: "download", size: "720 MB" },
-    { name: "Whisper large-v3", variant: "", meta: "", state: "downloading", progress: 62 },
+    { id: "parakeet-v3", name: "Parakeet v3", variant: "· English", meta: "NVIDIA · int8 quantized", state: "installed", size: "639 MB", selected: true },
+    { id: "whisper-turbo", name: "Whisper turbo", variant: "· 99 languages", meta: "OpenAI · large-v3-turbo q5_0", state: "download", size: "547 MB", selected: false },
   ],
+  asrModel: "parakeet-v3",
+  asrLanguage: "auto",
 };
 
 async function invoke(cmd, args) {
@@ -559,6 +560,11 @@ function renderHistoryPage(entries) {
 function loadHistory() { renderHistoryPage(historyEntries); }
 
 // ── settings page wiring ──
+// `selected` (which engine set_asr_model chose) and `state` (installed vs.
+// download, i.e. is it actually on disk) are independent — a model can be
+// selected but not yet downloaded, mid-download-and-restart. Only
+// installed + selected is truly ACTIVE; installed-but-not-selected offers a
+// switch, not-installed always offers Download regardless of selection.
 function renderModels(models) {
   const host = $("model-list");
   host.innerHTML = "";
@@ -566,14 +572,14 @@ function renderModels(models) {
     if (i) host.insertAdjacentHTML("beforeend", '<div class="divider"></div>');
     const row = document.createElement("div");
     row.className = "model-row";
-    
+
     let rightStatus = "";
-    if (m.selected) {
+    if (m.selected && m.state === "installed") {
       rightStatus = `<span class="model-badge">ACTIVE</span>`;
     } else if (m.state === "installed") {
-      rightStatus = `<span class="model-badge" style="color:var(--mm-muted-2); background:rgba(127,127,127,0.12);">INSTALLED</span>`;
+      rightStatus = `<button class="btn btn-outline model-select-btn" style="font-size:11px; padding:4px 10px; border-radius:6px;">Use this</button>`;
     } else if (m.state === "download") {
-      rightStatus = `<button class="btn btn-primary" style="font-size:11px; padding:4px 10px; border-radius:6px;">Download</button>`;
+      rightStatus = `<button class="btn btn-primary model-download-btn" style="font-size:11px; padding:4px 10px; border-radius:6px;">Download</button>`;
     } else if (m.state === "downloading") {
       rightStatus = `<span class="mono" style="font-size:11px;">downloading &middot; ${m.progress}%</span>`;
     }
@@ -593,8 +599,44 @@ function renderModels(models) {
       <div style="flex:1"></div>
       ${rightStatus}
     `;
+    const selectBtn = row.querySelector(".model-select-btn");
+    if (selectBtn) selectBtn.onclick = () => selectAsrModel(m.id);
+    const downloadBtn = row.querySelector(".model-download-btn");
+    if (downloadBtn) downloadBtn.onclick = () => selectAsrModel(m.id, true);
     host.appendChild(row);
   });
+  updateLanguageDisabled(models.find(m => m.selected)?.id);
+}
+
+// Picking a model (installed switch, or a not-yet-downloaded Download click)
+// only ever changes which engine is *configured* — asr.rs caches the loaded
+// model at startup, so this can't take effect until a restart either way.
+async function selectAsrModel(id, alsoDownload) {
+  await invoke("set_asr_model", { model: id });
+  showAsrRestartNote();
+  if (alsoDownload) invoke("download_assets");
+  const s = await getSettings();
+  renderModels(s.models || []);
+}
+
+function showAsrRestartNote() {
+  const row = $("asr-restart-row");
+  if (row) row.hidden = false;
+}
+
+// Parakeet is English-only and provably ignores the language setting — grey
+// the picker out and say so, rather than let it silently do nothing.
+function updateLanguageDisabled(modelId) {
+  const wrapper = $("asr-language-wrapper");
+  const select = $("asr-language-select");
+  const sub = $("asr-language-sub");
+  if (!wrapper || !select) return;
+  const isParakeet = modelId === "parakeet-v3";
+  select.disabled = isParakeet;
+  wrapper.classList.toggle("disabled", isParakeet);
+  if (sub) sub.textContent = isParakeet
+    ? "Parakeet is English-only and ignores this."
+    : "Which language to expect, or auto-detect";
 }
 
 async function copyText(text) {
@@ -944,6 +986,13 @@ async function boot() {
   if ($("theme")) selectSegment($("theme"), s.theme || "system");
   setThresholdUI(s.threshold);
   renderModels(s.models || []);
+  if ($("asr-language-select")) {
+    $("asr-language-select").value = s.asrLanguage || "auto";
+    $("asr-language-select").onchange = () => {
+      invoke("set_asr_language", { language: $("asr-language-select").value });
+      showAsrRestartNote();
+    };
+  }
   populateMicPicker(s.microphone_options || s.microphoneOptions || [], s.microphone || "");
   $("launch-login").setAttribute("aria-checked", String(!!s.launchLogin));
   $("start-hidden").setAttribute("aria-checked", String(!!s.startHidden));

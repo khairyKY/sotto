@@ -1,6 +1,6 @@
 [package]
 name = "sotto"
-version = "0.1.10"
+version = "0.2.0"
 edition = "2024"
 
 [build-dependencies]
@@ -11,6 +11,7 @@ anyhow = "1.0.103"
 arboard = "3.6.1"
 cpal = "0.18.1"
 crossbeam-channel = "0.5.16"
+harper-core = { version = "2.5.0", features = ["concurrent"] }
 ort = { version = "=2.0.0-rc.12", default-features = false, features = ["load-dynamic"] }
 rdev = "0.5.3"
 serde = { version = "1.0.228", features = ["derive"] }
@@ -23,7 +24,7 @@ tauri-plugin-updater = "2"
 toml = "1.1.2"
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
-transcribe-rs = { git = "https://github.com/cjpais/transcribe-rs", version = "0.3.11", features = ["onnx"] }
+transcribe-rs = { git = "https://github.com/cjpais/transcribe-rs", version = "0.3.11", features = ["onnx", "whisper-cpp"] }
 ureq = { version = "3.3.0", features = ["json"] }
 zip = { version = "2", default-features = false, features = ["deflate"] }
 windows = { version = "0.62.2", features = ["Win32_Foundation", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_WindowsAndMessaging", "Win32_System_Threading", "Win32_System_Diagnostics_Debug", "Win32_Security", "Win32_System_JobObjects", "Win32_System_SystemInformation", "Win32_Media_Audio"] }

@@ -137,6 +137,9 @@ struct HistoryDto {
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ModelDto {
+    /// Stable id ("parakeet-v3" / "whisper-turbo") — what `set_asr_model`
+    /// accepts. The frontend must select by this, never by `name`.
+    id: String,
     name: String,
     variant: String,
     meta: String,
@@ -182,6 +185,12 @@ struct SettingsPayload {
     /// user pointed `assets_dir` somewhere with more room.
     assets_dir: String,
     zoom: f64,
+    /// Currently configured ASR engine id ("parakeet-v3" / "whisper-turbo") —
+    /// also derivable from `models`, but exposed directly so the language
+    /// dropdown can disable itself without re-deriving it.
+    asr_model: String,
+    /// BCP-47 code, or "auto".
+    asr_language: String,
 }
 
 // ── commands ───────────────────────────────────────────────────────────
@@ -214,8 +223,13 @@ fn get_settings(state: tauri::State<'_, AppState>) -> SettingsPayload {
     // thread. Tauri runs sync commands on the main thread, so that hung the
     // message loop: no tray, no clicks, no hotkey, nothing.
     let take_info = c.take_info.lock().unwrap().clone();
-    let installed = config::model_dir().exists();
-    let size = dir_size_mb(config::model_dir()).map(|mb| format!("{mb} MB")).unwrap_or_default();
+    let parakeet_installed = config::model_dir().join("encoder-model.int8.onnx").exists();
+    // Falls back to the known approximate download size when not yet on disk
+    // — `dir_size_mb` of a path that doesn't exist yet is `None`, and a blank
+    // "MB" reads as a bug, not as "not downloaded yet".
+    let parakeet_size = dir_size_mb(config::model_dir()).map(|mb| format!("{mb} MB")).unwrap_or_else(|| "639 MB".into());
+    let whisper_installed = config::whisper_model_path().exists();
+    let whisper_size = dir_size_mb(config::whisper_model_path()).map(|mb| format!("{mb} MB")).unwrap_or_else(|| "547 MB".into());
     SettingsPayload {
         hotkey_options,
         hotkey: hotkey::SUPPORTED_HOTKEYS[idx].1.to_string(),
@@ -226,14 +240,26 @@ fn get_settings(state: tauri::State<'_, AppState>) -> SettingsPayload {
         start_hidden: cfg.start_hidden,
         dictionary: c.dictionary.lock().unwrap().iter().map(|(s, r)| DictEntryDto { spoken: s.clone(), replacement: r.clone() }).collect(),
         history: c.history.snapshot().into_iter().map(|e| HistoryDto { time: e.time, text: e.text }).collect(),
-        models: vec![ModelDto {
-            name: "Parakeet v3".into(),
-            variant: "· English".into(),
-            meta: "NVIDIA · int8 quantized".into(),
-            state: if installed { "installed" } else { "download" }.into(),
-            size,
-            selected: installed,
-        }],
+        models: vec![
+            ModelDto {
+                id: "parakeet-v3".into(),
+                name: "Parakeet v3".into(),
+                variant: "· English".into(),
+                meta: "NVIDIA · int8 quantized".into(),
+                state: if parakeet_installed { "installed" } else { "download" }.into(),
+                size: parakeet_size,
+                selected: cfg.asr.model == "parakeet-v3",
+            },
+            ModelDto {
+                id: "whisper-turbo".into(),
+                name: "Whisper turbo".into(),
+                variant: "· 99 languages".into(),
+                meta: "OpenAI · large-v3-turbo q5_0".into(),
+                state: if whisper_installed { "installed" } else { "download" }.into(),
+                size: whisper_size,
+                selected: cfg.asr.model == "whisper-turbo",
+            },
+        ],
         theme: cfg.theme.clone(),
         microphone: c.microphone.lock().unwrap().clone().unwrap_or_default(),
         microphone_options: audio::list_input_devices(),
@@ -244,6 +270,8 @@ fn get_settings(state: tauri::State<'_, AppState>) -> SettingsPayload {
         data_dir: config::data_dir().display().to_string(),
         assets_dir: config::assets_dir().display().to_string(),
         zoom: cfg.zoom,
+        asr_model: cfg.asr.model.clone(),
+        asr_language: cfg.asr.language.clone(),
     }
 }
 
@@ -342,6 +370,33 @@ fn set_theme(theme: String, state: tauri::State<'_, AppState>) {
     if !valid { return; }
     let mut cfg = state.cfg.lock().unwrap();
     cfg.theme = theme;
+    let _ = cfg.save();
+}
+
+/// Switch the configured ASR engine. Persisted only — `asr::Asr::new()` reads
+/// this once at startup and caches the loaded model, so (honestly) this takes
+/// effect on the *next* restart, not this session. No live `Controls` field to
+/// flip, unlike `set_theme`/`set_microphone`.
+#[tauri::command]
+fn set_asr_model(model: String, state: tauri::State<'_, AppState>) {
+    let valid = model == "parakeet-v3" || model == "whisper-turbo";
+    if !valid { return; }
+    let mut cfg = state.cfg.lock().unwrap();
+    cfg.asr.model = model;
+    let _ = cfg.save();
+}
+
+/// Set the expected dictation language ("auto" or a BCP-47 code). Same
+/// restart-required caveat as `set_asr_model` — and Parakeet ignores this
+/// entirely, English-only regardless of what's stored here.
+#[tauri::command]
+fn set_asr_language(language: String, state: tauri::State<'_, AppState>) {
+    let language = language.trim();
+    let valid = language == "auto"
+        || (!language.is_empty() && language.len() <= 8 && language.chars().all(|c| c.is_ascii_alphanumeric() || c == '-'));
+    if !valid { return; }
+    let mut cfg = state.cfg.lock().unwrap();
+    cfg.asr.language = language.to_string();
     let _ = cfg.save();
 }
 
@@ -497,6 +552,7 @@ fn main() -> anyhow::Result<()> {
         .invoke_handler(tauri::generate_handler![
             get_settings, set_hotkey, set_activation, set_polish, set_threshold,
             set_dictionary, set_launch_login, set_start_hidden, set_theme, copy_text,
+            set_asr_model, set_asr_language,
             open_url, check_update, install_update, retry_last, cancel_dictation, dismiss_take,
             repolish_copy,
             get_stats, clear_stats, set_stats_enabled, set_microphone, set_sound_enabled, set_zoom,
@@ -751,6 +807,9 @@ fn spawn_pipeline(
         // first dictation doesn't eat the ~5s load. Any Start that arrives
         // meanwhile just queues on the channel.
         asr.preload();
+        // Same reasoning for Harper's lint set (~640 ms): pay it here, behind
+        // the ASR load, not on the user's first dictation.
+        polisher.warm_rules();
         // The last dictation, kept in memory so Escape/error is recoverable
         // via Retry. Overwritten by the next Start; cleared on successful
         // delivery.
@@ -959,8 +1018,7 @@ fn process_take(
                 // Distinguish "the model isn't on disk yet" (first-run
                 // download still in flight) from a real failure — the take is
                 // stashed either way, so ↻ works once the download lands.
-                let model_missing =
-                    !config::model_dir().join("encoder-model.int8.onnx").exists();
+                let model_missing = !config::asr_model_present();
                 emit_state(app, if model_missing { "nomodel" } else { "error" });
                 record_outcome(&take, stats_enabled, "error");
                 take.reason = if model_missing { "Speech model still downloading" } else { "Couldn't transcribe it" };
@@ -1132,10 +1190,18 @@ fn emit_history(app: &tauri::AppHandle, history: &history::History) {
     let _ = app.emit("history-updated", dto);
 }
 
-/// Sum of file sizes in `dir`, in MB (whole number). None if unreadable.
-fn dir_size_mb(dir: PathBuf) -> Option<u64> {
+/// Size on disk in MB (whole number): sum of files if `path` is a directory
+/// (Parakeet's ONNX parts), or the file's own length if it's a single file
+/// (Whisper's one .bin) — `read_dir` on a file just errors, which used to
+/// silently report a blank size for Whisper instead of falling back to this.
+/// None if `path` doesn't exist (not downloaded yet) or is unreadable.
+fn dir_size_mb(path: PathBuf) -> Option<u64> {
+    let meta = std::fs::metadata(&path).ok()?;
+    if meta.is_file() {
+        return Some(meta.len() / 1_000_000);
+    }
     let mut total = 0u64;
-    for entry in std::fs::read_dir(dir).ok()?.flatten() {
+    for entry in std::fs::read_dir(path).ok()?.flatten() {
         if let Ok(meta) = entry.metadata() {
             if meta.is_file() {
                 total += meta.len();

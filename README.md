@@ -139,7 +139,18 @@ Sotto is structured as a Tauri v2 application:
    rustup override set stable-x86_64-pc-windows-msvc
    ```
 2. **C++ Toolchain:** Requires MSVC Build Tools and the Windows SDK (installed by running `./scripts/setup-msvc.ps1` as Administrator).
-3. **Node.js:** For dev dependencies and bundling:
+3. **CMake + libclang.** The Whisper engine compiles `whisper.cpp` from source, and its Rust bindings are generated with `bindgen`. Without both of these the build fails on `Unable to find libclang`, which does not obviously mean "you're missing CMake too".
+   ```powershell
+   # CMake — any 3.x+; portable zip is fine, no installer needed
+   $env:PATH = 'C:\path\to\cmake\bin;' + $env:PATH
+
+   # libclang.dll. Full LLVM works, but it's ~2 GB for one DLL.
+   # The `libclang` PyPI wheel ships the same DLL in ~80 MB:
+   #   python -m pip install libclang
+   $env:LIBCLANG_PATH = 'C:\path\to\python\Lib\site-packages\clang\native'
+   ```
+   Both are build-time only — neither is shipped or required by end users.
+4. **Node.js:** For dev dependencies and bundling:
    ```powershell
    npm install
    ```

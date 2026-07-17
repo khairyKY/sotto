@@ -1,44 +1,80 @@
-//! Speech-to-text via Parakeet TDT 0.6b v3 (int8) through `transcribe-rs`.
+//! Speech-to-text via `transcribe-rs`, switchable between Parakeet TDT 0.6b v3
+//! (int8, English-only, fast) and Whisper large-v3-turbo (multilingual)
+//! depending on `config::AsrConfig::model`.
 //!
-//! The model (~670 MB) is loaded lazily on the first dictation so startup
-//! stays instant and idle memory stays near zero. ONNX Runtime is loaded
-//! dynamically at runtime from `onnxruntime.dll` (see `main::init_ort`).
+//! The model (hundreds of MB) is loaded lazily on the first dictation so
+//! startup stays instant and idle memory stays near zero. ONNX Runtime (used
+//! by Parakeet) is loaded dynamically at runtime from `onnxruntime.dll` (see
+//! `main::init_ort`).
 
 use crate::config;
 use anyhow::Context;
-use std::path::PathBuf;
-use transcribe_rs::onnx::parakeet::{ParakeetModel, ParakeetParams};
+use transcribe_rs::onnx::parakeet::ParakeetModel;
 use transcribe_rs::onnx::Quantization;
+use transcribe_rs::whisper_cpp::WhisperEngine;
+use transcribe_rs::{SpeechModel, TranscribeOptions};
 
 pub struct Asr {
-    model: Option<ParakeetModel>,
-    model_dir: PathBuf,
+    model: Option<Box<dyn SpeechModel>>,
+    /// `config::AsrConfig::model` at construction time, e.g. "parakeet-v3" or
+    /// "whisper-turbo". Switching engines needs a fresh `Asr` (app restart),
+    /// same as any other model-affecting setting.
+    engine: String,
+    /// `None` = auto-detect (config `language = "auto"`).
+    language: Option<String>,
+}
+
+/// Maps the config's language string to what `TranscribeOptions` expects.
+fn to_language_option(lang: &str) -> Option<String> {
+    if lang.eq_ignore_ascii_case("auto") {
+        None
+    } else {
+        Some(lang.to_string())
+    }
 }
 
 impl Asr {
     pub fn new() -> Self {
+        let cfg = config::Config::load_or_init().unwrap_or_default();
         Self {
             model: None,
-            model_dir: config::model_dir(),
+            engine: cfg.asr.model,
+            language: to_language_option(&cfg.asr.language),
         }
     }
 
-    fn ensure_loaded(&mut self) -> anyhow::Result<&mut ParakeetModel> {
+    fn ensure_loaded(&mut self) -> anyhow::Result<&mut dyn SpeechModel> {
         if self.model.is_none() {
-            let encoder = self.model_dir.join("encoder-model.int8.onnx");
-            anyhow::ensure!(
-                encoder.exists(),
-                "Parakeet model not found at {} — download it first",
-                self.model_dir.display()
-            );
-
             let t = std::time::Instant::now();
-            let model = ParakeetModel::load(&self.model_dir, &Quantization::Int8)
-                .context("loading Parakeet model")?;
-            tracing::info!(load_ms = t.elapsed().as_millis(), "Parakeet model loaded");
+            let model: Box<dyn SpeechModel> = if self.engine == "whisper-turbo" {
+                let path = config::whisper_model_path();
+                anyhow::ensure!(
+                    path.exists(),
+                    "Whisper model not found at {} — download it first",
+                    path.display()
+                );
+                Box::new(WhisperEngine::load(&path).context("loading Whisper model")?)
+            } else {
+                let dir = config::model_dir();
+                let encoder = dir.join("encoder-model.int8.onnx");
+                anyhow::ensure!(
+                    encoder.exists(),
+                    "Parakeet model not found at {} — download it first",
+                    dir.display()
+                );
+                Box::new(
+                    ParakeetModel::load(&dir, &Quantization::Int8)
+                        .context("loading Parakeet model")?,
+                )
+            };
+            tracing::info!(
+                load_ms = t.elapsed().as_millis(),
+                engine = %self.engine,
+                "ASR model loaded"
+            );
             self.model = Some(model);
         }
-        Ok(self.model.as_mut().unwrap())
+        Ok(self.model.as_deref_mut().unwrap())
     }
 
     /// Load the model now instead of on the first dictation. It costs ~5s, and
@@ -54,10 +90,36 @@ impl Asr {
 
     /// Transcribe 16 kHz mono f32 samples into trimmed text.
     pub fn transcribe(&mut self, samples: &[f32]) -> anyhow::Result<String> {
+        let options = TranscribeOptions {
+            language: self.language.clone(),
+            ..Default::default()
+        };
         let model = self.ensure_loaded()?;
+        // `SpeechModel::transcribe` (not `transcribe_raw`) so Parakeet still
+        // gets its 250 ms leading-silence padding via `default_leading_silence_ms`;
+        // Whisper defaults to none. Parakeet's `transcribe_raw` ignores
+        // `options.language` entirely (English-only), so passing it through
+        // unconditionally is safe for both engines.
         let result = model
-            .transcribe_with(samples, &ParakeetParams::default())
+            .transcribe(samples, &options)
             .context("transcription failed")?;
         Ok(result.text.trim().to_string())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn auto_language_maps_to_none() {
+        assert_eq!(to_language_option("auto"), None);
+        assert_eq!(to_language_option("Auto"), None); // config value isn't case-sensitive
+    }
+
+    #[test]
+    fn explicit_language_passes_through() {
+        assert_eq!(to_language_option("en"), Some("en".to_string()));
+        assert_eq!(to_language_option("ar"), Some("ar".to_string()));
     }
 }

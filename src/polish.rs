@@ -6,7 +6,10 @@
 //!   uses no models and no GPU. Conservative and idempotent: it only removes
 //!   unambiguous filler words, normalizes whitespace, and capitalizes the first
 //!   letter. Parakeet already emits punctuation and casing, so Tier 0
-//!   deliberately does *not* try to re-punctuate.
+//!   deliberately does *not* try to re-punctuate. On top of that it runs
+//!   `harper-core`'s offline grammar checker, restricted to mechanical,
+//!   single-suggestion lints (see `SAFE_LINT_KINDS`) — still instant, still
+//!   never a guess at what the user meant.
 //! * **Tier 1 (AI)** — for longer dictations, hands the text to a local LLM for
 //!   Wispr-Flow-style rewriting. Not wired yet (Phase 2b); the seam is here and
 //!   currently falls back to Tier 0 so behavior is already correct.
@@ -14,6 +17,10 @@
 use crate::config::{LlmConfig, PolishMode};
 use crate::llm::Llm;
 use crate::Controls;
+use harper_core::linting::{Lint, LintGroup, LintKind, Linter};
+use harper_core::spell::FstDictionary;
+use harper_core::{Dialect, Document, remove_overlaps};
+use std::cell::RefCell;
 use std::sync::atomic::Ordering;
 
 /// Unambiguous spoken disfluencies. Kept intentionally short: every entry here
@@ -27,6 +34,13 @@ pub struct Polisher {
     /// settings window without a restart.
     controls: Controls,
     llm: Option<Llm>,
+    /// Harper's curated lint set — ~250 rule structs plus a lazily-loaded
+    /// dictionary FST, expensive to build (see `apply_harper`). Built once,
+    /// on first use, and reused for every dictation after. `RefCell` because
+    /// `lint()` needs `&mut self` but `Polisher::polish` only gets `&self`;
+    /// plain (not `Mutex`) because this only ever runs on the single
+    /// dictation worker thread — never touched concurrently.
+    harper: RefCell<Option<LintGroup>>,
 }
 
 impl Polisher {
@@ -43,7 +57,7 @@ impl Polisher {
             );
             None
         };
-        Self { controls, llm }
+        Self { controls, llm, harper: RefCell::new(None) }
     }
 
     pub fn mode(&self) -> PolishMode {
@@ -62,7 +76,7 @@ impl Polisher {
     pub fn polish(&self, raw: &str) -> PolishResult {
         let cleaned = match self.mode() {
             PolishMode::Off => raw.trim().to_string(),
-            PolishMode::Rules => tier0(raw),
+            PolishMode::Rules => self.apply_harper(&tier0(raw)),
             PolishMode::Ai => self.polish_ai(raw),
         };
         // Diff BEFORE the dictionary pass so corrected-words and dict-hits
@@ -78,15 +92,33 @@ impl Polisher {
         PolishResult { text, corrected_words, dict_hits }
     }
 
-    /// Pre-spawn the LLM sidecar if AI polish is the active tier, so its model
-    /// load overlaps recording + transcription rather than blocking afterward.
-    /// No-op in Off/Rules mode or when the sidecar isn't available.
+    /// Pre-spawn the LLM sidecar so its load overlaps recording. Called when
+    /// dictation starts, not at launch — the sidecar holds VRAM and gets
+    /// idle-killed after `idle_kill_secs`, so keeping it resident from boot
+    /// would defeat that. No-op outside the AI tier.
     pub fn prewarm(&self) {
         if self.mode() == PolishMode::Ai {
             if let Some(llm) = &self.llm {
                 llm.prewarm();
             }
         }
+    }
+
+    /// Build Harper's curated lint set (~640 ms) ahead of time.
+    ///
+    /// Called once at worker startup, where it hides behind the ASR model load
+    /// we already pay for and the user feels nothing. Doing it lazily instead
+    /// costs that 640 ms at the worst possible moment: on `Start` it delays the
+    /// listening pill past the hotkey press, and in the AI tier — which still
+    /// routes short clips through these rules — it lands *after* the user has
+    /// already spoken.
+    ///
+    /// Warmed regardless of the current mode: `polish.mode` is live-switchable
+    /// from the tray, so "Off at launch" doesn't mean off at dictation time.
+    pub fn warm_rules(&self) {
+        let t = std::time::Instant::now();
+        self.apply_harper("warm up");
+        tracing::info!(warm_ms = t.elapsed().as_millis(), "Harper lint set ready");
     }
 
     /// True if `raw` would actually be sent through the LLM (AI mode selected,
@@ -135,7 +167,57 @@ impl Polisher {
             }
         }
     }
+
+    /// Run Harper over `text` on the cached, lazily-built `LintGroup`.
+    fn apply_harper(&self, text: &str) -> String {
+        if text.trim().is_empty() {
+            return text.to_string();
+        }
+        let mut slot = self.harper.borrow_mut();
+        let linter = slot
+            .get_or_insert_with(|| LintGroup::new_curated(FstDictionary::curated(), Dialect::American));
+        run_harper(linter, text)
+    }
 }
+
+/// Run Harper's curated lint set over `text` and apply only the unambiguous
+/// fixes: mechanical `LintKind`s (see `SAFE_LINT_KINDS`) with exactly one
+/// suggestion. A lint with 2-3 candidate spellings is a guess at what the
+/// user said, so it's left alone rather than picking `[0]`. Split out of
+/// `Polisher::apply_harper` so tests can drive it without building a full
+/// `Polisher`.
+fn run_harper(linter: &mut LintGroup, text: &str) -> String {
+    let doc = Document::new_plain_english_curated(text);
+    let mut lints = linter.lint(&doc);
+    remove_overlaps(&mut lints); // drops overlapping spans, keeps higher priority
+
+    let mut fixes: Vec<&Lint> = lints
+        .iter()
+        .filter(|l| SAFE_LINT_KINDS.contains(&l.lint_kind) && l.suggestions.len() == 1)
+        .collect();
+    // Back-to-front so an earlier edit can't shift a later span.
+    fixes.sort_by(|a, b| b.span.start.cmp(&a.span.start));
+
+    let mut chars: Vec<char> = text.chars().collect();
+    for lint in fixes {
+        lint.suggestions[0].apply(lint.span, &mut chars);
+    }
+    chars.into_iter().collect()
+}
+
+/// Mechanical `LintKind`s safe to auto-apply without a human glancing at
+/// them — spelling/typo/casing/punctuation/repetition slips a user never
+/// means to keep. Deliberately excludes opinionated kinds (`Style`,
+/// `Enhancement`, `WordChoice`, `Readability`, `Usage`, `Regionalism`, ...)
+/// that would rewrite meaning rather than fix a mechanical slip.
+const SAFE_LINT_KINDS: &[LintKind] = &[
+    LintKind::Capitalization,
+    LintKind::Punctuation,
+    LintKind::Repetition,
+    LintKind::Spelling,
+    LintKind::Typo,
+    LintKind::BoundaryError,
+];
 
 /// What a polish pass produced: the final text plus the fix counts the
 /// Insights dashboard aggregates (see stats.rs).
@@ -299,6 +381,36 @@ mod tests {
     #[test]
     fn empty_stays_empty() {
         assert_eq!(rules("   "), "");
+    }
+
+    /// Fresh `LintGroup` per call — simpler than sharing one across tests,
+    /// and construction cost is a non-issue for a handful of test cases (see
+    /// `Polisher::apply_harper` for the real, cached-once path).
+    fn harper(s: &str) -> String {
+        let mut linter = LintGroup::new_curated(FstDictionary::curated(), Dialect::American);
+        run_harper(&mut linter, s)
+    }
+
+    #[test]
+    fn harper_removes_doubled_word() {
+        // Repetition lint, exactly one suggestion ("the") — unambiguous.
+        assert_eq!(harper("I went to the the store."), "I went to the store.");
+    }
+
+    #[test]
+    fn harper_leaves_ambiguous_spelling_alone() {
+        // "recieve" gets 3 candidate corrections (receive/relieve/recipe) —
+        // picking [0] would be a guess at what the user actually said.
+        let s = "I recieve packages daily.";
+        assert_eq!(harper(s), s);
+    }
+
+    #[test]
+    fn harper_runs_after_filler_stripping() {
+        // Tier 0 (filler + capitalization) still runs, and Harper's fix
+        // applies on top of its output — the two tiers compose.
+        let cleaned = tier0("um I went to the the store");
+        assert_eq!(harper(&cleaned), "I went to the store");
     }
 
     #[test]

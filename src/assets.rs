@@ -21,9 +21,10 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use tauri::{AppHandle, Emitter};
 
-/// Stable release tag holding the asset files. Decoupled from the app version:
-/// bump this only when the models/runtime themselves change.
-const ASSET_BASE: &str = "https://github.com/khairyKY/sotto/releases/download/assets-v1";
+/// GitHub release base; each asset appends its own `tag` (see `Asset::tag`)
+/// and file name. Tags are decoupled from the app version — bump an asset's
+/// tag only when that asset itself changes, not on every app release.
+const RELEASE_BASE: &str = "https://github.com/khairyKY/sotto/releases/download";
 
 /// Prevents the startup auto-provision and a manual `download_assets` click from
 /// running at the same time. ponytail: a single global flag — fine, there is
@@ -42,6 +43,8 @@ struct Asset {
     name: &'static str,
     /// File name of the asset within the GitHub release.
     file: &'static str,
+    /// Release tag this file lives under, e.g. "assets-v1".
+    tag: &'static str,
     kind: Kind,
 }
 
@@ -51,6 +54,33 @@ fn runtime_dir() -> PathBuf {
     config::assets_dir().join("runtime").join("llama")
 }
 
+/// The ASR model asset for the given `config::AsrConfig::model` value — a
+/// Parakeet user must not fetch Whisper's ~547 MiB .bin and a Whisper user
+/// must not fetch Parakeet's ~446 MiB zip, so exactly one is ever manifested.
+/// Split out from `manifest()` so tests can check both branches directly
+/// without faking `config::asr_model()`'s on-disk config read.
+fn asr_asset(model: &str) -> Asset {
+    if model == "whisper-turbo" {
+        Asset {
+            name: "Whisper large-v3-turbo (speech-to-text)",
+            file: "ggml-large-v3-turbo-q5_0.bin",
+            // Own tag: this file ships independently of the assets-v1 set.
+            tag: "assets-v2",
+            kind: Kind::File { dest: config::whisper_model_path },
+        }
+    } else {
+        Asset {
+            name: "Parakeet v3 (speech-to-text)",
+            file: "parakeet-tdt-0.6b-v3-int8.zip",
+            tag: "assets-v1",
+            kind: Kind::Zip {
+                dir: config::model_dir,
+                marker: || config::model_dir().join("encoder-model.int8.onnx"),
+            },
+        }
+    }
+}
+
 /// The assets the app needs to function, and where each lands. Markers are the
 /// exact paths `config::*` reads, so "provisioned" here means "found" there.
 fn manifest() -> Vec<Asset> {
@@ -58,24 +88,20 @@ fn manifest() -> Vec<Asset> {
         Asset {
             name: "ONNX Runtime",
             file: "onnxruntime.dll",
+            tag: "assets-v1",
             kind: Kind::File { dest: config::onnxruntime_dll },
         },
-        Asset {
-            name: "Parakeet v3 (speech-to-text)",
-            file: "parakeet-tdt-0.6b-v3-int8.zip",
-            kind: Kind::Zip {
-                dir: config::model_dir,
-                marker: || config::model_dir().join("encoder-model.int8.onnx"),
-            },
-        },
+        asr_asset(&config::asr_model()),
         Asset {
             name: "Qwen2.5 1.5B (AI polish)",
             file: "qwen2.5-1.5b-instruct-q4_k_m.gguf",
+            tag: "assets-v1",
             kind: Kind::File { dest: config::llm_model_path },
         },
         Asset {
             name: "llama.cpp runtime",
             file: "llama-runtime.zip",
+            tag: "assets-v1",
             kind: Kind::Zip { dir: runtime_dir, marker: config::llama_server_exe },
         },
     ]
@@ -182,7 +208,7 @@ pub fn spawn_provision_if_missing(app: AppHandle) {
 
 fn provision(app: &AppHandle, assets: &[Asset]) -> Result<()> {
     for a in assets {
-        let url = format!("{ASSET_BASE}/{}", a.file);
+        let url = format!("{RELEASE_BASE}/{}/{}", a.tag, a.file);
         match &a.kind {
             Kind::File { dest } => {
                 let dest = dest();
@@ -265,7 +291,7 @@ mod tests {
         let m = manifest();
         // Every asset URL resolves under the pinned release base.
         for a in &m {
-            let url = format!("{ASSET_BASE}/{}", a.file);
+            let url = format!("{RELEASE_BASE}/{}/{}", a.tag, a.file);
             assert!(url.starts_with("https://github.com/"), "bad url: {url}");
         }
         // Names are unique (they key progress events in the UI).
@@ -294,6 +320,21 @@ mod tests {
         match &llama.kind {
             Kind::Zip { marker, .. } => assert_eq!(marker(), config::llama_server_exe()),
             _ => panic!("llama should be a Zip asset"),
+        }
+
+        // `manifest()` only ever includes the currently-configured ASR engine
+        // (checked above via whatever `config::asr_model()` returns on this
+        // machine); check both branches directly here so neither marker ever
+        // drifts from what `config::*` actually reads.
+        match &asr_asset("parakeet-v3").kind {
+            Kind::Zip { marker, .. } => {
+                assert_eq!(marker(), config::model_dir().join("encoder-model.int8.onnx"))
+            }
+            _ => panic!("parakeet should be a Zip asset"),
+        }
+        match &asr_asset("whisper-turbo").kind {
+            Kind::File { dest } => assert_eq!(dest(), config::whisper_model_path()),
+            _ => panic!("whisper should be a File asset"),
         }
     }
 }

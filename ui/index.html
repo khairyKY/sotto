@@ -346,8 +346,34 @@
               </div>
 
               <div class="settings-section-title">Speech model</div>
-              <div class="card-raised settings-card" id="model-list">
-                <!-- Dynamically populated by JS -->
+              <div class="card-raised settings-card">
+                <div id="model-list">
+                  <!-- Dynamically populated by JS -->
+                </div>
+                <div class="divider"></div>
+                <div class="settings-row bare">
+                  <div class="row-label">
+                    <div class="label">Language</div>
+                    <div class="sub" id="asr-language-sub">Which language to expect, or auto-detect</div>
+                  </div>
+                  <div class="row-control">
+                    <div class="select-wrapper" id="asr-language-wrapper">
+                      <select class="select-native" id="asr-language-select">
+                        <option value="auto">Auto-detect</option>
+                        <option value="en">English</option>
+                        <option value="ar">&#1575;&#1604;&#1593;&#1585;&#1576;&#1610;&#1577; (Arabic)</option>
+                        <option value="es">Spanish</option>
+                        <option value="fr">French</option>
+                        <option value="de">German</option>
+                        <option value="hi">Hindi</option>
+                      </select>
+                      <span class="select-arrow">&#9660;</span>
+                    </div>
+                  </div>
+                </div>
+                <div class="settings-row bare" id="asr-restart-row" hidden>
+                  <div class="section-hint">Restart Sotto for this change to take effect.</div>
+                </div>
               </div>
 
               <div class="settings-section-title">Appearance</div>
