@@ -123,9 +123,20 @@ impl Asr {
         // Whisper defaults to none. Parakeet's `transcribe_raw` ignores
         // `options.language` entirely (English-only), so passing it through
         // unconditionally is safe for both engines.
+        let t = std::time::Instant::now();
         let result = model
             .transcribe(samples, &options)
             .context("transcription failed")?;
+        // Inference time ONLY (model load is timed separately in ensure_loaded).
+        // audio_ms lets us read it as a real-time factor — the number that
+        // actually answers "why does this feel slow" per engine and per model.
+        let audio_ms = samples.len() as u64 * 1000 / 16_000;
+        tracing::info!(
+            transcribe_ms = t.elapsed().as_millis() as u64,
+            audio_ms,
+            engine = %self.engine,
+            "transcribed"
+        );
         Ok(result.text.trim().to_string())
     }
 }
