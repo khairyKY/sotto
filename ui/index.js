@@ -25,6 +25,7 @@ const mock = {
   models: [
     { id: "parakeet-v3", name: "Parakeet v3", variant: "· English", meta: "NVIDIA · int8 quantized", state: "installed", size: "639 MB", selected: true },
     { id: "whisper-turbo", name: "Whisper turbo", variant: "· 99 languages", meta: "OpenAI · large-v3-turbo q5_0", state: "download", size: "547 MB", selected: false },
+    { id: "egyptian-small", name: "Egyptian Arabic", variant: "· عامية + English", meta: "Whisper small · code-switch tuned", state: "download", size: "465 MB", selected: false },
   ],
   asrModel: "parakeet-v3",
   asrLanguage: "auto",

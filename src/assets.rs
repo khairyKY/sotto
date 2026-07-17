@@ -60,13 +60,21 @@ fn runtime_dir() -> PathBuf {
 /// Split out from `manifest()` so tests can check both branches directly
 /// without faking `config::asr_model()`'s on-disk config read.
 fn asr_asset(model: &str) -> Asset {
-    if model == "whisper-turbo" {
+    if model == "egyptian-small" {
+        Asset {
+            name: "Egyptian Arabic (speech-to-text)",
+            file: "ggml-egyptian-codeswitch-small.bin",
+            tag: "assets-v2",
+            // Non-capturing closure → coerces to the `fn() -> PathBuf` field.
+            kind: Kind::File { dest: || config::whisper_model_path("egyptian-small") },
+        }
+    } else if model == "whisper-turbo" {
         Asset {
             name: "Whisper large-v3-turbo (speech-to-text)",
             file: "ggml-large-v3-turbo-q5_0.bin",
             // Own tag: this file ships independently of the assets-v1 set.
             tag: "assets-v2",
-            kind: Kind::File { dest: config::whisper_model_path },
+            kind: Kind::File { dest: || config::whisper_model_path("whisper-turbo") },
         }
     } else {
         Asset {
@@ -333,8 +341,12 @@ mod tests {
             _ => panic!("parakeet should be a Zip asset"),
         }
         match &asr_asset("whisper-turbo").kind {
-            Kind::File { dest } => assert_eq!(dest(), config::whisper_model_path()),
+            Kind::File { dest } => assert_eq!(dest(), config::whisper_model_path("whisper-turbo")),
             _ => panic!("whisper should be a File asset"),
+        }
+        match &asr_asset("egyptian-small").kind {
+            Kind::File { dest } => assert_eq!(dest(), config::whisper_model_path("egyptian-small")),
+            _ => panic!("egyptian should be a File asset"),
         }
     }
 }

@@ -46,8 +46,11 @@ impl Asr {
     fn ensure_loaded(&mut self) -> anyhow::Result<&mut dyn SpeechModel> {
         if self.model.is_none() {
             let t = std::time::Instant::now();
-            let model: Box<dyn SpeechModel> = if self.engine == "whisper-turbo" {
-                let path = config::whisper_model_path();
+            // Every whisper-family engine (turbo, egyptian-small, …) loads the
+            // same way and differs only in which .bin — so branch on "is this a
+            // whisper model" rather than on a specific id.
+            let model: Box<dyn SpeechModel> = if config::whisper_model_file(&self.engine).is_some() {
+                let path = config::whisper_model_path(&self.engine);
                 anyhow::ensure!(
                     path.exists(),
                     "Whisper model not found at {} — download it first",

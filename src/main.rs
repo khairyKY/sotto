@@ -245,8 +245,10 @@ fn get_settings(state: tauri::State<'_, AppState>) -> SettingsPayload {
     // — `dir_size_mb` of a path that doesn't exist yet is `None`, and a blank
     // "MB" reads as a bug, not as "not downloaded yet".
     let parakeet_size = dir_size_mb(config::model_dir()).map(|mb| format!("{mb} MB")).unwrap_or_else(|| "639 MB".into());
-    let whisper_installed = config::whisper_model_path().exists();
-    let whisper_size = dir_size_mb(config::whisper_model_path()).map(|mb| format!("{mb} MB")).unwrap_or_else(|| "547 MB".into());
+    let whisper_installed = config::whisper_model_path("whisper-turbo").exists();
+    let whisper_size = dir_size_mb(config::whisper_model_path("whisper-turbo")).map(|mb| format!("{mb} MB")).unwrap_or_else(|| "547 MB".into());
+    let egyptian_installed = config::whisper_model_path("egyptian-small").exists();
+    let egyptian_size = dir_size_mb(config::whisper_model_path("egyptian-small")).map(|mb| format!("{mb} MB")).unwrap_or_else(|| "465 MB".into());
     SettingsPayload {
         hotkey_options,
         hotkey: hotkey::SUPPORTED_HOTKEYS[idx].1.to_string(),
@@ -277,6 +279,15 @@ fn get_settings(state: tauri::State<'_, AppState>) -> SettingsPayload {
                 state: if whisper_installed { "installed" } else { "download" }.into(),
                 size: whisper_size,
                 selected: cfg.asr.model == "whisper-turbo",
+            },
+            ModelDto {
+                id: "egyptian-small".into(),
+                name: "Egyptian Arabic".into(),
+                variant: "· عامية + English".into(),
+                meta: "Whisper small · code-switch tuned".into(),
+                state: if egyptian_installed { "installed" } else { "download" }.into(),
+                size: egyptian_size,
+                selected: cfg.asr.model == "egyptian-small",
             },
         ],
         theme: cfg.theme.clone(),
@@ -417,7 +428,7 @@ fn set_theme(theme: String, state: tauri::State<'_, AppState>) {
 /// flip, unlike `set_theme`/`set_microphone`.
 #[tauri::command]
 fn set_asr_model(model: String, state: tauri::State<'_, AppState>) {
-    let valid = model == "parakeet-v3" || model == "whisper-turbo";
+    let valid = model == "parakeet-v3" || model == "whisper-turbo" || model == "egyptian-small";
     if !valid { return; }
     let mut cfg = state.cfg.lock().unwrap();
     cfg.asr.model = model;

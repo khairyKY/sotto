@@ -332,10 +332,24 @@ pub fn model_dir() -> PathBuf {
     find_asset(PathBuf::from("models").join("parakeet-tdt-0.6b-v3-int8"))
 }
 
-/// GGML model file for the Whisper engine (`asr.model = "whisper-turbo"`).
-/// A single file, unlike Parakeet's directory of ONNX parts.
-pub fn whisper_model_path() -> PathBuf {
-    find_asset(PathBuf::from("models").join("ggml-large-v3-turbo-q5_0.bin"))
+/// The GGML filename for a whisper-family engine, or `None` for Parakeet.
+/// Single source of truth for "which .bin does this engine use" — every other
+/// function that needs the whisper path routes through here, so a new engine is
+/// one line and can't drift between the loader, the downloader, and the UI.
+pub fn whisper_model_file(model: &str) -> Option<&'static str> {
+    match model {
+        "whisper-turbo" => Some("ggml-large-v3-turbo-q5_0.bin"),
+        "egyptian-small" => Some("ggml-egyptian-codeswitch-small.bin"),
+        _ => None,
+    }
+}
+
+/// Path to a whisper-family engine's GGML file. A single file, unlike Parakeet's
+/// directory of ONNX parts. Non-whisper ids fall back to the turbo file, but
+/// only an id that slipped past validation would ever reach that.
+pub fn whisper_model_path(model: &str) -> PathBuf {
+    let file = whisper_model_file(model).unwrap_or("ggml-large-v3-turbo-q5_0.bin");
+    find_asset(PathBuf::from("models").join(file))
 }
 
 /// Is the *configured* speech model actually on disk yet?
@@ -347,9 +361,11 @@ pub fn whisper_model_path() -> PathBuf {
 /// getting it wrong tells the user to wait for a download that already
 /// finished.
 pub fn asr_model_present() -> bool {
-    match asr_model().as_str() {
-        "whisper-turbo" => whisper_model_path().exists(),
-        _ => model_dir().join("encoder-model.int8.onnx").exists(),
+    let model = asr_model();
+    if whisper_model_file(&model).is_some() {
+        whisper_model_path(&model).exists()
+    } else {
+        model_dir().join("encoder-model.int8.onnx").exists()
     }
 }
 
