@@ -69,13 +69,17 @@ The installer is intentionally tiny because the models aren't in it. On first la
 > [!TIP]
 > Only the AI polish tier needs the LLM and its CUDA runtime (~1.7 GB of the total). The **Rules** tier is instant and local-only.
 
-**Short on space on your system drive?** Set `assets_dir` in `%APPDATA%\sotto\config.toml` to put the big files anywhere you like, then restart Sotto:
->
-> ```toml
-> assets_dir = 'D:\sotto'
-> ```
->
-> Your settings and stats stay in `%APPDATA%\sotto` (a few KB) — only the ~2.8 GB moves. Settings shows both locations under **Data folder** / **Models folder**. If you've already downloaded the models, move `models\`, `runtime\`, and `onnxruntime.dll` to the new folder rather than re-downloading.
+#### Putting the models on another drive
+
+Short on space on your system drive? Set `assets_dir` in `%APPDATA%\sotto\config.toml` to put the big files anywhere you like, then restart Sotto:
+
+```toml
+assets_dir = 'D:\sotto'
+```
+
+Your settings and stats stay in `%APPDATA%\sotto` (a few KB) — only the ~2.8 GB moves. Settings then shows both locations, under **Data folder** and **Models folder**.
+
+Already downloaded the models? Move `models\`, `runtime\`, and `onnxruntime.dll` into the new folder rather than re-downloading them.
 
 ### 3. Use it
 Sotto launches minimized to the **system tray** (check the `^` overflow menu next to the clock). **Left-click** the tray icon to open the app; **right-click** for a menu with **Settings**, **Insights**, **History**, **Dictionary**, **Retry last dictation**, **Pause**, and **Quit**.
