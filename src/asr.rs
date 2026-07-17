@@ -11,7 +11,7 @@ use crate::config;
 use anyhow::Context;
 use transcribe_rs::onnx::parakeet::ParakeetModel;
 use transcribe_rs::onnx::Quantization;
-use transcribe_rs::whisper_cpp::WhisperEngine;
+use transcribe_rs::whisper_cpp::{WhisperEngine, WhisperLoadParams};
 use transcribe_rs::{SpeechModel, TranscribeOptions};
 
 pub struct Asr {
@@ -53,7 +53,27 @@ impl Asr {
                     "Whisper model not found at {} — download it first",
                     path.display()
                 );
-                Box::new(WhisperEngine::load(&path).context("loading Whisper model")?)
+                // NOT `WhisperEngine::load()` — that defaults flash_attn to
+                // true, and on this Vulkan backend flash attention has no fast
+                // kernel and silently falls back to a slow path: measured 6.5x
+                // slower on identical audio (23.1s vs 3.5s for 7.5s of speech).
+                // It is not a correctness issue — the transcript is identical —
+                // which is exactly why it would never have been noticed except
+                // by timing it.
+                //
+                // use_gpu stays true: when no Vulkan device is usable,
+                // whisper.cpp reports "no devices found" and falls back to CPU
+                // on its own, so this degrades rather than fails.
+                let params = WhisperLoadParams {
+                    use_gpu: true,
+                    flash_attn: false,
+                    // -1 = let whisper.cpp pick the device (GPU_DEVICE_AUTO).
+                    gpu_device: -1,
+                };
+                Box::new(
+                    WhisperEngine::load_with_params(&path, params)
+                        .context("loading Whisper model")?,
+                )
             } else {
                 let dir = config::model_dir();
                 let encoder = dir.join("encoder-model.int8.onnx");
