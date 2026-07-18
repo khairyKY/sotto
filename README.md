@@ -10,6 +10,15 @@ Hold (or toggle) a hotkey, speak, and Sotto will transcribe your voice using a l
 
 The design philosophy of Sotto is **calm, quiet, precise, and unobtrusive** — a utility that lives at the edge of attention. State is communicated using **colors** so you can read the app's status peripherally without reading text.
 
+<p align="center">
+  <img src="./docs/images/screenshots/home-light.png" width="49%" alt="Sotto home screen, light theme" />
+  <img src="./docs/images/screenshots/home-dark.png" width="49%" alt="Sotto home screen, dark theme" />
+</p>
+<p align="center">
+  <img src="./docs/images/screenshots/insights.png" width="49%" alt="Sotto Insights dashboard" />
+  <img src="./docs/images/screenshots/dictionary.png" width="49%" alt="Sotto custom Dictionary screen" />
+</p>
+
 ---
 
 ## ✨ Features
@@ -33,6 +42,10 @@ The design philosophy of Sotto is **calm, quiet, precise, and unobtrusive** — 
 ## 🎨 Visual Identity & State Signaling
 
 Sotto uses the **Marshmallow** design language — a soft cream/lilac palette, Newsreader + Hanken Grotesk type, and a calm neumorphic surface treatment. The overlay is a small pill that reports state by **color and motion**, so you can read it peripherally without reading text:
+
+<p align="center">
+  <img src="./docs/images/screenshots/overlay-states.png" width="85%" alt="The Sotto overlay pill in each of its states — idle, listening, transcribing, polishing, done, cancelled, and error" />
+</p>
 
 | State | Color | What the pill shows |
 | :--- | :--- | :--- |
@@ -58,10 +71,10 @@ Grab the latest installer from the [**Releases page**](https://github.com/khairy
 > [!IMPORTANT]
 > **Windows will warn you before it runs.** You'll see a blue **"Windows protected your PC"** screen. Click **More info → Run anyway**.
 >
-> This is expected, and it does **not** mean Sotto is malware. Windows shows that screen for any installer that isn't signed with a paid Authenticode certificate (~$100–200/year), which this project doesn't have — it's free and open source. SmartScreen is reporting *"I don't recognise this publisher"*, not *"this is dangerous"*.
+> This is expected, and it does **not** mean Sotto is malware. Windows shows that screen for any installer that isn't signed with a paid Authenticode certificate (~$100–200/year), which this project doesn't have. SmartScreen is reporting *"I don't recognise this publisher"*, not *"this is dangerous"*.
 >
 > Don't just take our word for it. You can check:
-> - **Read the source.** All of it is in this repo, MIT licensed. The installer is built from exactly this code.
+> - **Read the source.** All of it is in this repo, published for transparency. The installer is built from exactly this code.
 > - **Scan it.** Upload the `.exe` to [VirusTotal](https://www.virustotal.com/) before running it.
 > - **Watch the network.** Sotto contacts exactly two URLs, both on `github.com`: the [release feed](https://github.com/khairyKY/sotto/releases/latest/download/latest.json) (update check) and the [`assets-v1` release](https://github.com/khairyKY/sotto/releases/tag/assets-v1) (models, first run only). There is no telemetry or analytics of any kind — grep the source. It also talks to `127.0.0.1:8177`, which is the AI-polish model running on your own machine; that's loopback and never leaves your PC. Once the models are downloaded, pull your network cable and it still works.
 > - **Check the signature.** Every release *is* cryptographically signed with [minisign](https://jedisct1.github.io/minisign/) for the auto-updater; that's what stops a tampered update from installing. It's just not the certificate flavour SmartScreen recognises.
@@ -195,4 +208,4 @@ The updater workflow (bump version → sign → publish to GitHub Releases so ev
 ---
 
 ## ⚖️ License
-MIT — free and open source. See [LICENSE](./LICENSE).
+All rights reserved. The source is public for transparency, not for reuse. See [LICENSE](./LICENSE).
