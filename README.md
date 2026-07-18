@@ -44,8 +44,10 @@ The design philosophy of Sotto is **calm, quiet, precise, and unobtrusive** — 
 Sotto uses the **Marshmallow** design language — a soft cream/lilac palette, Newsreader + Hanken Grotesk type, and a calm neumorphic surface treatment. The overlay is a small pill that reports state by **color and motion**, so you can read it peripherally without reading text:
 
 <p align="center">
-  <img src="./docs/images/screenshots/overlay-states.png" width="85%" alt="The Sotto overlay pill in each of its states — idle, listening, transcribing, polishing, done, cancelled, and error" />
+  <img src="./docs/images/screenshots/pill-states-light.gif" width="49%" alt="The Sotto overlay pill animating through listening, transcribing, polishing, and done — light theme" />
+  <img src="./docs/images/screenshots/pill-states-dark.gif" width="49%" alt="The Sotto overlay pill animating through listening, transcribing, polishing, and done — dark theme" />
 </p>
+<p align="center"><sub>Live capture of the overlay pill — <b>listening → transcribing → polishing → done</b>, light and dark. The remaining states are described below.</sub></p>
 
 | State | Color | What the pill shows |
 | :--- | :--- | :--- |
