@@ -115,13 +115,49 @@ Sotto is causal streaming ASR on a laptop iGPU with zero future context. Even
 Google's own live products (Meet captions) look worse than YouTube's batch
 captions for exactly that reason.
 
-### Accented / non-fluent English — research in progress
+### Accented / non-fluent English — researched, no action taken
 
-Dispatched 2026-07-18, same rigor bar as the YouTube research (verify against
-a primary source, flag anything unreproducible). Not yet back — this section
-gets filled in when it lands. If you're reading this before then: check the
-Akiflow task "Research: best open ASR for accented / non-fluent English
-speakers" for status.
+Checked 2026-07-18 with the same rigor bar as the YouTube research. The gap
+itself is real and large — confirmed across four independent, peer-reviewed
+sources, not one:
+
+| Source | What it measured | Verified degradation |
+| :--- | :--- | :--- |
+| EdAcc (arXiv:2303.18110) | Whisper-large, 40+ accents, 51 L1s | 19.7% WER vs 2.7% on LibriSpeech clean — ~7x |
+| AfriSpeech-200 (TACL 2024, arXiv:2310.00274) | Whisper-large/medium, 120 African accents | 30.6–37.5% WER vs Whisper's usual 2–4% — ~10x |
+| CORAAL re-analysis (arXiv:2407.13982) | Whisper on African American English | 13.7–33.2% WER, avg 34.35% |
+| Koenecke et al. 2020 (PNAS, 617 citations) | 5 commercial ASR systems, matched speakers | 0.35 WER (Black speakers) vs 0.19 (white) — pre-Whisper, establishes this as ASR-wide, not Whisper-specific |
+
+**But no candidate fine-tune clears the bar `egyptian-small` was held to.** Two
+turned up on HF; both fail on independent grounds:
+- `intronhealth/afrispeech-whisper-medium-all` — real, peer-reviewed
+  improvement (33–36% → 22–24% WER), but scoped to African accents only, and
+  its training data (`afrispeech-200`) is **CC-BY-NC-SA** — the exact
+  non-commercial licensing wall that killed MMS/SeamlessM4T in the YouTube
+  research above.
+- `Tejveer12/Indian-Accent-English-Whisper-Finetuned` — MIT-licensed, same
+  `large-v3-turbo` base we already ship, but **unverified**: a single-author
+  self-reported number with no baseline comparison, 4 likes, no peer review.
+
+**And there's a structural reason not to chase this even if a clean candidate
+existed**: "accented English" isn't one target, it's dozens of distinct,
+sometimes-conflicting ones (Indian, Nigerian, Egyptian-accented, Jamaican,
+Scottish...). The CORAAL paper states plainly that fine-tuned ASR models
+don't generalize outside their fine-tuning data — a narrow accent fine-tune
+trades a broad, even limitation for a narrower, riskier one, with no
+guaranteed win and a documented regression risk elsewhere. Independent
+evidence (full-size vs distilled Whisper on identical accented benchmarks)
+shows the gap narrows with more/larger general pretraining — which is
+exactly what `large-v3-turbo` already is, and exactly what a narrow fine-tune
+doesn't replicate.
+
+**Verdict: no action at the model layer.** We already ship the best-positioned
+model on this axis. What a strong general model actually produces on accented
+speech is mostly individual misrecognized words, not systemic failure — a
+text-cleanup problem the AI-polish tier already exists for, not an
+acoustic-model problem. If this ever gets revisited: the only legitimate path
+is the `egyptian-small` pattern — one accent group, concrete user need, a
+verified fine-tune, shipped as an optional engine, never a blanket default.
 
 ---
 
