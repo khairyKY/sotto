@@ -613,6 +613,10 @@ fn main() -> anyhow::Result<()> {
             if let Some(w) = app.get_webview_window("overlay") {
                 let _ = w.set_ignore_cursor_events(true);
                 position_overlay(&w);
+                harden_utility_window(&w);
+            }
+            if let Some(w) = app.get_webview_window("menu") {
+                harden_utility_window(&w);
             }
             if let Some(w) = app.get_webview_window("settings") {
                 if (cfg.zoom - 1.0).abs() > f64::EPSILON {
@@ -672,6 +676,7 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
                         let y = (position.y - mh - 5.0) as i32;
                         let _ = w.set_position(tauri::PhysicalPosition::new(x, y));
                         let _ = w.show();
+                        harden_utility_window(&w);
                         let _ = w.set_focus();
                     }
                 }
@@ -1234,6 +1239,43 @@ fn show_overlay(app: &tauri::AppHandle) {
     if let Some(w) = app.get_webview_window("overlay") {
         position_overlay(&w);
         let _ = w.show();
+        harden_utility_window(&w);
+    }
+}
+
+/// Keep a borderless utility popup (the overlay pill / tray menu) out of
+/// Alt-Tab and the taskbar's own preview surfaces — not just off the taskbar
+/// button, which `skip_taskbar` alone covers.
+///
+/// Why this exists: these windows toggle show()/hide() constantly (the pill
+/// every dictation, the menu every right-click), and on Windows the
+/// taskbar-hidden extended style can get dropped across that cycling —
+/// `skip_taskbar` silently stops holding and the window becomes a normal
+/// Alt-Tab-able top-level window again. When that happens Windows renders it
+/// in Alt-Tab / taskbar-hover previews with its OWN synthetic titlebar and
+/// min/max/close chrome — a transparent pill wrapped in native window
+/// controls it never asked for, framed in the OS's focus-accent border. Not a
+/// CSS bug: nothing in overlay.html/menu.html draws that chrome, Windows does,
+/// because it thinks this is switchable top-level window.
+/// Re-asserting WS_EX_TOOLWINDOW (and clearing WS_EX_APPWINDOW) after every
+/// show() is the fix — call this at every show() site, not just once at
+/// creation.
+fn harden_utility_window(w: &tauri::WebviewWindow) {
+    let _ = w.set_skip_taskbar(true);
+    if let Ok(raw) = w.hwnd() {
+        use windows::Win32::Foundation::HWND;
+        use windows::Win32::UI::WindowsAndMessaging::{
+            GetWindowLongPtrW, SetWindowLongPtrW, GWL_EXSTYLE, WS_EX_APPWINDOW, WS_EX_TOOLWINDOW,
+        };
+        // Tauri's `hwnd()` returns its own `windows`-crate HWND, pinned to a
+        // different version than the one we depend on directly — same Win32
+        // handle, incompatible Rust type. Round-trip through the raw pointer.
+        let hwnd = HWND(raw.0 as _);
+        unsafe {
+            let style = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+            let style = (style | WS_EX_TOOLWINDOW.0 as isize) & !(WS_EX_APPWINDOW.0 as isize);
+            SetWindowLongPtrW(hwnd, GWL_EXSTYLE, style);
+        }
     }
 }
 
