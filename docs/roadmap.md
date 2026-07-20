@@ -1,9 +1,87 @@
 # Sotto roadmap
 
 Originally written 2026-07-17 as a plan; rewritten 2026-07-18 as a status
-report + the next round of thorough plans, after Tracks A–C shipped and D was
-overtaken by events. Read bottom-up if you only want what's left to build —
-the "Suggested order" section at the end is the live todo list.
+report; **reprioritized 2026-07-19 around an English-first MVP** after Kai's
+field report (below). The E-track section is now the live todo list and
+supersedes the older "Suggested order" at the end — Transforms and all
+Egyptian work move behind it.
+
+---
+
+## MVP: English first (2026-07-19 reprioritization)
+
+Kai's field report, dictated through Sotto itself: fillers ("uh", "um")
+surviving into injected text, felt slowness, unease about the ~2.1 GB
+download, grammar not fully fixed. Ruling: **English fully delivered is the
+MVP; Egyptian resumes after.**
+
+### The diagnosis that reframes it
+
+**Polish was set to Off.** `config.toml` had `mode = "off"` — the only writer
+is the Settings segmented control, so it was flipped at some point (possibly
+while exploring the tones section, which nudges toward the AI setting) and
+nothing in the product made that state visible enough to notice. The filler
+stripper itself is correct (case-insensitive, punctuation-tolerant, tested);
+it simply never ran. "Polish stopped working" was really "polish silently
+off" — a UX bug, not an engine regression. Config restored to `ai`.
+
+Speed, from the new per-dictation logs: Parakeet transcribes at **5–10×
+real-time** (74 s of speech → 12.6 s). The felt slowness is structural, not
+throughput: transcription only *starts* when you stop talking, so the wait
+scales with how long you spoke. That's fixable (E2), but only by chunked
+transcription — a real feature, not a tuning pass.
+
+### E0 — restore + harden the Rules tier (S)
+
+- Polish-off restored to `ai` (done, applies on restart).
+- **Make polish state impossible to lose silently**: the overlay pill and/or
+  Home status line must show the active tier; consider a one-time nudge when
+  dictating with polish Off ("Raw transcript — polish is off").
+- tier0 additions: `ah`/`ahh` to FILLERS, and **stutter collapse** — a run of
+  the same token ("uh uh uh", "the the", "a a a") collapses to one before
+  Harper runs. Deterministic, no model. Unit tests for both.
+- Regression-test the English path of the Arabic-neutral prompt (fillers,
+  capitalization) so "anymore" never becomes true.
+
+### E1 — AI polish as the English flagship (S–M)
+
+Rules can't fix real grammar; the AI tier can and its warm cost is ~1.7 s.
+- Default `polish.mode = "ai"` for new installs (existing configs untouched).
+- Keep the skip-gate (clean text bypasses the LLM) and the word-count gate.
+- A short English grammar QA pass: 10–15 deliberately messy dictations,
+  before/after, checked by Kai — the MVP bar is "grammar fully delivered",
+  and only a human reads that bar.
+
+### E2 — latency that doesn't scale with take length (M–L)
+
+Chunked incremental transcription: transcribe accumulated audio in ~15–20 s
+chunks *during* recording on the worker thread, stitch, final-pass the tail
+on release. Target: wait-after-release roughly constant (~1–2 s) regardless
+of take length. **Note: this reverses the earlier "streaming: not planned"
+line** — that line said "none requested"; Kai's felt-slowness reports are the
+request. The whisper app-vs-probe ~3× gap task remains separately (it affects
+the whisper engines, not the Parakeet MVP path).
+
+### E3 — size diet (M)
+
+Where today's 2.1 GB download / 2.8 GB on disk actually goes: Qwen 1.07 GB +
+llama runtime 1.14 GB — and **~1.1 GB of that runtime is CUDA DLLs
+(`ggml-cuda`, `cuBLAS`) that do nothing on AMD machines**.
+- **E3a — llama.cpp Vulkan runtime**: rebuild/fetch the sidecar with the
+  Vulkan backend instead of CUDA. Saves ~1 GB on disk, and AMD users get GPU
+  polish for the first time (same reasoning that won for whisper). Needs a
+  perf check of Qwen 1.5B on the iGPU via Vulkan.
+- **E3b — AI tier as an opt-in download**: base install = ASR + ORT only
+  (~460 MB download). Enabling AI polish fetches Qwen + runtime on demand,
+  with the existing assets pipeline + progress banner. English MVP download
+  becomes ~0.5 GB (rules) / ~1.6 GB (with AI), from 2.1 GB.
+- Egyptian-model quantization stays queued behind this (existing task).
+
+### E4 — after the MVP
+
+Everything Egyptian (publish to assets-v2, quantize, rigorous A/B) and
+**Transforms** resume here, in that spirit: Egyptian quality next, Transforms
+after. Both survive unchanged in Akiflow, demoted below the E-track.
 
 ---
 
@@ -318,6 +396,8 @@ this just makes it repeatable instead of one-off.
 6. **Publish the Egyptian model** whenever Khairy says go — independent of the
    above; could happen at any point once he's satisfied with quality.
 
-Explicitly **not** planned: streaming/live transcription, cloud fallbacks,
-speaker diarization, translation, a formal WER pipeline. None requested, or
-ruled out above as not worth the cost.
+Explicitly **not** planned: cloud fallbacks, speaker diarization, translation,
+a formal WER pipeline. ~~Streaming/live transcription~~ — **reversed
+2026-07-19**: chunked incremental transcription is now E2 of the English-MVP
+track (the "none requested" premise stopped being true once Kai's felt-slowness
+reports became the request).
