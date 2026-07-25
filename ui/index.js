@@ -12,7 +12,7 @@ const mock = {
   startHidden: true,
   dictionary: [
     { spoken: "gee pee tee", replacement: "GPT", aliases: [], enabled: true },
-    { spoken: "my main email", replacement: "dev@sotto.app", aliases: ["my primary email", "my email"], enabled: true },
+    { spoken: "my main email", replacement: "you@example.com", aliases: ["my primary email", "my email"], enabled: true },
     { spoken: "arrow", replacement: "→", aliases: [], enabled: true },
   ],
   replacementsEnabled: true,
@@ -20,7 +20,7 @@ const mock = {
   appTones: [],
   history: [
     { time: "2:14 PM", text: "Let's ship the overlay states first." },
-    { time: "1:58 PM", text: "dev@sotto.app" },
+    { time: "1:58 PM", text: "you@example.com" },
     { time: "11:02 AM", text: "Refactor the polish tier." },
   ],
   models: [
@@ -389,7 +389,10 @@ function renderDictPage(entries) {
     const row = document.createElement("div");
     row.className = "dict-row-view";
 
-    let isEditing = (e.spoken === "");
+    // `_draft` marks a row prefilled from an example chip: it opens in edit
+    // state even though it has content, because nothing is saved until the
+    // user confirms. Stripped by saveDict/SnipPage, so it never reaches Rust.
+    let isEditing = (e.spoken === "" || e._draft === true);
     let draftAliases = (e.aliases || []).slice(); // working copy; only committed to e on Save
 
     // Aliases have their own add/remove flow — re-render just this block so
@@ -448,6 +451,7 @@ function renderDictPage(entries) {
             e.spoken = spoken;
             e.replacement = replacement;
             e.aliases = draftAliases.map(a => a.trim()).filter(Boolean);
+            delete e._draft; // confirmed — it's a real entry now
             isEditing = false;
             saveDictPage();
             renderRowContent();
@@ -455,7 +459,7 @@ function renderDictPage(entries) {
         };
         row.querySelector(".cancel-btn").onclick = (ev) => {
           ev.stopPropagation();
-          if (e.spoken === "") {
+          if (e.spoken === "" || e._draft) {
             dictEntries.splice(dictEntries.indexOf(e), 1);
             renderDictPage(dictEntries);
           } else {
@@ -521,6 +525,22 @@ $("dict-add").onclick = () => {
 };
 // The banner's "+ Add word" chip is a second trigger for the same flow.
 if ($("dict-warn-add")) $("dict-warn-add").onclick = () => $("dict-add").click();
+// Example chips in the banner: click one to prefill it as a draft row in edit
+// state. Nothing is written until the user hits save, so trying an example
+// can't quietly add data they didn't choose. Scoped to this page's banner so
+// the two pages' chips can't cross-wire.
+document.querySelectorAll("#dict-warn-card .dict-warn-tag.example").forEach(chip => {
+  chip.onclick = () => {
+    dictEntries.push({
+      spoken: chip.dataset.spoken || "",
+      replacement: chip.dataset.replacement || "",
+      aliases: [],
+      enabled: true,
+      _draft: true,
+    });
+    renderDictPage(dictEntries);
+  };
+});
 
 // ── snippets ──
 let snipEntries = [];
@@ -540,7 +560,10 @@ function renderSnipPage(entries) {
     const row = document.createElement("div");
     row.className = "snip-row-view";
 
-    let isEditing = (e.spoken === "");
+    // `_draft` marks a row prefilled from an example chip: it opens in edit
+    // state even though it has content, because nothing is saved until the
+    // user confirms. Stripped by saveDict/SnipPage, so it never reaches Rust.
+    let isEditing = (e.spoken === "" || e._draft === true);
     let draftAliases = (e.aliases || []).slice(); // working copy; only committed to e on Save
 
     const renderAliasEditRow = () => {
@@ -597,6 +620,7 @@ function renderSnipPage(entries) {
             e.spoken = spoken;
             e.replacement = replacement;
             e.aliases = draftAliases.map(a => a.trim()).filter(Boolean);
+            delete e._draft; // confirmed — it's a real entry now
             isEditing = false;
             saveSnipPage();
             renderRowContent();
@@ -604,7 +628,7 @@ function renderSnipPage(entries) {
         };
         row.querySelector(".cancel-btn").onclick = (ev) => {
           ev.stopPropagation();
-          if (e.spoken === "") {
+          if (e.spoken === "" || e._draft) {
             snipEntries.splice(snipEntries.indexOf(e), 1);
             renderSnipPage(snipEntries);
           } else {
@@ -668,6 +692,22 @@ $("snip-add").onclick = () => {
   renderSnipPage(snipEntries);
 };
 if ($("snip-warn-add")) $("snip-warn-add").onclick = () => $("snip-add").click();
+// Example chips in the banner: click one to prefill it as a draft row in edit
+// state. Nothing is written until the user hits save, so trying an example
+// can't quietly add data they didn't choose. Scoped to this page's banner so
+// the two pages' chips can't cross-wire.
+document.querySelectorAll("#snip-warn-card .dict-warn-tag.example").forEach(chip => {
+  chip.onclick = () => {
+    snipEntries.push({
+      spoken: chip.dataset.spoken || "",
+      replacement: chip.dataset.replacement || "",
+      aliases: [],
+      enabled: true,
+      _draft: true,
+    });
+    renderSnipPage(snipEntries);
+  };
+});
 
 // ── tone ──
 // Presets map to instruction strings; the backend just stores whatever

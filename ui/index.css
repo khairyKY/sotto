@@ -787,6 +787,12 @@ input[type="range"]::-webkit-slider-thumb {
 .dict-warn-tag.action:hover { filter: brightness(1.06); }
 .dict-warn-tag.action:active { transform: translateY(0); box-shadow: var(--mm-inset-sm); }
 
+/* Example chips are pressable (they prefill a draft entry), so they need to
+   look it — the plain chips above are static labels. */
+.dict-warn-tag.example { cursor: pointer; }
+.dict-warn-tag.example:hover { color: var(--mm-accent-ink); }
+.dict-warn-tag.example:active { transform: translateY(0); box-shadow: var(--mm-inset-sm); }
+
 /* ── dictionary & snippets lists ───────────────────── */
 .dict-entries-container, .history-entries-container {
   background: var(--mm-base);
