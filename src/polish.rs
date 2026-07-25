@@ -476,6 +476,7 @@ mod tests {
             replacement: "khairyshhn1@gmail.com".into(),
             aliases: vec!["my primary email".into(), "my personal email".into()],
             enabled: true,
+            kind: None,
         };
         let dict = vec![(
             entry.phrases().into_iter().map(str::to_string).collect::<Vec<_>>(),
@@ -497,6 +498,7 @@ mod tests {
             replacement: "personal@example.com".into(),
             aliases: vec!["my work email".into()],
             enabled: true,
+            kind: None,
         };
         // phrases() sorts longest-first, which is what makes this safe.
         assert_eq!(entry.phrases(), vec!["my work email", "my email"]);

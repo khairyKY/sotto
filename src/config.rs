@@ -25,6 +25,17 @@ impl ActivationMode {
     }
 }
 
+/// Which page an entry belongs to. Doesn't affect replacement behavior at
+/// all — both kinds fire the same way — it's purely which list the Settings
+/// UI shows the entry in.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EntryKind {
+    #[default]
+    Word,
+    Snippet,
+}
+
 /// A dictation dictionary / snippet entry: when the transcript contains
 /// `spoken` — or any of `aliases` — (case-insensitive, whole phrase), it's
 /// replaced with `replacement`.
@@ -43,6 +54,34 @@ pub struct DictEntry {
     /// part that was actually hard to type.
     #[serde(default = "default_true")]
     pub enabled: bool,
+    /// `None` only for entries loaded from a config written before this field
+    /// existed — the UI used to *guess* Dictionary vs. Snippets from the
+    /// replacement's shape (has a space/@/newline, or is long), which
+    /// misfiled anything that broke the pattern (e.g. a 3-letter snippet).
+    /// New entries always set this explicitly at creation; `load_or_init`
+    /// backfills `None` once via `migrate_entry_kinds`, using that same old
+    /// guess so upgrading never reshuffles an existing entry's page.
+    #[serde(default)]
+    pub kind: Option<EntryKind>,
+}
+
+/// Backfills `kind` on entries from a config written before it existed, using
+/// the exact heuristic the UI used to apply live (see the removed `isSnippet`
+/// in ui/index.js). Returns whether anything changed, so the caller knows to
+/// persist — without this a config with legacy entries would re-derive (and
+/// silently re-save) the same values every single launch.
+fn migrate_entry_kinds(dictionary: &mut [DictEntry]) -> bool {
+    let mut changed = false;
+    for e in dictionary.iter_mut() {
+        if e.kind.is_none() {
+            let r = &e.replacement;
+            let looks_like_snippet =
+                r.contains(' ') || r.contains('\n') || r.contains('@') || r.chars().count() > 15;
+            e.kind = Some(if looks_like_snippet { EntryKind::Snippet } else { EntryKind::Word });
+            changed = true;
+        }
+    }
+    changed
 }
 
 impl DictEntry {
@@ -433,7 +472,14 @@ impl Config {
 
         if path.exists() {
             let raw = std::fs::read_to_string(&path)?;
-            let cfg: Config = toml::from_str(&raw)?;
+            let mut cfg: Config = toml::from_str(&raw)?;
+            if migrate_entry_kinds(&mut cfg.dictionary) {
+                tracing::info!(
+                    entries = cfg.dictionary.len(),
+                    "migrated dictionary entries to explicit kind"
+                );
+                cfg.save()?;
+            }
             Ok(cfg)
         } else {
             let cfg = Config::default();
@@ -503,5 +549,48 @@ assets_dir = '  D:\sotto  '
         .unwrap();
         // Trimmed at use, so a stray space in a hand-edited config still works.
         assert_eq!(cfg.assets_dir.trim(), r"D:\sotto");
+    }
+}
+
+#[cfg(test)]
+mod entry_kind_tests {
+    use super::*;
+
+    fn entry(replacement: &str) -> DictEntry {
+        DictEntry { spoken: "x".into(), replacement: replacement.into(), kind: None, ..Default::default() }
+    }
+
+    #[test]
+    fn migration_matches_the_old_ui_heuristic_word_vs_snippet() {
+        // Short, no space/@/newline -> word. This is the exact shape check
+        // ui/index.js's removed `isSnippet` used to run client-side; the
+        // point of this test is that upgrading never reclassifies a
+        // pre-existing entry, so it has to agree with that old logic exactly.
+        let mut dict = vec![entry("GPT"), entry("khairyshhn1@gmail.com"), entry("Hey there, great to meet you")];
+        assert!(migrate_entry_kinds(&mut dict));
+        assert_eq!(dict[0].kind, Some(EntryKind::Word)); // short, plain
+        assert_eq!(dict[1].kind, Some(EntryKind::Snippet)); // has '@'
+        assert_eq!(dict[2].kind, Some(EntryKind::Snippet)); // has a space
+    }
+
+    #[test]
+    fn migration_is_a_noop_once_kind_is_already_set() {
+        // Real installs re-run load_or_init on every launch; if this weren't
+        // idempotent, a manually-recategorized entry would silently flip back
+        // to the guess on the next restart.
+        let mut dict = vec![DictEntry { kind: Some(EntryKind::Snippet), ..entry("short") }];
+        assert!(!migrate_entry_kinds(&mut dict));
+        assert_eq!(dict[0].kind, Some(EntryKind::Snippet));
+    }
+
+    #[test]
+    fn short_snippet_is_the_bug_this_fixes() {
+        // The whole reason this field exists: "KIS" is short, no space/@, so
+        // the old heuristic would have guessed Word even for an entry the
+        // user explicitly created as a Snippet. Explicit `kind` from the UI
+        // must never be overridden by the shape-guess.
+        let mut dict = vec![DictEntry { kind: Some(EntryKind::Snippet), ..entry("KIS") }];
+        migrate_entry_kinds(&mut dict);
+        assert_eq!(dict[0].kind, Some(EntryKind::Snippet));
     }
 }

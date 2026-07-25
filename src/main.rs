@@ -23,7 +23,7 @@ mod startup;
 mod stats;
 mod tray;
 
-use config::{ActivationMode, AppTone, Config, DictEntry, InjectionMode, PolishMode};
+use config::{ActivationMode, AppTone, Config, DictEntry, EntryKind, InjectionMode, PolishMode};
 use hotkey::DictationEvent;
 use single_instance::SingleInstanceGuard;
 use std::path::PathBuf;
@@ -145,6 +145,11 @@ struct DictEntryDto {
     aliases: Vec<String>,
     #[serde(default = "dto_enabled_default")]
     enabled: bool,
+    // EntryKind's own #[default] (Word) covers a caller that omits this.
+    // In practice the frontend always sends it explicitly now — see
+    // ui/index.js's dict-add/snip-add and the example-chip handlers.
+    #[serde(default)]
+    kind: EntryKind,
 }
 
 fn dto_enabled_default() -> bool {
@@ -280,6 +285,9 @@ fn get_settings(state: tauri::State<'_, AppState>) -> SettingsPayload {
                 replacement: e.replacement.clone(),
                 aliases: e.aliases.clone(),
                 enabled: e.enabled,
+                // Always Some by the time this runs: load_or_init backfills
+                // every entry via migrate_entry_kinds before AppState exists.
+                kind: e.kind.unwrap_or_default(),
             })
             .collect(),
         replacements_enabled: cfg.replacements_enabled,
@@ -405,6 +413,7 @@ fn set_dictionary(entries: Vec<DictEntryDto>, state: tauri::State<'_, AppState>)
             replacement: e.replacement,
             aliases: e.aliases.into_iter().filter(|a| !a.trim().is_empty()).collect(),
             enabled: e.enabled,
+            kind: Some(e.kind),
         })
         .collect();
     *state.controls.dictionary.lock().unwrap() = live_dictionary(&saved);

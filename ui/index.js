@@ -11,9 +11,9 @@ const mock = {
   launchLogin: true,
   startHidden: true,
   dictionary: [
-    { spoken: "gee pee tee", replacement: "GPT", aliases: [], enabled: true },
-    { spoken: "my main email", replacement: "you@example.com", aliases: ["my primary email", "my email"], enabled: true },
-    { spoken: "arrow", replacement: "→", aliases: [], enabled: true },
+    { spoken: "gee pee tee", replacement: "GPT", aliases: [], enabled: true, kind: "word" },
+    { spoken: "my main email", replacement: "you@example.com", aliases: ["my primary email", "my email"], enabled: true, kind: "snippet" },
+    { spoken: "arrow", replacement: "→", aliases: [], enabled: true, kind: "word" },
   ],
   replacementsEnabled: true,
   tone: "",
@@ -340,12 +340,15 @@ function renderStreakCalendar(daily, currentStreak, longestStreak) {
   wrap.appendChild(body);
 }
 
-// Heuristic to separate dictionary corrections from snippet text expansions
+// Which page an entry belongs to. Explicit `kind` from the backend now, not a
+// shape guess — a 3-letter snippet used to get silently misfiled onto the
+// Dictionary page because it didn't "look like" a snippet. Falls back to the
+// old heuristic only for an entry that somehow has no kind at all (shouldn't
+// happen post-migration, but a shape guess beats losing the row).
 const isSnippet = (e) =>
-  e.replacement.includes(" ") ||
-  e.replacement.includes("\n") ||
-  e.replacement.includes("@") ||
-  e.replacement.length > 15;
+  e.kind ? e.kind === "snippet" :
+    e.replacement.includes(" ") || e.replacement.includes("\n") ||
+    e.replacement.includes("@") || e.replacement.length > 15;
 
 // Small chips after the primary phrase so alternate ways of saying it (aliases)
 // are visible without opening edit mode — "+N more" once there's more than 2.
@@ -508,18 +511,26 @@ function renderDictPage(entries) {
   });
 }
 
+// Shared by saveDictPage/saveSnipPage — set_dictionary replaces the WHOLE
+// list, so every save resends both pages' entries together. Always send all
+// 5 fields: dropping any of them here silently wipes it server-side. `kind`
+// falls back by which array the entry is sitting in, purely as a last-resort
+// safety net — every entry should already carry its own kind from creation.
+function buildCombinedEntries() {
+  return [
+    ...dictEntries.map(e => ({ spoken: e.spoken, replacement: e.replacement, aliases: e.aliases || [], enabled: e.enabled !== false, kind: e.kind || "word" })),
+    ...snipEntries.map(e => ({ spoken: e.spoken, replacement: e.replacement, aliases: e.aliases || [], enabled: e.enabled !== false, kind: e.kind || "snippet" })),
+  ];
+}
+
 function saveDictPage() {
   dictEntries = dictEntries.filter(e => e.spoken.trim() !== "");
-  // Always send all 4 fields — dropping aliases/enabled here silently wipes them.
-  const combined = [...dictEntries, ...snipEntries].map(e => ({
-    spoken: e.spoken, replacement: e.replacement, aliases: e.aliases || [], enabled: e.enabled !== false,
-  }));
-  invoke("set_dictionary", { entries: combined });
+  invoke("set_dictionary", { entries: buildCombinedEntries() });
   renderDictPage(dictEntries);
 }
 $("dict-search").oninput = () => renderDictPage(dictEntries);
 $("dict-add").onclick = () => {
-  const newEntry = { spoken: "", replacement: "", aliases: [], enabled: true };
+  const newEntry = { spoken: "", replacement: "", aliases: [], enabled: true, kind: "word" };
   dictEntries.push(newEntry);
   renderDictPage(dictEntries);
 };
@@ -536,6 +547,7 @@ document.querySelectorAll("#dict-warn-card .dict-warn-tag.example").forEach(chip
       replacement: chip.dataset.replacement || "",
       aliases: [],
       enabled: true,
+      kind: "word",
       _draft: true,
     });
     renderDictPage(dictEntries);
@@ -678,16 +690,12 @@ function renderSnipPage(entries) {
 
 function saveSnipPage() {
   snipEntries = snipEntries.filter(e => e.spoken.trim() !== "");
-  // Always send all 4 fields — dropping aliases/enabled here silently wipes them.
-  const combined = [...dictEntries, ...snipEntries].map(e => ({
-    spoken: e.spoken, replacement: e.replacement, aliases: e.aliases || [], enabled: e.enabled !== false,
-  }));
-  invoke("set_dictionary", { entries: combined });
+  invoke("set_dictionary", { entries: buildCombinedEntries() });
   renderSnipPage(snipEntries);
 }
 $("snip-search").oninput = () => renderSnipPage(snipEntries);
 $("snip-add").onclick = () => {
-  const newEntry = { spoken: "", replacement: "", aliases: [], enabled: true };
+  const newEntry = { spoken: "", replacement: "", aliases: [], enabled: true, kind: "snippet" };
   snipEntries.push(newEntry);
   renderSnipPage(snipEntries);
 };
@@ -703,6 +711,7 @@ document.querySelectorAll("#snip-warn-card .dict-warn-tag.example").forEach(chip
       replacement: chip.dataset.replacement || "",
       aliases: [],
       enabled: true,
+      kind: "snippet",
       _draft: true,
     });
     renderSnipPage(snipEntries);
