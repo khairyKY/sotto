@@ -11,10 +11,11 @@ const mock = {
   launchLogin: true,
   startHidden: true,
   dictionary: [
-    { spoken: "gee pee tee", replacement: "GPT" },
-    { spoken: "my email", replacement: "dev@sotto.app" },
-    { spoken: "arrow", replacement: "→" },
+    { spoken: "gee pee tee", replacement: "GPT", aliases: [], enabled: true },
+    { spoken: "my main email", replacement: "dev@sotto.app", aliases: ["my primary email", "my email"], enabled: true },
+    { spoken: "arrow", replacement: "→", aliases: [], enabled: true },
   ],
+  replacementsEnabled: true,
   tone: "",
   appTones: [],
   history: [
@@ -346,14 +347,39 @@ const isSnippet = (e) =>
   e.replacement.includes("@") ||
   e.replacement.length > 15;
 
+// Small chips after the primary phrase so alternate ways of saying it (aliases)
+// are visible without opening edit mode — "+N more" once there's more than 2.
+function renderAliasChips(aliases) {
+  if (!aliases || !aliases.length) return "";
+  const shown = aliases.slice(0, 2).map(a => `<span class="alias-chip">${escapeHtml(a)}</span>`).join("");
+  const rest = aliases.length - Math.min(2, aliases.length);
+  const more = rest > 0 ? `<span class="alias-chip alias-chip-more">+${rest} more</span>` : "";
+  return `<span class="alias-list">${shown}${more}</span>`;
+}
+
+// set_replacements_enabled is one shared backend flag for both Dictionary and
+// Snippets — flipping it on either page's switch has to update BOTH switches
+// and both lists' dimming immediately, or the other page shows a stale state
+// the next time you look at it.
+let replacementsEnabled = true;
+function setReplacementsEnabled(on) {
+  replacementsEnabled = on;
+  invoke("set_replacements_enabled", { enabled: on });
+  if ($("dict-master-toggle")) $("dict-master-toggle").setAttribute("aria-checked", String(on));
+  if ($("snip-master-toggle")) $("snip-master-toggle").setAttribute("aria-checked", String(on));
+  renderDictPage(dictEntries);
+  renderSnipPage(snipEntries);
+}
+
 // ── dictionary (main page) ──
 let dictEntries = [];
 function renderDictPage(entries) {
   const host = $("dict-entries");
   host.innerHTML = "";
+  host.classList.toggle("list-disabled", !replacementsEnabled);
   const q = ($("dict-search").value || "").toLowerCase();
   const filtered = q ? entries.filter(e => e.spoken.toLowerCase().includes(q) || e.replacement.toLowerCase().includes(q)) : entries;
-  
+
   if (!filtered.length) {
     host.innerHTML = '<div style="padding:14px 16px;font-size:12.5px;color:var(--mm-muted-3)">No dictionary words found</div>';
     return;
@@ -362,20 +388,58 @@ function renderDictPage(entries) {
   filtered.forEach((e, idx) => {
     const row = document.createElement("div");
     row.className = "dict-row-view";
-    
+
     let isEditing = (e.spoken === "");
-    
+    let draftAliases = (e.aliases || []).slice(); // working copy; only committed to e on Save
+
+    // Aliases have their own add/remove flow — re-render just this block so
+    // it doesn't clobber whatever's mid-typing in the spoken/replacement inputs.
+    const renderAliasEditRow = () => {
+      const aliasHost = row.querySelector(".alias-edit-row");
+      if (!aliasHost) return;
+      aliasHost.innerHTML = draftAliases.map((a) => `
+        <div class="alias-edit-item">
+          <input class="dict-edit-input alias-input" value="${escapeHtml(a)}" placeholder="another way to say it" />
+          <span class="action-btn alias-remove-btn" title="Remove">
+            <svg viewBox="0 0 20 20" width="13" height="13"><path d="M5 5 L15 15 M15 5 L5 15" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+          </span>
+        </div>
+      `).join("") + `<span class="link-change alias-add-btn">+ Add another way to say it</span>`;
+      aliasHost.querySelectorAll(".alias-input").forEach((inp, i) => {
+        inp.oninput = () => { draftAliases[i] = inp.value; };
+      });
+      aliasHost.querySelectorAll(".alias-remove-btn").forEach((btn, i) => {
+        btn.onclick = (ev) => { ev.stopPropagation(); draftAliases.splice(i, 1); renderAliasEditRow(); };
+      });
+      aliasHost.querySelector(".alias-add-btn").onclick = (ev) => {
+        ev.stopPropagation();
+        draftAliases.push("");
+        renderAliasEditRow();
+        aliasHost.querySelectorAll(".alias-input")[draftAliases.length - 1]?.focus();
+      };
+    };
+
     const renderRowContent = () => {
+      row.classList.toggle("editing", isEditing);
       if (isEditing) {
+        row.classList.remove("entry-off");
         row.innerHTML = `
-          <input class="spoken" value="${escapeHtml(e.spoken)}" placeholder="spoken" style="flex:1; margin-right:4px;" />
-          <span class="arrow" style="margin:0 4px; color:var(--mm-muted-3);">&rarr;</span>
-          <input class="replacement" value="${escapeHtml(e.replacement)}" placeholder="replacement" style="flex:1; margin-right:8px;" />
-          <div class="actions" style="display:flex; gap:10px; align-items:center;">
-            <span class="action-btn save-btn" title="Save" style="color:var(--mm-status-green); font-size:14px; font-weight:bold;">&#10003;</span>
-            <span class="action-btn cancel-btn" title="Cancel" style="color:var(--mm-coral); font-size:14px; font-weight:bold;">&#10005;</span>
+          <div class="dict-edit-fields">
+            <input class="dict-edit-input spoken" value="${escapeHtml(e.spoken)}" placeholder="spoken" />
+            <span class="dict-edit-arrow">&rarr;</span>
+            <input class="dict-edit-input replacement" value="${escapeHtml(e.replacement)}" placeholder="replacement" />
+            <div class="dict-edit-actions">
+              <span class="action-btn save-btn" title="Save">
+                <svg viewBox="0 0 20 20" width="15" height="15"><path d="M4 10.5 L8 14.5 L16 5.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+              </span>
+              <span class="action-btn cancel-btn" title="Cancel">
+                <svg viewBox="0 0 20 20" width="15" height="15"><path d="M5 5 L15 15 M15 5 L5 15" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+              </span>
+            </div>
           </div>
+          <div class="alias-edit-row"></div>
         `;
+        renderAliasEditRow();
         row.querySelector(".save-btn").onclick = (ev) => {
           ev.stopPropagation();
           const spoken = row.querySelector(".spoken").value.trim();
@@ -383,6 +447,7 @@ function renderDictPage(entries) {
           if (spoken) {
             e.spoken = spoken;
             e.replacement = replacement;
+            e.aliases = draftAliases.map(a => a.trim()).filter(Boolean);
             isEditing = false;
             saveDictPage();
             renderRowContent();
@@ -400,8 +465,11 @@ function renderDictPage(entries) {
         };
         row.querySelector(".spoken").focus();
       } else {
+        row.classList.toggle("entry-off", e.enabled === false);
         row.innerHTML = `
+          <button class="switch entry-toggle" role="switch" aria-checked="${e.enabled !== false}"><span class="knob"></span></button>
           <span class="term">${escapeHtml(e.spoken)}</span>
+          ${renderAliasChips(e.aliases)}
           <span class="arrow">&rarr;</span>
           <span class="replace">${escapeHtml(e.replacement)}</span>
           <div class="actions">
@@ -413,8 +481,13 @@ function renderDictPage(entries) {
             </span>
           </div>
         `;
+        initSwitch(row.querySelector(".entry-toggle"), (on) => {
+          e.enabled = on;
+          saveDictPage();
+        });
         row.querySelector(".edit-btn").onclick = (ev) => {
           ev.stopPropagation();
+          draftAliases = (e.aliases || []).slice();
           isEditing = true;
           renderRowContent();
         };
@@ -425,7 +498,7 @@ function renderDictPage(entries) {
         };
       }
     };
-    
+
     renderRowContent();
     host.appendChild(row);
   });
@@ -433,13 +506,16 @@ function renderDictPage(entries) {
 
 function saveDictPage() {
   dictEntries = dictEntries.filter(e => e.spoken.trim() !== "");
-  const combined = [...dictEntries, ...snipEntries];
+  // Always send all 4 fields — dropping aliases/enabled here silently wipes them.
+  const combined = [...dictEntries, ...snipEntries].map(e => ({
+    spoken: e.spoken, replacement: e.replacement, aliases: e.aliases || [], enabled: e.enabled !== false,
+  }));
   invoke("set_dictionary", { entries: combined });
   renderDictPage(dictEntries);
 }
 $("dict-search").oninput = () => renderDictPage(dictEntries);
 $("dict-add").onclick = () => {
-  const newEntry = { spoken: "", replacement: "" };
+  const newEntry = { spoken: "", replacement: "", aliases: [], enabled: true };
   dictEntries.push(newEntry);
   renderDictPage(dictEntries);
 };
@@ -451,9 +527,10 @@ let snipEntries = [];
 function renderSnipPage(entries) {
   const host = $("snip-entries");
   host.innerHTML = "";
+  host.classList.toggle("list-disabled", !replacementsEnabled);
   const q = ($("snip-search").value || "").toLowerCase();
   const filtered = q ? entries.filter(e => e.spoken.toLowerCase().includes(q) || e.replacement.toLowerCase().includes(q)) : entries;
-  
+
   if (!filtered.length) {
     host.innerHTML = '<div style="padding:14px 16px;font-size:12.5px;color:var(--mm-muted-3)">No snippets found</div>';
     return;
@@ -462,20 +539,56 @@ function renderSnipPage(entries) {
   filtered.forEach((e, idx) => {
     const row = document.createElement("div");
     row.className = "snip-row-view";
-    
+
     let isEditing = (e.spoken === "");
-    
+    let draftAliases = (e.aliases || []).slice(); // working copy; only committed to e on Save
+
+    const renderAliasEditRow = () => {
+      const aliasHost = row.querySelector(".alias-edit-row");
+      if (!aliasHost) return;
+      aliasHost.innerHTML = draftAliases.map((a) => `
+        <div class="alias-edit-item">
+          <input class="dict-edit-input alias-input" value="${escapeHtml(a)}" placeholder="another way to say it" />
+          <span class="action-btn alias-remove-btn" title="Remove">
+            <svg viewBox="0 0 20 20" width="13" height="13"><path d="M5 5 L15 15 M15 5 L5 15" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+          </span>
+        </div>
+      `).join("") + `<span class="link-change alias-add-btn">+ Add another way to say it</span>`;
+      aliasHost.querySelectorAll(".alias-input").forEach((inp, i) => {
+        inp.oninput = () => { draftAliases[i] = inp.value; };
+      });
+      aliasHost.querySelectorAll(".alias-remove-btn").forEach((btn, i) => {
+        btn.onclick = (ev) => { ev.stopPropagation(); draftAliases.splice(i, 1); renderAliasEditRow(); };
+      });
+      aliasHost.querySelector(".alias-add-btn").onclick = (ev) => {
+        ev.stopPropagation();
+        draftAliases.push("");
+        renderAliasEditRow();
+        aliasHost.querySelectorAll(".alias-input")[draftAliases.length - 1]?.focus();
+      };
+    };
+
     const renderRowContent = () => {
+      row.classList.toggle("editing", isEditing);
       if (isEditing) {
+        row.classList.remove("entry-off");
         row.innerHTML = `
-          <input class="spoken" value="${escapeHtml(e.spoken)}" placeholder="phrase" style="width:150px; flex:none; margin-right:4px;" />
-          <span class="arrow" style="margin:0 4px; color:var(--mm-muted-3);">&rarr;</span>
-          <input class="replacement" value="${escapeHtml(e.replacement)}" placeholder="expansion" style="flex:1; margin-right:8px;" />
-          <div class="actions" style="display:flex; gap:10px; align-items:center;">
-            <span class="action-btn save-btn" title="Save" style="color:var(--mm-status-green); font-size:14px; font-weight:bold;">&#10003;</span>
-            <span class="action-btn cancel-btn" title="Cancel" style="color:var(--mm-coral); font-size:14px; font-weight:bold;">&#10005;</span>
+          <div class="dict-edit-fields snip-edit-fields">
+            <input class="dict-edit-input spoken" value="${escapeHtml(e.spoken)}" placeholder="phrase" />
+            <span class="dict-edit-arrow">&rarr;</span>
+            <input class="dict-edit-input replacement" value="${escapeHtml(e.replacement)}" placeholder="expansion" />
+            <div class="dict-edit-actions">
+              <span class="action-btn save-btn" title="Save">
+                <svg viewBox="0 0 20 20" width="15" height="15"><path d="M4 10.5 L8 14.5 L16 5.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+              </span>
+              <span class="action-btn cancel-btn" title="Cancel">
+                <svg viewBox="0 0 20 20" width="15" height="15"><path d="M5 5 L15 15 M15 5 L5 15" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+              </span>
+            </div>
           </div>
+          <div class="alias-edit-row"></div>
         `;
+        renderAliasEditRow();
         row.querySelector(".save-btn").onclick = (ev) => {
           ev.stopPropagation();
           const spoken = row.querySelector(".spoken").value.trim();
@@ -483,6 +596,7 @@ function renderSnipPage(entries) {
           if (spoken) {
             e.spoken = spoken;
             e.replacement = replacement;
+            e.aliases = draftAliases.map(a => a.trim()).filter(Boolean);
             isEditing = false;
             saveSnipPage();
             renderRowContent();
@@ -500,8 +614,11 @@ function renderSnipPage(entries) {
         };
         row.querySelector(".spoken").focus();
       } else {
+        row.classList.toggle("entry-off", e.enabled === false);
         row.innerHTML = `
+          <button class="switch entry-toggle" role="switch" aria-checked="${e.enabled !== false}"><span class="knob"></span></button>
           <span class="trigger">${escapeHtml(e.spoken)}</span>
+          ${renderAliasChips(e.aliases)}
           <span class="preview">${escapeHtml(e.replacement)}</span>
           <div class="actions">
             <span class="action-btn edit-btn" title="Edit">
@@ -512,8 +629,13 @@ function renderSnipPage(entries) {
             </span>
           </div>
         `;
+        initSwitch(row.querySelector(".entry-toggle"), (on) => {
+          e.enabled = on;
+          saveSnipPage();
+        });
         row.querySelector(".edit-btn").onclick = (ev) => {
           ev.stopPropagation();
+          draftAliases = (e.aliases || []).slice();
           isEditing = true;
           renderRowContent();
         };
@@ -524,7 +646,7 @@ function renderSnipPage(entries) {
         };
       }
     };
-    
+
     renderRowContent();
     host.appendChild(row);
   });
@@ -532,13 +654,16 @@ function renderSnipPage(entries) {
 
 function saveSnipPage() {
   snipEntries = snipEntries.filter(e => e.spoken.trim() !== "");
-  const combined = [...dictEntries, ...snipEntries];
+  // Always send all 4 fields — dropping aliases/enabled here silently wipes them.
+  const combined = [...dictEntries, ...snipEntries].map(e => ({
+    spoken: e.spoken, replacement: e.replacement, aliases: e.aliases || [], enabled: e.enabled !== false,
+  }));
   invoke("set_dictionary", { entries: combined });
   renderSnipPage(snipEntries);
 }
 $("snip-search").oninput = () => renderSnipPage(snipEntries);
 $("snip-add").onclick = () => {
-  const newEntry = { spoken: "", replacement: "" };
+  const newEntry = { spoken: "", replacement: "", aliases: [], enabled: true };
   snipEntries.push(newEntry);
   renderSnipPage(snipEntries);
 };
@@ -1215,8 +1340,20 @@ async function boot() {
   initSwitch($("start-hidden"), (on) => invoke("set_start_hidden", { enabled: on }));
 
   // Dictionary & Snippets page data partitioning
-  dictEntries = (s.dictionary || []).filter(e => !isSnippet(e)).map(e => ({ ...e }));
-  snipEntries = (s.dictionary || []).filter(e => isSnippet(e)).map(e => ({ ...e }));
+  dictEntries = (s.dictionary || []).filter(e => !isSnippet(e)).map(e => ({ ...e, aliases: [...(e.aliases || [])] }));
+  snipEntries = (s.dictionary || []).filter(e => isSnippet(e)).map(e => ({ ...e, aliases: [...(e.aliases || [])] }));
+
+  // One shared flag governs both pages — see setReplacementsEnabled.
+  replacementsEnabled = s.replacementsEnabled !== false;
+  if ($("dict-master-toggle")) {
+    $("dict-master-toggle").setAttribute("aria-checked", String(replacementsEnabled));
+    initSwitch($("dict-master-toggle"), setReplacementsEnabled);
+  }
+  if ($("snip-master-toggle")) {
+    $("snip-master-toggle").setAttribute("aria-checked", String(replacementsEnabled));
+    initSwitch($("snip-master-toggle"), setReplacementsEnabled);
+  }
+
   renderDictPage(dictEntries);
   renderSnipPage(snipEntries);
 

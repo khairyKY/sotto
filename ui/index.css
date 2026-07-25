@@ -686,6 +686,12 @@ input[type="range"]::-webkit-slider-thumb {
   color: var(--mm-accent);
 }
 
+/* Master replacements toggle — governs the whole list below it. Dictionary
+   and Snippets share one backend flag (set_replacements_enabled), so both
+   pages get their own card here but index.js keeps the two switches and the
+   list dimming in sync in one place (setReplacementsEnabled). */
+.master-toggle-card { margin-bottom: 14px; }
+
 /* ── intro banners (Dictionary / Snippets) ──────────────
    Flow's promo banners re-imagined in Marshmallow: a raised lilac surface with
    a serif headline, a soft accent glow, and chips that lift on hover. No photo
@@ -880,6 +886,74 @@ input[type="range"]::-webkit-slider-thumb {
 .snip-row-view .action-btn:hover {
   color: var(--mm-accent-ink);
 }
+
+/* Master toggle off: dim the whole list so it can't read as "on but silently
+   doing nothing" — the exact silent-off-state the user lost track of once. */
+.dict-entries-list.list-disabled { opacity: 0.5; }
+
+/* Per-entry toggle off: dim just the text, not the row itself — it must stay
+   fully legible enough to re-enable, edit, or delete. */
+.dict-row-view.entry-off .term,
+.dict-row-view.entry-off .replace,
+.dict-row-view.entry-off .alias-chip,
+.snip-row-view.entry-off .trigger,
+.snip-row-view.entry-off .preview,
+.snip-row-view.entry-off .alias-chip {
+  opacity: 0.45;
+}
+/* The switch itself is a fixed 38px control — without flex:none it competes
+   for space with the flex:1 term/replace columns and can get squeezed. */
+.dict-row-view .switch,
+.snip-row-view .switch {
+  flex: none;
+}
+
+/* Alias chips — a smaller sibling of .dict-warn-tag, tinted (not --mm-base)
+   so they stand out against the row list's own --mm-base background. */
+.alias-list { display: inline-flex; align-items: center; gap: 5px; flex-wrap: wrap; }
+.alias-chip {
+  font: 500 10px 'JetBrains Mono';
+  background: var(--mm-tint);
+  color: var(--mm-accent-ink);
+  padding: 3px 8px;
+  border-radius: 7px;
+  white-space: nowrap;
+}
+.alias-chip-more { background: none; color: var(--mm-muted-3); padding-left: 2px; }
+
+/* ── dictionary & snippets: edit-state row ─────────────────
+   Replaces the old inline-styled inputs + bold coloured glyphs with tokens.
+   The row switches to a column layout while editing so the alias list can
+   sit on its own line under the spoken/replacement fields. */
+.dict-row-view.editing,
+.snip-row-view.editing {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+}
+.dict-edit-fields { display: flex; align-items: center; gap: 8px; }
+.dict-edit-fields .spoken,
+.dict-edit-fields .replacement { flex: 1; min-width: 0; }
+.snip-edit-fields .spoken { flex: none; width: 150px; }
+.dict-edit-arrow { color: var(--mm-muted-3); font: 600 13px "Hanken Grotesk"; flex: none; }
+.dict-edit-actions { display: flex; gap: 8px; align-items: center; flex: none; }
+
+.dict-edit-input {
+  background: var(--mm-base);
+  border: 1px solid var(--mm-border);
+  border-radius: 8px;
+  padding: 7px 10px;
+  font: 400 12.5px "Hanken Grotesk";
+  color: var(--mm-ink);
+  box-shadow: var(--mm-inset-sm);
+  outline: 0;
+}
+.dict-edit-input:focus { border-color: var(--mm-accent); }
+.dict-edit-input::placeholder { color: var(--mm-muted-3); }
+
+.alias-edit-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.alias-edit-item { display: flex; align-items: center; gap: 4px; }
+.alias-edit-item .alias-input { width: 160px; padding: 5px 8px; font-size: 11.5px; }
 
 /* ── history layout ────────────────────────────────── */
 .history-footnote {

@@ -26,11 +26,40 @@ impl ActivationMode {
 }
 
 /// A dictation dictionary / snippet entry: when the transcript contains
-/// `spoken` (case-insensitive, whole phrase), it's replaced with `replacement`.
+/// `spoken` — or any of `aliases` — (case-insensitive, whole phrase), it's
+/// replaced with `replacement`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct DictEntry {
     pub spoken: String,
     pub replacement: String,
+    /// Other ways you say the same thing. "my main email", "my primary
+    /// email", "my personal email" should all produce one address — without
+    /// this you'd need three entries that drift apart the moment you edit one.
+    /// `serde(default)` keeps configs written before aliases existed loading.
+    #[serde(default)]
+    pub aliases: Vec<String>,
+    /// Per-entry off switch: keep the entry but stop it firing. Deleting to
+    /// silence something temporarily loses the replacement text, which is the
+    /// part that was actually hard to type.
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+}
+
+impl DictEntry {
+    /// Every phrase that should trigger this entry, longest first.
+    ///
+    /// Order is load-bearing: with "my email" and "my primary email" both
+    /// live, matching the shorter one first would consume "my" + "email" and
+    /// strand "primary". Longest-first is the standard fix and the only reason
+    /// overlapping aliases are safe to offer at all.
+    pub fn phrases(&self) -> Vec<&str> {
+        let mut all: Vec<&str> = std::iter::once(self.spoken.as_str())
+            .chain(self.aliases.iter().map(|a| a.as_str()))
+            .filter(|p| !p.trim().is_empty())
+            .collect();
+        all.sort_by_key(|p| std::cmp::Reverse(p.len()));
+        all
+    }
 }
 
 /// A per-app tone override: `app` is matched case-insensitively against
@@ -173,6 +202,11 @@ pub struct Config {
     /// Dictation dictionary / snippet replacements, edited in the settings window.
     #[serde(default)]
     pub dictionary: Vec<DictEntry>,
+    /// Master switch for every replacement above. Off = transcripts pass
+    /// through untouched, without you having to disable entries one by one or
+    /// delete work you want to keep.
+    #[serde(default = "default_true")]
+    pub replacements_enabled: bool,
     /// Default tone instruction appended to the AI-polish system prompt.
     /// Empty = off — today's prompt, byte-identical. AI tier only: Rules/Off
     /// strip and fix, they don't re-voice a sentence, so this has no effect
@@ -239,6 +273,7 @@ impl Default for Config {
             llm: LlmConfig::default(),
             asr: AsrConfig::default(),
             dictionary: Vec::new(),
+            replacements_enabled: true,
             tone: String::new(),
             app_tones: Vec::new(),
             start_hidden: true,

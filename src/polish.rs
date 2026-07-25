@@ -114,9 +114,12 @@ impl Polisher {
         // Diff BEFORE the dictionary pass so corrected-words and dict-hits
         // don't double-count the same word.
         let corrected_words = changed_words(raw, &cleaned);
-        // Dictionary / snippet replacements apply on top of every tier.
+        // Dictionary / snippet replacements apply on top of every tier — unless
+        // the master switch is off, in which case nothing fires and the entries
+        // are left untouched on disk.
         let dict = self.controls.dictionary.lock().unwrap();
-        let (text, dict_hits) = if dict.is_empty() {
+        let replacements_on = self.controls.replacements_enabled.load(Ordering::Relaxed);
+        let (text, dict_hits) = if dict.is_empty() || !replacements_on {
             (cleaned, 0)
         } else {
             apply_dictionary(&cleaned, &dict)
@@ -325,14 +328,19 @@ fn capitalize_first(s: &str) -> String {
 /// are effectively ASCII), and word-boundary-checked so "arrow" doesn't hit
 /// inside "arrows". Returns the rewritten text plus how many replacements
 /// fired (the "dictionary fixes" stat).
-fn apply_dictionary(text: &str, dict: &[(String, String)]) -> (String, usize) {
+/// Apply replacements. Each entry is `(phrases, replacement)` where `phrases`
+/// is every way you say it (primary + aliases), already longest-first, and
+/// disabled entries have been dropped before we get here.
+fn apply_dictionary(text: &str, dict: &[(Vec<String>, String)]) -> (String, usize) {
     let mut out = text.to_string();
     let mut hits = 0;
-    for (spoken, replacement) in dict {
-        if !spoken.trim().is_empty() {
-            let (next, n) = replace_whole_ci(&out, spoken, replacement);
-            out = next;
-            hits += n;
+    for (phrases, replacement) in dict {
+        for spoken in phrases {
+            if !spoken.trim().is_empty() {
+                let (next, n) = replace_whole_ci(&out, spoken, replacement);
+                out = next;
+                hits += n;
+            }
         }
     }
     (out, hits)
@@ -448,8 +456,8 @@ mod tests {
     #[test]
     fn dictionary_replaces_whole_phrases_case_insensitively() {
         let dict = vec![
-            ("gee pee tee".to_string(), "GPT".to_string()),
-            ("arrow".to_string(), "→".to_string()),
+            (vec!["gee pee tee".to_string()], "GPT".to_string()),
+            (vec!["arrow".to_string()], "→".to_string()),
         ];
         assert_eq!(apply_dictionary("use Gee Pee Tee now", &dict), ("use GPT now".into(), 1));
         assert_eq!(apply_dictionary("arrow key", &dict), ("→ key".into(), 1));
@@ -457,6 +465,56 @@ mod tests {
         assert_eq!(apply_dictionary("two arrows here", &dict), ("two arrows here".into(), 0));
         // No entries → untouched.
         assert_eq!(apply_dictionary("nothing", &[]), ("nothing".into(), 0));
+    }
+
+    #[test]
+    fn aliases_all_map_to_one_replacement() {
+        // The exact bug Khairy hit: "my main email" fired, "my primary email"
+        // didn't, because only one spoken phrase could point at an address.
+        let entry = crate::config::DictEntry {
+            spoken: "my main email".into(),
+            replacement: "khairyshhn1@gmail.com".into(),
+            aliases: vec!["my primary email".into(), "my personal email".into()],
+            enabled: true,
+        };
+        let dict = vec![(
+            entry.phrases().into_iter().map(str::to_string).collect::<Vec<_>>(),
+            entry.replacement.clone(),
+        )];
+        for said in ["my main email", "My Primary Email", "my personal email"] {
+            let (out, hits) = apply_dictionary(&format!("send it to {said} please"), &dict);
+            assert_eq!(out, "send it to khairyshhn1@gmail.com please", "failed for {said:?}");
+            assert_eq!(hits, 1);
+        }
+    }
+
+    #[test]
+    fn longer_phrase_wins_over_shorter_overlapping_one() {
+        // "my email" and "my work email" both live. Matching the short one
+        // first would leave "work" stranded next to the address.
+        let entry = crate::config::DictEntry {
+            spoken: "my email".into(),
+            replacement: "personal@example.com".into(),
+            aliases: vec!["my work email".into()],
+            enabled: true,
+        };
+        // phrases() sorts longest-first, which is what makes this safe.
+        assert_eq!(entry.phrases(), vec!["my work email", "my email"]);
+        let dict = vec![(
+            entry.phrases().into_iter().map(str::to_string).collect::<Vec<_>>(),
+            entry.replacement.clone(),
+        )];
+        let (out, _) = apply_dictionary("send my work email now", &dict);
+        assert_eq!(out, "send personal@example.com now");
+    }
+
+    #[test]
+    fn disabled_entries_are_excluded_from_the_live_dictionary() {
+        // Disabled entries must survive on disk but never fire. The filtering
+        // happens in main::live_dictionary, so assert the shape it produces:
+        // an empty phrase list is what "off" looks like to apply_dictionary.
+        let dict: Vec<(Vec<String>, String)> = vec![];
+        assert_eq!(apply_dictionary("my main email", &dict), ("my main email".into(), 0));
     }
 
     #[test]

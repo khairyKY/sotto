@@ -49,7 +49,12 @@ pub struct Controls {
     pub activation: Arc<AtomicU8>,
     pub hotkey_idx: Arc<AtomicUsize>,
     pub ai_min_words: Arc<AtomicUsize>,
-    pub dictionary: Arc<Mutex<Vec<(String, String)>>>,
+    /// Live replacements: `(all phrases longest-first, replacement)`.
+    /// Disabled entries are filtered out here rather than checked per
+    /// dictation, so the hot path stays a plain iteration.
+    pub dictionary: Arc<Mutex<Vec<(Vec<String>, String)>>>,
+    /// Master switch for all replacements — live-toggled from Settings.
+    pub replacements_enabled: Arc<AtomicBool>,
     /// Default tone instruction for AI polish; empty = off. Same live-editable
     /// shape as `dictionary` — settings writes it, the polisher reads it live.
     pub tone: Arc<Mutex<String>>,
@@ -103,9 +108,8 @@ impl Controls {
             activation: Arc::new(AtomicU8::new(cfg.activation_mode.as_u8())),
             hotkey_idx: Arc::new(AtomicUsize::new(hotkey::index_of(&cfg.hotkey))),
             ai_min_words: Arc::new(AtomicUsize::new(cfg.polish.ai_min_words)),
-            dictionary: Arc::new(Mutex::new(
-                cfg.dictionary.iter().map(|e| (e.spoken.clone(), e.replacement.clone())).collect(),
-            )),
+            dictionary: Arc::new(Mutex::new(live_dictionary(&cfg.dictionary))),
+            replacements_enabled: Arc::new(AtomicBool::new(cfg.replacements_enabled)),
             tone: Arc::new(Mutex::new(cfg.tone.clone())),
             app_tones: Arc::new(Mutex::new(
                 cfg.app_tones.iter().map(|e| (e.app.clone(), e.tone.clone())).collect(),
@@ -137,6 +141,14 @@ struct AppState {
 struct DictEntryDto {
     spoken: String,
     replacement: String,
+    #[serde(default)]
+    aliases: Vec<String>,
+    #[serde(default = "dto_enabled_default")]
+    enabled: bool,
+}
+
+fn dto_enabled_default() -> bool {
+    true
 }
 #[derive(serde::Serialize, serde::Deserialize)]
 struct AppToneDto {
@@ -181,6 +193,7 @@ struct SettingsPayload {
     launch_login: bool,
     start_hidden: bool,
     dictionary: Vec<DictEntryDto>,
+    replacements_enabled: bool,
     /// Default tone instruction; "" = off.
     tone: String,
     app_tones: Vec<AppToneDto>,
@@ -257,7 +270,19 @@ fn get_settings(state: tauri::State<'_, AppState>) -> SettingsPayload {
         threshold: c.ai_min_words.load(Ordering::Relaxed),
         launch_login: startup::is_enabled(),
         start_hidden: cfg.start_hidden,
-        dictionary: c.dictionary.lock().unwrap().iter().map(|(s, r)| DictEntryDto { spoken: s.clone(), replacement: r.clone() }).collect(),
+        // Straight from config, not from `controls.dictionary` — the live copy
+        // has disabled entries stripped, and the editor must still show them.
+        dictionary: cfg
+            .dictionary
+            .iter()
+            .map(|e| DictEntryDto {
+                spoken: e.spoken.clone(),
+                replacement: e.replacement.clone(),
+                aliases: e.aliases.clone(),
+                enabled: e.enabled,
+            })
+            .collect(),
+        replacements_enabled: cfg.replacements_enabled,
         tone: c.tone.lock().unwrap().clone(),
         app_tones: c.app_tones.lock().unwrap().iter().map(|(a, t)| AppToneDto { app: a.clone(), tone: t.clone() }).collect(),
         history: c.history.snapshot().into_iter().map(|e| HistoryDto { time: e.time, text: e.text }).collect(),
@@ -372,15 +397,43 @@ fn set_threshold(words: usize, state: tauri::State<'_, AppState>) {
 }
 #[tauri::command]
 fn set_dictionary(entries: Vec<DictEntryDto>, state: tauri::State<'_, AppState>) {
-    let pairs: Vec<(String, String)> = entries
+    let saved: Vec<DictEntry> = entries
         .into_iter()
         .filter(|e| !e.spoken.trim().is_empty())
-        .map(|e| (e.spoken, e.replacement))
+        .map(|e| DictEntry {
+            spoken: e.spoken,
+            replacement: e.replacement,
+            aliases: e.aliases.into_iter().filter(|a| !a.trim().is_empty()).collect(),
+            enabled: e.enabled,
+        })
         .collect();
-    *state.controls.dictionary.lock().unwrap() = pairs.clone();
+    *state.controls.dictionary.lock().unwrap() = live_dictionary(&saved);
     let mut cfg = state.cfg.lock().unwrap();
-    cfg.dictionary = pairs.into_iter().map(|(spoken, replacement)| DictEntry { spoken, replacement }).collect();
+    cfg.dictionary = saved;
     let _ = cfg.save();
+}
+
+/// Master switch for all dictionary/snippet replacements.
+#[tauri::command]
+fn set_replacements_enabled(enabled: bool, state: tauri::State<'_, AppState>) {
+    state.controls.replacements_enabled.store(enabled, Ordering::Relaxed);
+    let mut cfg = state.cfg.lock().unwrap();
+    cfg.replacements_enabled = enabled;
+    let _ = cfg.save();
+}
+
+/// Config entries -> the shape the polisher iterates: enabled ones only, each
+/// flattened to all its phrases longest-first. One function so the startup path
+/// and the live-edit path can't drift apart.
+fn live_dictionary(entries: &[DictEntry]) -> Vec<(Vec<String>, String)> {
+    entries
+        .iter()
+        .filter(|e| e.enabled)
+        .map(|e| {
+            let phrases = e.phrases().into_iter().map(str::to_string).collect();
+            (phrases, e.replacement.clone())
+        })
+        .collect()
 }
 #[tauri::command]
 fn set_tone(tone: String, state: tauri::State<'_, AppState>) {
@@ -605,6 +658,7 @@ fn main() -> anyhow::Result<()> {
             open_url, check_update, install_update, retry_last, cancel_dictation, dismiss_take,
             repolish_copy,
             get_stats, clear_stats, set_stats_enabled, set_microphone, set_sound_enabled, set_zoom,
+            set_replacements_enabled,
             menu_action,
             assets::assets_status, assets::download_assets
         ])
