@@ -401,3 +401,85 @@ a formal WER pipeline. ~~Streaming/live transcription~~ — **reversed
 2026-07-19**: chunked incremental transcription is now E2 of the English-MVP
 track (the "none requested" premise stopped being true once Kai's felt-slowness
 reports became the request).
+
+---
+
+## N-track (parked ideas, planned 2026-07-28)
+
+Captured from `Kai's Vault/05 - Projects/Sotto/Notes.md` while the project is
+parked. Planned now so resuming is "pick one and go", not "re-figure it out".
+Sequenced AFTER the E-track; mirrored as LOW tasks in Akiflow.
+
+### N1 — Overlay placement + click-to-record (S–M)
+
+Two halves, one setting away from each other:
+- **Placement.** `position_overlay()` already computes a bottom-center anchor
+  from the monitor size; make the anchor configurable —
+  `overlay.position: "bottom-center"` (default) among the 9 obvious anchors
+  (corners, edge-centers, center). Settings UI: a 3×3 anchor picker, Marshmallow
+  radio-tile style. Pure arithmetic switch in `position_overlay`; no window
+  machinery changes. Existing hit-test poll is position-agnostic (it reads
+  `outer_position()` live), so clicking keeps working wherever the pill sits.
+- **Click-to-record.** Today the pill hides when idle, so there's nothing to
+  click. Add opt-in `overlay.always_visible`: idle pill stays on screen
+  (breathing-dot state already exists and used to render exactly this), pill
+  BODY click in idle sends `DictationEvent::Start`. The hit-test thread's
+  "idle → click-through" branch flips to clickable-when-always-visible; the
+  canvas click handler routes body-clicks (not just button hits) only in idle.
+  Escape/✕ semantics unchanged.
+
+### N2 — Multi-take pipelining (M) — re-evaluate AFTER E2
+
+Kai's ask: start a second dictation while the first is still transcribing/
+polishing. Today the worker is one serial loop — `Stop` blocks until inject
+completes, so a new `Start` queues on the channel but recording can't begin.
+
+Design if built today: on `Stop`, hand the take to a processing queue (second
+thread or `spawn` per take), return the worker to accepting `Start`
+immediately. Already-safe: `focus_target` is captured per-take at Start, so
+each take injects into its own origin window. Needs care: (a) inject in TAKE
+order, not completion order — a channel of pending results drained
+sequentially; (b) overlay must show compound state ("recording + 1
+processing") — small queue badge on the pill; (c) the single-`stash` retry
+model becomes a per-take stash.
+
+**But:** E2 (chunked transcription) shrinks post-release latency to ~1–2 s,
+which mostly deletes the reason you'd want to queue a second take. Rule: ship
+E2 first, then ask Kai whether this still itches. Don't build both halves of
+the same cure.
+
+### N3 — Live transcription = E2
+
+Already planned (E-track). Nothing new to design; noted here only because the
+vault note lists it as an idea.
+
+### N4 — Persistent history + crash-safe takes (S–M) — the PC-crash fix
+
+Kai's crash story is two distinct losses; fix both:
+- **(a) History that survives restarts.** `history.rs` is in-memory by design,
+  with a ponytail comment already naming the upgrade path: append-only
+  `data_dir()/history.jsonl`, loaded on start, capped (say 500 entries,
+  trimmed on write). **Open decision for Kai:** history contains transcript
+  TEXT — writing it to disk changes the privacy posture ("never stores your
+  text" currently holds only because history is RAM-only). Proposal: a
+  Settings toggle "Keep history on disk", default ON with one honest line
+  under it; the stats pipeline stays counts-only either way.
+- **(b) The mid-transcription loss.** The crash ate a long take because audio
+  exists only in RAM until injection. Fix: on `Stop`, write the take's samples
+  to `data_dir()/pending-take.wav` (16 kHz mono ≈ 2 MB/min) BEFORE
+  transcription starts; delete on successful injection. On startup, if the
+  file exists, surface it through the existing take-stash machinery — Home's
+  "last dictation wasn't delivered" card + ↻ Retry just work, with reason
+  "Recovered after a crash". This reuses the whole retry pipeline; the only
+  new code is write-on-stop, delete-on-deliver, load-on-boot.
+
+### Egyptian A/B data point (2026-07-28 trial, logged in the vault note)
+
+Real dictation through `egyptian-small`: code-switching held (English stayed
+Latin-script), but three error buckets showed: product names (Codex → "code
+X", Claude → "code"), Egyptian particles (يسطا، قد ايه، معايا all wrong), and
+recurring tech terms (quota → quote). Buckets 1 and 3 are fixable TODAY with
+Dictionary aliases — no model work. Bucket 2 is the model itself; it feeds the
+"Rigorous Egyptian A/B" task as evidence that the next lever is a bigger
+Egyptian fine-tune (MAdel121 medium / dev-ahmedhany turbo-LoRA), not more
+polish.
