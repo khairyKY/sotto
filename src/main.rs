@@ -55,6 +55,9 @@ pub struct Controls {
     pub dictionary: Arc<Mutex<Vec<(Vec<String>, String)>>>,
     /// Master switch for all replacements — live-toggled from Settings.
     pub replacements_enabled: Arc<AtomicBool>,
+    /// "New line"/"new paragraph" voice commands — live-toggled from Settings,
+    /// read by the polisher on every dictation (see `polish.rs`).
+    pub formatting_commands: Arc<AtomicBool>,
     /// Default tone instruction for AI polish; empty = off. Same live-editable
     /// shape as `dictionary` — settings writes it, the polisher reads it live.
     pub tone: Arc<Mutex<String>>,
@@ -110,6 +113,7 @@ impl Controls {
             ai_min_words: Arc::new(AtomicUsize::new(cfg.polish.ai_min_words)),
             dictionary: Arc::new(Mutex::new(live_dictionary(&cfg.dictionary))),
             replacements_enabled: Arc::new(AtomicBool::new(cfg.replacements_enabled)),
+            formatting_commands: Arc::new(AtomicBool::new(cfg.formatting_commands)),
             tone: Arc::new(Mutex::new(cfg.tone.clone())),
             app_tones: Arc::new(Mutex::new(
                 cfg.app_tones.iter().map(|e| (e.app.clone(), e.tone.clone())).collect(),
@@ -199,6 +203,7 @@ struct SettingsPayload {
     start_hidden: bool,
     dictionary: Vec<DictEntryDto>,
     replacements_enabled: bool,
+    formatting_commands: bool,
     /// Default tone instruction; "" = off.
     tone: String,
     app_tones: Vec<AppToneDto>,
@@ -291,6 +296,7 @@ fn get_settings(state: tauri::State<'_, AppState>) -> SettingsPayload {
             })
             .collect(),
         replacements_enabled: cfg.replacements_enabled,
+        formatting_commands: cfg.formatting_commands,
         tone: c.tone.lock().unwrap().clone(),
         app_tones: c.app_tones.lock().unwrap().iter().map(|(a, t)| AppToneDto { app: a.clone(), tone: t.clone() }).collect(),
         history: c.history.snapshot().into_iter().map(|e| HistoryDto { time: e.time, text: e.text }).collect(),
@@ -428,6 +434,15 @@ fn set_replacements_enabled(enabled: bool, state: tauri::State<'_, AppState>) {
     state.controls.replacements_enabled.store(enabled, Ordering::Relaxed);
     let mut cfg = state.cfg.lock().unwrap();
     cfg.replacements_enabled = enabled;
+    let _ = cfg.save();
+}
+
+/// Switch for "new line"/"new paragraph" voice commands (F1).
+#[tauri::command]
+fn set_formatting_commands(enabled: bool, state: tauri::State<'_, AppState>) {
+    state.controls.formatting_commands.store(enabled, Ordering::Relaxed);
+    let mut cfg = state.cfg.lock().unwrap();
+    cfg.formatting_commands = enabled;
     let _ = cfg.save();
 }
 
@@ -668,6 +683,7 @@ fn main() -> anyhow::Result<()> {
             repolish_copy,
             get_stats, clear_stats, set_stats_enabled, set_microphone, set_sound_enabled, set_zoom,
             set_replacements_enabled,
+            set_formatting_commands,
             menu_action,
             assets::assets_status, assets::download_assets
         ])

@@ -102,6 +102,22 @@ impl Polisher {
     }
 
     fn polish_with_tone(&self, raw: &str, tone: &str) -> PolishResult {
+        // Formatting commands run FIRST, on the raw transcript, before both
+        // the mode branch and the dictionary pass below: before the mode
+        // branch so the AI tier receives text already broken into paragraphs
+        // (see SYSTEM_PROMPT's "preserve existing line breaks"); before the
+        // dictionary so a snippet whose *replacement* text happens to contain
+        // the words "new line" can never get chopped — the command can only
+        // ever match what the user actually said. Its own toggle, independent
+        // of polish mode: "new paragraph" always means the break, never the
+        // words, so it applies in Off/Rules/Ai alike.
+        let formatted;
+        let raw = if self.controls.formatting_commands.load(Ordering::Relaxed) {
+            formatted = apply_formatting_commands(raw);
+            formatted.as_str()
+        } else {
+            raw
+        };
         let cleaned = match self.mode() {
             // Tone rewrites voice, which only the AI tier can do — Rules just
             // strips/fixes, it can't re-voice a sentence. `tone` is unused on
@@ -297,6 +313,47 @@ pub fn changed_words(a: &str, b: &str) -> usize {
     n.max(m) - dp[m]
 }
 
+/// Spoken line-break commands (F1). Deliberately just these two — Parakeet
+/// and Whisper already punctuate competently, so "period"/"comma"/"dash"
+/// commands would only add false-positive risk ("a period of time") for
+/// something ASR already does. Order doesn't matter: neither phrase is a
+/// substring of the other.
+const FORMATTING_COMMANDS: &[(&str, &str)] = &[("new paragraph", "\n\n"), ("new line", "\n")];
+
+/// Rewrite "new line"/"new paragraph" into real breaks. Reuses `replace_whole_ci`
+/// for the actual phrase match (case-insensitive, whole-word) — the only new
+/// logic is absorbing the spaces left dangling around the inserted break, so
+/// "hello new line world" becomes "hello\nworld", not "hello \n world".
+fn apply_formatting_commands(raw: &str) -> String {
+    let mut text = raw.to_string();
+    for (phrase, brk) in FORMATTING_COMMANDS {
+        text = replace_whole_ci(&text, phrase, brk).0;
+    }
+    collapse_space_around_breaks(&text)
+}
+
+/// Drop spaces/tabs immediately touching a `\n` just inserted above. Raw
+/// dictation transcripts never contain real newlines, so any `\n` seen here
+/// came from `apply_formatting_commands` and is safe to trim around.
+fn collapse_space_around_breaks(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\n' {
+            while matches!(out.chars().last(), Some(' ') | Some('\t')) {
+                out.pop();
+            }
+            out.push('\n');
+            while matches!(chars.peek(), Some(' ') | Some('\t')) {
+                chars.next();
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
 /// Tier 0 rules cleanup. `split_whitespace` also collapses runs of spaces and
 /// trims, so filtering + rejoining handles whitespace normalization for free.
 fn tier0(raw: &str) -> String {
@@ -421,6 +478,63 @@ mod tests {
     #[test]
     fn empty_stays_empty() {
         assert_eq!(rules("   "), "");
+    }
+
+    // ── F1: voice formatting commands ───────────────────────────────
+
+    #[test]
+    fn formatting_commands_produce_the_right_breaks() {
+        assert_eq!(apply_formatting_commands("hello new line world"), "hello\nworld");
+        assert_eq!(apply_formatting_commands("hello new paragraph world"), "hello\n\nworld");
+    }
+
+    #[test]
+    fn formatting_commands_absorb_surrounding_whitespace() {
+        // The exact case the plan calls out: not "hello \n world".
+        assert_eq!(apply_formatting_commands("hello new line world"), "hello\nworld");
+        // Leading/trailing edges too — no stray space at either end.
+        assert_eq!(apply_formatting_commands("new paragraph hello"), "\n\nhello");
+        assert_eq!(apply_formatting_commands("hello new line"), "hello\n");
+    }
+
+    #[test]
+    fn formatting_commands_are_case_insensitive() {
+        assert_eq!(apply_formatting_commands("hello New Line world"), "hello\nworld");
+        assert_eq!(apply_formatting_commands("hello NEW PARAGRAPH world"), "hello\n\nworld");
+    }
+
+    #[test]
+    fn formatting_commands_inert_when_toggle_off() {
+        let cfg = crate::config::Config::default();
+        let controls = crate::Controls::from_config(&cfg);
+        controls.formatting_commands.store(false, Ordering::Relaxed);
+        controls.polish_mode.store(PolishMode::Off.as_u8(), Ordering::Relaxed);
+        let p = Polisher::new(controls, cfg.llm.clone());
+        assert_eq!(p.polish("hello new line world").text, "hello new line world");
+    }
+
+    #[test]
+    fn formatting_commands_run_before_the_dictionary_so_a_snippet_saying_new_line_survives() {
+        // This is the ordering bug the plan calls out: formatting commands
+        // must run on the raw transcript, before dictionary replacement, so a
+        // replacement's own literal text is never mistaken for the command.
+        let cfg = crate::config::Config::default();
+        let controls = crate::Controls::from_config(&cfg);
+        controls.polish_mode.store(PolishMode::Off.as_u8(), Ordering::Relaxed);
+        let entry = crate::config::DictEntry {
+            spoken: "my snippet".into(),
+            replacement: "here is a new line for you".into(),
+            aliases: vec![],
+            enabled: true,
+            kind: None,
+        };
+        *controls.dictionary.lock().unwrap() = vec![(
+            entry.phrases().into_iter().map(str::to_string).collect::<Vec<_>>(),
+            entry.replacement.clone(),
+        )];
+        let p = Polisher::new(controls, cfg.llm.clone());
+        let out = p.polish("please insert my snippet now");
+        assert_eq!(out.text, "please insert here is a new line for you now");
     }
 
     /// Fresh `LintGroup` per call — simpler than sharing one across tests,

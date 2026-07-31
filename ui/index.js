@@ -16,6 +16,7 @@ const mock = {
     { spoken: "arrow", replacement: "→", aliases: [], enabled: true, kind: "word" },
   ],
   replacementsEnabled: true,
+  formattingCommands: true,
   tone: "",
   appTones: [],
   history: [
@@ -1349,6 +1350,10 @@ async function boot() {
   if ($("sound-sounds")) {
     $("sound-sounds").setAttribute("aria-checked", String(!!s.soundEnabled));
     initSwitch($("sound-sounds"), (on) => invoke("set_sound_enabled", { enabled: on }));
+  }
+  if ($("formatting-commands-toggle")) {
+    $("formatting-commands-toggle").setAttribute("aria-checked", String(s.formattingCommands !== false));
+    initSwitch($("formatting-commands-toggle"), (on) => invoke("set_formatting_commands", { enabled: on }));
   }
   if ($("open-folder")) {
     // `start` opens directories in Explorer just like URLs in the browser.

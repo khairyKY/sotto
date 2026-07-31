@@ -246,6 +246,11 @@ pub struct Config {
     /// delete work you want to keep.
     #[serde(default = "default_true")]
     pub replacements_enabled: bool,
+    /// "New line"/"new paragraph" spoken commands become real line breaks.
+    /// Its own toggle, independent of `polish.mode` — see `polish.rs`'s
+    /// `apply_formatting_commands` for why it applies even when polish is Off.
+    #[serde(default = "default_true")]
+    pub formatting_commands: bool,
     /// Default tone instruction appended to the AI-polish system prompt.
     /// Empty = off — today's prompt, byte-identical. AI tier only: Rules/Off
     /// strip and fix, they don't re-voice a sentence, so this has no effect
@@ -313,6 +318,7 @@ impl Default for Config {
             asr: AsrConfig::default(),
             dictionary: Vec::new(),
             replacements_enabled: true,
+            formatting_commands: true,
             tone: String::new(),
             app_tones: Vec::new(),
             start_hidden: true,

@@ -36,8 +36,8 @@ Clean up this voice-dictation transcript. Fix punctuation and capitalization, \
 and remove speech fillers (um, uh, like, يعني). Keep the speaker's exact words \
 and language — never translate. If the text mixes languages (e.g. Egyptian \
 Arabic with English words), keep each word in the language it was spoken and \
-add the right punctuation for that script. Reply with ONLY the cleaned text, no \
-preamble, no quotes.";
+add the right punctuation for that script. Preserve existing line breaks. \
+Reply with ONLY the cleaned text, no preamble, no quotes.";
 
 /// Append the resolved tone as one extra clause. `tone` is already a short
 /// instruction sentence (a frontend preset or free-typed text), so this is
