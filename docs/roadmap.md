@@ -455,23 +455,48 @@ vault note lists it as an idea.
 
 ### N4 — Persistent history + crash-safe takes (S–M) — the PC-crash fix
 
-Kai's crash story is two distinct losses; fix both:
-- **(a) History that survives restarts.** `history.rs` is in-memory by design,
-  with a ponytail comment already naming the upgrade path: append-only
-  `data_dir()/history.jsonl`, loaded on start, capped (say 500 entries,
-  trimmed on write). **Open decision for Kai:** history contains transcript
-  TEXT — writing it to disk changes the privacy posture ("never stores your
-  text" currently holds only because history is RAM-only). Proposal: a
-  Settings toggle "Keep history on disk", default ON with one honest line
-  under it; the stats pipeline stays counts-only either way.
-- **(b) The mid-transcription loss.** The crash ate a long take because audio
-  exists only in RAM until injection. Fix: on `Stop`, write the take's samples
-  to `data_dir()/pending-take.wav` (16 kHz mono ≈ 2 MB/min) BEFORE
-  transcription starts; delete on successful injection. On startup, if the
-  file exists, surface it through the existing take-stash machinery — Home's
-  "last dictation wasn't delivered" card + ↻ Retry just work, with reason
-  "Recovered after a crash". This reuses the whole retry pipeline; the only
-  new code is write-on-stop, delete-on-deliver, load-on-boot.
+Kai's crash story is two distinct losses; fix both.
+
+**Decided 2026-07-28 (Kai): on-disk history defaults OFF, opt-in, and compact.**
+The privacy line stays true out of the box — a fresh install stores no
+transcript text, ever, and nobody has to know a setting exists to be safe.
+
+- **(a) History that survives restarts — opt-in.** `history.rs` is in-memory by
+  design (its ponytail comment already names the upgrade path). Add
+  `history.persist: bool` (**default false**) and, when on, an append-only
+  `data_dir()/history.jsonl` loaded at startup.
+  - **Consent, not a silent toggle.** Flipping it on opens a confirm step that
+    states plainly what changes: *"Your dictated text will be written to
+    `%APPDATA%\sotto\history.jsonl` so it survives restarts. It stays on this
+    device and is never uploaded. Turning this off deletes the file."* Only
+    then does it persist. Turning it off deletes `history.jsonl` immediately
+    — off must mean gone, not merely "stopped appending".
+  - **Compact by construction.** Short keys (`{"t":…,"x":…}`), one line per
+    entry, no pretty-printing. Two caps, whichever hits first: **500 entries**
+    and **1 MB**, oldest dropped on write. Rough scale: a 25-word dictation is
+    ~150 bytes, so 1 MB ≈ 7,000 dictations — the count cap is what bites in
+    practice, and the byte cap only guards against someone dictating essays.
+    Trim happens on append (read-modify-write of a ≤1 MB file is trivial), so
+    the file can never grow unbounded between launches. RAM is unchanged: the
+    in-memory `VecDeque` cap of 20 stays exactly as-is; the file is a superset
+    read lazily by the History page, not held in memory.
+- **(b) The mid-transcription loss — always on, but transient.** The crash ate
+  a long take because audio exists only in RAM until injection. Fix: on `Stop`,
+  write the take's samples to `data_dir()/pending-take.wav` BEFORE
+  transcription starts; delete on successful injection. On startup, if the file
+  exists, surface it through the existing take-stash machinery — Home's "last
+  dictation wasn't delivered" card + ↻ Retry just work, with reason "Recovered
+  after a crash". Reuses the whole retry pipeline; new code is write-on-stop,
+  delete-on-deliver, load-on-boot.
+  - **On size:** 16 kHz mono f32 ≈ 3.8 MB/min while it exists, but it exists
+    only for the seconds between "you stopped talking" and "text delivered",
+    and exactly one can exist at a time. Write i16 instead of f32 (halves it to
+    ~1.9 MB/min at zero quality cost for 16-bit-sourced audio), and cap at 10
+    minutes of audio — past that, a crash-recovery file is doing more harm than
+    good. Deleted on delivery, on cancel, and on the retry that consumes it.
+  - This half is NOT gated behind the history toggle: it stores *audio you just
+    spoke and are actively waiting on*, not a log, and it deletes itself. If
+    Kai would rather it also be opt-in, it's one flag — say so.
 
 ### Egyptian A/B data point (2026-07-28 trial, logged in the vault note)
 
