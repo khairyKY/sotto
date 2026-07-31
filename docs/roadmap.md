@@ -498,6 +498,60 @@ transcript text, ever, and nobody has to know a setting exists to be safe.
     spoke and are actively waiting on*, not a log, and it deletes itself. If
     Kai would rather it also be opt-in, it's one flag — say so.
 
+### F1 — Voice formatting commands (S) — approved 2026-07-31
+
+Say "new paragraph" mid-dictation and get an actual break instead of the
+literal words. Kai asked for this explicitly; it was the one Wispr-Flow-derived
+idea still awaiting a yes.
+
+**Scope: line breaks only, not punctuation.** The obvious temptation is a big
+map — "period", "comma", "question mark". Don't. Both ASR engines already emit
+punctuation competently, so those commands add nothing, and every one of them
+is a false-positive magnet: "a **period** of time", "**comma**-separated",
+"the **dash**board". Line-break phrases are the rare case that is almost never
+said literally in dictation, which is exactly why they're the ones worth
+having. Built-ins:
+
+| Say | Get |
+| :--- | :--- |
+| "new line" | `\n` |
+| "new paragraph" | `\n\n` |
+
+**Placement in the pipeline — before polish, not after.** `polish_with_tone`
+currently goes: mode-specific cleanup → dictionary. Formatting commands run
+FIRST, on the raw transcript, for two reasons:
+- **Before dictionary** is load-bearing. If it ran last, a snippet whose
+  replacement text happens to contain the words "new line" would get silently
+  chopped in half. Running first means commands only ever match what the user
+  actually *said*.
+- **Before the AI tier** means Qwen receives text already broken into
+  paragraphs, which is the shape it handles best. Add one clause to
+  `SYSTEM_PROMPT`: *"Preserve existing line breaks."* — cheap insurance against
+  it reflowing them away.
+
+**Its own toggle, independent of polish mode.** `formatting_commands: bool`
+(default **true**), applied in Off/Rules/AI alike. Rationale: a user saying
+"new paragraph" always means the break — never the words — so honouring it
+isn't "cleanup" and shouldn't vanish because polish is Off. That does mean Off
+is no longer byte-for-byte verbatim, which is why it gets its own switch rather
+than riding on the polish setting.
+
+**Implementation.** `replace_whole_ci` already exists in `polish.rs` and does
+exactly the needed whole-phrase, case-insensitive match — reuse it, don't write
+a second matcher. The only real subtlety is whitespace: "hello new line world"
+must give `hello\nworld`, not `hello \n world`, so the replacement has to
+absorb the spaces around the phrase. Tests: both commands, the whitespace
+collapse, case-insensitivity, that it's inert when the toggle is off, and that
+a snippet containing the literal words survives untouched.
+
+**UI.** One Settings toggle under a "Dictation" heading, with the two phrases
+listed beneath it so the feature is discoverable — a voice command nobody knows
+about is a feature that doesn't exist.
+
+**Deliberately not in scope:** user-defined commands. The Dictionary already
+maps spoken→text for anything else; revisit only if Kai wants multi-line
+snippets, which is a Dictionary feature, not this one.
+
 ### Egyptian A/B data point (2026-07-28 trial, logged in the vault note)
 
 Real dictation through `egyptian-small`: code-switching held (English stayed
