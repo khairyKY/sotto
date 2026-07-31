@@ -548,6 +548,32 @@ input[type="range"]::-webkit-slider-thumb {
 }
 .switch[aria-checked="true"] .knob { left: 18px; }
 
+/* 3×3 overlay-anchor picker — grid position itself conveys the anchor
+   (row 1 = top, col 3 = right, …), so tiles carry no icon or label. */
+.anchor-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 22px);
+  grid-template-rows: repeat(3, 22px);
+  gap: 6px;
+  padding: 8px;
+  background: var(--mm-base);
+  border-radius: 10px;
+  box-shadow: var(--mm-inset-sm);
+}
+.anchor-grid button {
+  width: 22px; height: 22px;
+  border: 0;
+  border-radius: 6px;
+  background: var(--mm-fg);
+  box-shadow: var(--mm-raised-sm);
+  cursor: pointer;
+  padding: 0;
+}
+.anchor-grid button.active {
+  background: var(--mm-accent);
+  box-shadow: var(--mm-inset-sm);
+}
+
 /* ── banners ───────────────────────────────── */
 /* `display:flex` from an author sheet beats the UA's `[hidden]{display:none}`,
    so without this the `hidden` attribute did nothing: both banners rendered

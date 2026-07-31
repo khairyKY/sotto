@@ -29,11 +29,20 @@ const state = {
 const inst = { env: 0.4, sparkles: [], lastSpark: 0, dots: [] };
 // Hit-region for whatever button the current state draws (✕ cancel or ↻
 // retry) — recomputed every frame in drawState, read by the click handler.
-// null when the current state has no button (idle-invisible / done).
+// null when the current state has no button (idle / done).
 let activeBtn = null;
+
+// Opt-in "keep the idle pill on screen, click it to start a dictation" mode
+// (N1). Off by default — matches config.rs's OverlayConfig default, so a
+// window that never hears otherwise keeps today's hide-when-idle behavior.
+let alwaysVisible = false;
 
 const tauriWin = window.__TAURI__?.window ? window.__TAURI__.window.getCurrentWindow() : null;
 const invoke = (cmd) => { if (window.__TAURI__) window.__TAURI__.core.invoke(cmd); else console.log('[mock invoke]', cmd); };
+
+if (window.__TAURI__) {
+  window.__TAURI__.core.invoke('get_overlay_settings').then((s) => { alwaysVisible = !!s.alwaysVisible; });
+}
 
 function setState(name) {
   if (name === state.name) return;
@@ -41,7 +50,15 @@ function setState(name) {
   state.since = performance.now();
   inst.sparkles = [];
   inst.dots = [];
-  if (name === "idle" && tauriWin) tauriWin.hide();
+  if (name === "idle") {
+    // Rust's overlay_state only tracks DictationEvent-driven transitions;
+    // this one is timed entirely in here (see the "done"/"error"/"cancelled"/
+    // "nomodel" auto-dismiss branches in drawState), so tell it explicitly —
+    // the hit-test poll needs to know idle just started so it can start
+    // treating the pill as clickable.
+    if (alwaysVisible) invoke('mark_overlay_idle');
+    else if (tauriWin) tauriWin.hide();
+  }
 }
 
 function rr(x, y, w, h, r) { ctx.beginPath(); ctx.roundRect(x, y, w, h, r); }
@@ -184,7 +201,11 @@ function drawState(x, y, w, h, now) {
   activeBtn = null;
 
   if (name === 'idle') {
-    const cx = (contentL + xr) / 2;
+    // No button: this only shows at all in always-visible mode, and its only
+    // interaction is a body click (see the canvas click handler) that starts
+    // a dictation — there's nothing to cancel yet. Dot is centered on the
+    // whole pill rather than offset for a button that isn't drawn here.
+    const cx = x + w / 2;
     const breathe = 0.5 + 0.5 * Math.sin(now * 0.0015);
     const rd = 11 + breathe * 2;
     const grad = ctx.createRadialGradient(cx - 2, yc - 2, 1, cx, yc, rd);
@@ -199,8 +220,6 @@ function drawState(x, y, w, h, now) {
     ctx.beginPath();
     ctx.arc(cx, yc, rd, 0, Math.PI * 2);
     ctx.fill();
-    cancelBtn(xr, yc, btnR, alpha, dark);
-    activeBtn = { x: xr, y: yc, r: btnR, action: 'cancel' };
   } else if (name === 'listening') {
     const cx = (contentL + xr) / 2;
     const nBars = 5;
@@ -417,7 +436,7 @@ function frame(now) {
   if (canvas.height !== Math.round(ch * dpr)) canvas.height = Math.round(ch * dpr);
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.clearRect(0, 0, cw, ch);
-  if (state.name !== 'idle') {
+  if (state.name !== 'idle' || alwaysVisible) {
     const w = pillWidthFor(state.name);
     const px = Math.round((cw - w) / 2);
     const py = Math.round((ch - PH) / 2);
@@ -432,10 +451,25 @@ function frame(now) {
 // right now. Hit-test against the button's own circle, not just "anywhere
 // on the pill", so a click on the pill body (no button under it) is a no-op.
 canvas.addEventListener('click', (e) => {
-  if (!activeBtn) return;
-  const d = Math.hypot(e.offsetX - activeBtn.x, e.offsetY - activeBtn.y);
-  if (d <= activeBtn.r + 3) { // +3px forgiving hit-area for a small target
-    invoke(activeBtn.action === 'retry' ? 'retry_last' : 'cancel_dictation');
+  if (activeBtn) {
+    const d = Math.hypot(e.offsetX - activeBtn.x, e.offsetY - activeBtn.y);
+    if (d <= activeBtn.r + 3) { // +3px forgiving hit-area for a small target
+      invoke(activeBtn.action === 'retry' ? 'retry_last' : 'cancel_dictation');
+    }
+    return;
+  }
+  // Idle has no button — the whole pill body starts a dictation. Only
+  // reachable at all when always-visible mode makes idle clickable at the
+  // Windows hit-test level (spawn_overlay_hittest in main.rs); the bounds
+  // here mirror pillWidthFor('idle') so a click just past the pill's edge
+  // (still inside the transparent window) is a no-op.
+  if (state.name === 'idle' && alwaysVisible) {
+    const w = pillWidthFor('idle');
+    const px = Math.round((window.innerWidth - w) / 2);
+    const py = Math.round((window.innerHeight - PH) / 2);
+    if (e.offsetX >= px && e.offsetX <= px + w && e.offsetY >= py && e.offsetY <= py + PH) {
+      invoke('start_dictation');
+    }
   }
 });
 
@@ -452,6 +486,7 @@ const tauri = window.__TAURI__;
 if (tauri && tauri.event) {
   tauri.event.listen('overlay-state', (e) => setState(e.payload));
   tauri.event.listen('overlay-level', (e) => { state.level = e.payload; });
+  tauri.event.listen('overlay-always-visible-changed', (e) => { alwaysVisible = !!e.payload; });
   tauri.event.listen('theme-changed', (e) => {
     const theme = e.payload;
     if (theme === "system") {

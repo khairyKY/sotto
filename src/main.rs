@@ -85,6 +85,14 @@ pub struct Controls {
     /// emit_state, read by the overlay hit-test poll to know the pill's
     /// width and whether it currently shows a clickable button.
     pub overlay_state: Arc<Mutex<String>>,
+    /// Configured pill anchor ("bottom-center", …) — read live by
+    /// show_overlay/position_overlay so a Settings change repositions the
+    /// pill without a restart.
+    pub overlay_position: Arc<Mutex<String>>,
+    /// Opt-in "keep the idle pill on screen, click it to start a dictation"
+    /// mode (N1) — read by spawn_overlay_hittest to decide whether idle is
+    /// currently clickable.
+    pub overlay_always_visible: Arc<AtomicBool>,
     /// Soft start/stop recording ticks — live-toggled from settings.
     pub sound_enabled: Arc<AtomicBool>,
     /// The stashed-but-undelivered take, if any — drives the tray menu's
@@ -126,6 +134,8 @@ impl Controls {
             stats_enabled: Arc::new(AtomicBool::new(cfg.stats_enabled)),
             microphone: Arc::new(Mutex::new(cfg.microphone.clone())),
             overlay_state: Arc::new(Mutex::new("idle".to_string())),
+            overlay_position: Arc::new(Mutex::new(cfg.overlay.position.clone())),
+            overlay_always_visible: Arc::new(AtomicBool::new(cfg.overlay.always_visible)),
             sound_enabled: Arc::new(AtomicBool::new(cfg.sound_enabled)),
             take_info: Arc::new(Mutex::new(None)),
         }
@@ -211,6 +221,10 @@ struct SettingsPayload {
     models: Vec<ModelDto>,
     hotkey_options: Vec<HotkeyOption>,
     theme: String,
+    /// Configured pill anchor — drives the Settings 3×3 picker's selected tile.
+    overlay_position: String,
+    /// "Always show the pill" opt-in — drives the Settings toggle switch.
+    overlay_always_visible: bool,
     /// Current input device name, or "" for the OS default.
     microphone: String,
     microphone_options: Vec<String>,
@@ -330,6 +344,8 @@ fn get_settings(state: tauri::State<'_, AppState>) -> SettingsPayload {
             },
         ],
         theme: cfg.theme.clone(),
+        overlay_position: c.overlay_position.lock().unwrap().clone(),
+        overlay_always_visible: c.overlay_always_visible.load(Ordering::Relaxed),
         microphone: c.microphone.lock().unwrap().clone().unwrap_or_default(),
         microphone_options: audio::list_input_devices(),
         paused: c.paused.load(Ordering::Relaxed),
@@ -497,6 +513,80 @@ fn set_theme(theme: String, state: tauri::State<'_, AppState>) {
     let mut cfg = state.cfg.lock().unwrap();
     cfg.theme = theme;
     let _ = cfg.save();
+}
+
+/// Change the pill's screen anchor (N1). Persists + repositions immediately —
+/// the window may currently be hidden, in which case this just pre-positions
+/// it for the next show, same as `set_zoom`'s "apply now, not just on save".
+#[tauri::command]
+fn set_overlay_position(position: String, app: tauri::AppHandle, state: tauri::State<'_, AppState>) {
+    if !OVERLAY_ANCHORS.contains(&position.as_str()) {
+        return;
+    }
+    *state.controls.overlay_position.lock().unwrap() = position.clone();
+    {
+        let mut cfg = state.cfg.lock().unwrap();
+        cfg.overlay.position = position.clone();
+        let _ = cfg.save();
+    }
+    if let Some(w) = app.get_webview_window("overlay") {
+        position_overlay(&w, &position);
+    }
+}
+
+/// Opt-in "keep the idle pill on screen" mode (N1). Only needs to act
+/// immediately while the pill is actually idle right now — every other state
+/// already shows itself via `emit_state` regardless of this setting.
+#[tauri::command]
+fn set_overlay_always_visible(enabled: bool, app: tauri::AppHandle, state: tauri::State<'_, AppState>) {
+    state.controls.overlay_always_visible.store(enabled, Ordering::Relaxed);
+    {
+        let mut cfg = state.cfg.lock().unwrap();
+        cfg.overlay.always_visible = enabled;
+        let _ = cfg.save();
+    }
+    let is_idle = *state.controls.overlay_state.lock().unwrap() == "idle";
+    if is_idle {
+        if enabled {
+            show_overlay(&app);
+        } else if let Some(w) = app.get_webview_window("overlay") {
+            let _ = w.hide();
+        }
+    }
+}
+
+/// What overlay.js needs at boot to know whether idle should stay on screen
+/// and be clickable. `get_settings` also carries this (for the Settings
+/// window's picker/toggle), but that command does real work — dir sizes,
+/// model install state — the overlay window has no use for.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct OverlaySettingsDto {
+    always_visible: bool,
+}
+#[tauri::command]
+fn get_overlay_settings(state: tauri::State<'_, AppState>) -> OverlaySettingsDto {
+    OverlaySettingsDto { always_visible: state.controls.overlay_always_visible.load(Ordering::Relaxed) }
+}
+
+/// The overlay's idle-pill body click when always-visible is on (N1) — same
+/// event as the hotkey, just reachable by mouse. Mirrors cancel_dictation /
+/// retry_last: push the event, let the worker do the rest.
+#[tauri::command]
+fn start_dictation(state: tauri::State<'_, AppState>) {
+    let _ = state.tx.send(DictationEvent::Start);
+}
+
+/// The overlay reports back once its own countdown (done/error/cancelled/
+/// nomodel toast) times out to idle — those transitions are timed inside
+/// overlay.js, not driven by a DictationEvent, so nothing else updates
+/// `overlay_state` for them. Only matters in always-visible mode: the
+/// hit-test poll reads `overlay_state` to know whether idle is currently
+/// clickable, and a stale non-idle value here would leave it keyed to a
+/// button that overlay.js no longer draws.
+#[tauri::command]
+fn mark_overlay_idle(state: tauri::State<'_, AppState>) {
+    *state.controls.overlay_state.lock().unwrap() = "idle".to_string();
 }
 
 /// Switch the configured ASR engine. Persisted only — `asr::Asr::new()` reads
@@ -678,6 +768,7 @@ fn main() -> anyhow::Result<()> {
         .invoke_handler(tauri::generate_handler![
             get_settings, set_hotkey, set_activation, set_polish, set_threshold,
             set_dictionary, set_tone, set_app_tones, set_launch_login, set_start_hidden, set_theme, copy_text,
+            set_overlay_position, set_overlay_always_visible, get_overlay_settings, start_dictation, mark_overlay_idle,
             set_asr_model, set_asr_language,
             open_url, check_update, install_update, retry_last, cancel_dictation, dismiss_take,
             repolish_copy,
@@ -691,8 +782,12 @@ fn main() -> anyhow::Result<()> {
             build_tray(app)?;
             if let Some(w) = app.get_webview_window("overlay") {
                 let _ = w.set_ignore_cursor_events(true);
-                position_overlay(&w);
+                position_overlay(&w, &cfg.overlay.position);
                 harden_utility_window(&w);
+                if cfg.overlay.always_visible {
+                    let _ = w.show();
+                    harden_utility_window(&w); // re-assert after show() — see harden_utility_window's doc
+                }
             }
             if let Some(w) = app.get_webview_window("menu") {
                 harden_utility_window(&w);
@@ -706,7 +801,7 @@ fn main() -> anyhow::Result<()> {
                 }
             }
             spawn_pipeline(app.handle().clone(), controls.clone(), cfg.clone(), tx.clone(), rx.clone());
-            spawn_overlay_hittest(app.handle().clone(), controls.overlay_state.clone());
+            spawn_overlay_hittest(app.handle().clone(), controls.overlay_state.clone(), controls.overlay_always_visible.clone());
             spawn_update_check(app.handle().clone());
             assets::spawn_provision_if_missing(app.handle().clone());
             tracing::info!("Sotto ready — hold the hotkey and speak");
@@ -871,15 +966,56 @@ fn spawn_update_check(app: tauri::AppHandle) {
     });
 }
 
-/// Position the (always-on-top, transparent) overlay window bottom-center.
-fn position_overlay(w: &tauri::WebviewWindow) {
+/// The 9 supported pill anchors, kebab-case exactly as config.toml and the
+/// Settings 3×3 picker use.
+const OVERLAY_ANCHORS: [&str; 9] = [
+    "top-left", "top-center", "top-right",
+    "middle-left", "middle-center", "middle-right",
+    "bottom-left", "bottom-center", "bottom-right",
+];
+
+/// Margin off the screen edge for every anchor — reuses the constant that
+/// used to be bottom-only (8px) so every edge looks equally deliberate.
+const OVERLAY_MARGIN: f64 = 8.0;
+
+/// Anchor arithmetic: monitor size + pill size + anchor name -> top-left
+/// physical position. Split out from `position_overlay` so it's unit-testable
+/// without a real window/monitor. An unrecognized anchor (hand-edited config)
+/// falls back to bottom-center rather than panicking or landing off-screen.
+fn anchor_xy(mon_w: f64, mon_h: f64, pill_w: f64, pill_h: f64, anchor: &str, margin: f64) -> (i32, i32) {
+    let (h, v) = match anchor {
+        "top-left" => ("left", "top"),
+        "top-center" => ("center", "top"),
+        "top-right" => ("right", "top"),
+        "middle-left" => ("left", "middle"),
+        "middle-center" => ("center", "middle"),
+        "middle-right" => ("right", "middle"),
+        "bottom-left" => ("left", "bottom"),
+        "bottom-right" => ("right", "bottom"),
+        _ => ("center", "bottom"), // bottom-center, and the unknown-anchor fallback
+    };
+    let x = match h {
+        "left" => margin,
+        "right" => mon_w - pill_w - margin,
+        _ => (mon_w - pill_w) / 2.0,
+    };
+    let y = match v {
+        "top" => margin,
+        "middle" => (mon_h - pill_h) / 2.0,
+        _ => mon_h - pill_h - margin,
+    };
+    (x as i32, y as i32)
+}
+
+/// Position the (always-on-top, transparent) overlay window at the
+/// configured anchor.
+fn position_overlay(w: &tauri::WebviewWindow, anchor: &str) {
     if let Ok(Some(mon)) = w.current_monitor() {
         let sz = mon.size();
         let scale = mon.scale_factor();
         let ww = 260.0 * scale;
         let wh = 120.0 * scale;
-        let x = ((sz.width as f64 - ww) / 2.0) as i32;
-        let y = (sz.height as f64 - wh - 8.0 * scale) as i32;
+        let (x, y) = anchor_xy(sz.width as f64, sz.height as f64, ww, wh, anchor, OVERLAY_MARGIN * scale);
         let _ = w.set_position(tauri::PhysicalPosition::new(x, y));
     }
 }
@@ -1251,7 +1387,8 @@ fn emit_state(app: &tauri::AppHandle, s: &str) {
         };
         let _ = tray.set_icon(Some(icon));
     }
-    if s != "idle" {
+    let always_visible = app.state::<AppState>().controls.overlay_always_visible.load(Ordering::Relaxed);
+    if s != "idle" || always_visible {
         show_overlay(app);
     }
 }
@@ -1261,19 +1398,23 @@ fn emit_state(app: &tauri::AppHandle, s: &str) {
 /// cursor is actually inside the pill's rectangle. A 30 ms cursor poll is the
 /// only way to do this — mouse events can't reach the webview while
 /// click-through is on, so JS can't hit-test for us.
-fn spawn_overlay_hittest(app: tauri::AppHandle, ui_state: Arc<Mutex<String>>) {
+fn spawn_overlay_hittest(app: tauri::AppHandle, ui_state: Arc<Mutex<String>>, always_visible: Arc<AtomicBool>) {
     use windows::Win32::Foundation::POINT;
     use windows::Win32::UI::WindowsAndMessaging::GetCursorPos;
     std::thread::spawn(move || {
         let mut ignoring = true; // window starts click-through
         loop {
             // Pill width per state — must mirror pillWidthFor() in overlay.js.
+            // idle only gets a hitbox in always-visible mode, where the whole
+            // pill body is the click target (start a dictation) rather than a
+            // button.
             let pill_w = match ui_state.lock().unwrap().as_str() {
                 "error" => Some(236.0),
                 "cancelled" => Some(220.0),
                 "nomodel" => Some(248.0),
                 "listening" | "transcribing" | "polishing" => Some(148.0),
-                _ => None, // idle/done: no buttons
+                "idle" if always_visible.load(Ordering::Relaxed) => Some(148.0),
+                _ => None, // idle (default) / done: no buttons
             };
             let Some(pill_w) = pill_w else {
                 if !ignoring {
@@ -1316,7 +1457,8 @@ fn spawn_overlay_hittest(app: tauri::AppHandle, ui_state: Arc<Mutex<String>>) {
 
 fn show_overlay(app: &tauri::AppHandle) {
     if let Some(w) = app.get_webview_window("overlay") {
-        position_overlay(&w);
+        let anchor = app.state::<AppState>().controls.overlay_position.lock().unwrap().clone();
+        position_overlay(&w, &anchor);
         let _ = w.show();
         harden_utility_window(&w);
     }
@@ -1457,5 +1599,58 @@ mod tests {
         let i = TakeInfo::from(&take(None, 4200, "Cancelled"));
         assert_eq!(i.words, 0);
         assert_eq!(i.audio_ms, 4200);
+    }
+
+    // 1920x1080 monitor, the 260x120 unscaled pill size, 8px margin — same
+    // numbers `position_overlay` passes in practice at scale 1.0.
+    const MON_W: f64 = 1920.0;
+    const MON_H: f64 = 1080.0;
+    const PILL_W: f64 = 260.0;
+    const PILL_H: f64 = 120.0;
+    const MARGIN: f64 = 8.0;
+
+    fn anchor(name: &str) -> (i32, i32) {
+        anchor_xy(MON_W, MON_H, PILL_W, PILL_H, name, MARGIN)
+    }
+
+    #[test]
+    fn anchor_xy_top_left() {
+        assert_eq!(anchor("top-left"), (8, 8));
+    }
+    #[test]
+    fn anchor_xy_top_center() {
+        assert_eq!(anchor("top-center"), (830, 8));
+    }
+    #[test]
+    fn anchor_xy_top_right() {
+        assert_eq!(anchor("top-right"), (1652, 8));
+    }
+    #[test]
+    fn anchor_xy_middle_left() {
+        assert_eq!(anchor("middle-left"), (8, 480));
+    }
+    #[test]
+    fn anchor_xy_middle_center() {
+        assert_eq!(anchor("middle-center"), (830, 480));
+    }
+    #[test]
+    fn anchor_xy_middle_right() {
+        assert_eq!(anchor("middle-right"), (1652, 480));
+    }
+    #[test]
+    fn anchor_xy_bottom_left() {
+        assert_eq!(anchor("bottom-left"), (8, 952));
+    }
+    #[test]
+    fn anchor_xy_bottom_center() {
+        assert_eq!(anchor("bottom-center"), (830, 952));
+    }
+    #[test]
+    fn anchor_xy_bottom_right() {
+        assert_eq!(anchor("bottom-right"), (1652, 952));
+    }
+    #[test]
+    fn anchor_xy_unknown_falls_back_to_bottom_center() {
+        assert_eq!(anchor("garbage"), anchor("bottom-center"));
     }
 }

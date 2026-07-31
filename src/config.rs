@@ -277,6 +277,9 @@ pub struct Config {
     /// Soft tick when recording starts and stops.
     #[serde(default = "default_true")]
     pub sound_enabled: bool,
+    /// Overlay pill placement + click-to-record (N1).
+    #[serde(default)]
+    pub overlay: OverlayConfig,
     /// App-window zoom (1.0 = 100%). Applied via the webview's native zoom,
     /// so layout stays correct at any factor.
     #[serde(default = "default_zoom")]
@@ -326,6 +329,7 @@ impl Default for Config {
             theme: default_theme(),
             microphone: None,
             sound_enabled: true,
+            overlay: OverlayConfig::default(),
             zoom: default_zoom(),
             assets_dir: String::new(),
         }
@@ -421,6 +425,30 @@ pub fn whisper_model_file(model: &str) -> Option<&'static str> {
         "whisper-turbo" => Some("ggml-large-v3-turbo-q5_0.bin"),
         "egyptian-small" => Some("ggml-egyptian-codeswitch-small.bin"),
         _ => None,
+    }
+}
+
+/// Overlay pill placement + click-to-record (N1). `position` is one of the 9
+/// anchor strings `main.rs`'s `OVERLAY_ANCHORS` lists — validated at the
+/// `set_overlay_position` command, not here, so a hand-edited garbage value
+/// still loads fine (the anchor arithmetic falls back to bottom-center at
+/// render time rather than panicking).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct OverlayConfig {
+    pub position: String,
+    /// Opt-in: keep the idle pill on screen and let its body start a
+    /// dictation. Off by default — today's hide-when-idle behavior,
+    /// byte-identical.
+    pub always_visible: bool,
+}
+
+impl Default for OverlayConfig {
+    fn default() -> Self {
+        Self {
+            position: "bottom-center".to_string(),
+            always_visible: false,
+        }
     }
 }
 

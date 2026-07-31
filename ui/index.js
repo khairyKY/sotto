@@ -1355,6 +1355,17 @@ async function boot() {
     $("formatting-commands-toggle").setAttribute("aria-checked", String(s.formattingCommands !== false));
     initSwitch($("formatting-commands-toggle"), (on) => invoke("set_formatting_commands", { enabled: on }));
   }
+  if ($("overlay-always-visible-toggle")) {
+    $("overlay-always-visible-toggle").setAttribute("aria-checked", String(!!s.overlayAlwaysVisible));
+    initSwitch($("overlay-always-visible-toggle"), (on) => {
+      invoke("set_overlay_always_visible", { enabled: on });
+      if (hasTauri && T.event) T.event.emit("overlay-always-visible-changed", on);
+    });
+  }
+  if ($("overlay-position")) {
+    selectSegment($("overlay-position"), s.overlayPosition || "bottom-center");
+    initSegmented($("overlay-position"), (v) => invoke("set_overlay_position", { position: v }));
+  }
   if ($("open-folder")) {
     // `start` opens directories in Explorer just like URLs in the browser.
     $("open-folder").onclick = () => invoke("open_url", { url: s.dataDir || "" });
