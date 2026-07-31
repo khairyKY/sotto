@@ -1408,15 +1408,20 @@ fn spawn_overlay_hittest(app: tauri::AppHandle, ui_state: Arc<Mutex<String>>, al
             // idle only gets a hitbox in always-visible mode, where the whole
             // pill body is the click target (start a dictation) rather than a
             // button.
-            let pill_w = match ui_state.lock().unwrap().as_str() {
-                "error" => Some(236.0),
-                "cancelled" => Some(220.0),
-                "nomodel" => Some(248.0),
-                "listening" | "transcribing" | "polishing" => Some(148.0),
-                "idle" if always_visible.load(Ordering::Relaxed) => Some(148.0),
+            // (width, height) per state. Idle is the tucked pill, whose HOVER
+            // size (62x20) is the target — not its resting 46x16. It grows the
+            // instant the cursor arrives, so the hover box is what's actually
+            // under the pointer; using the smaller rect would hand the cursor
+            // back to the desktop mid-grow and make the pill flicker.
+            let pill = match ui_state.lock().unwrap().as_str() {
+                "error" => Some((236.0, 40.0)),
+                "cancelled" => Some((220.0, 40.0)),
+                "nomodel" => Some((248.0, 40.0)),
+                "listening" | "transcribing" | "polishing" => Some((148.0, 40.0)),
+                "idle" if always_visible.load(Ordering::Relaxed) => Some((62.0, 20.0)),
                 _ => None, // idle (default) / done: no buttons
             };
-            let Some(pill_w) = pill_w else {
+            let Some((pill_w, pill_h)) = pill else {
                 if !ignoring {
                     if let Some(w) = app.get_webview_window("overlay") {
                         let _ = w.set_ignore_cursor_events(true);
@@ -1433,7 +1438,7 @@ fn spawn_overlay_hittest(app: tauri::AppHandle, ui_state: Arc<Mutex<String>>, al
                     let scale = w.scale_factor().ok()?;
                     let mut pt = POINT::default();
                     unsafe { GetCursorPos(&mut pt).ok()? };
-                    let (pw, ph) = (pill_w * scale, 40.0 * scale);
+                    let (pw, ph) = (pill_w * scale, pill_h * scale);
                     let cx = pos.x as f64 + size.width as f64 / 2.0;
                     let cy = pos.y as f64 + size.height as f64 / 2.0;
                     let pad = 4.0 * scale;

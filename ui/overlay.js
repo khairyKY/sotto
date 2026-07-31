@@ -18,6 +18,78 @@ const CL = {
 
 const PW = 148, PH = 40, CR = PH / 2;
 
+// ── Tucked pill (per "Sotto Pill Tucked" design doc) ────────────────────
+// The always-visible pill rests small and translucent, grows on hover, dips
+// on press, and morphs to the full 148x40 while a dictation runs. The doc
+// expresses this as CSS transitions on a DOM node; this overlay is a canvas,
+// so each animated property becomes an explicit tween below.
+const GEO = {
+  tucked: { w: 46, h: 16, r: 8, op: 0.62, shadow: 0.4 },
+  hover: { w: 62, h: 20, r: 10, op: 1, shadow: 1 },
+};
+const MORPH_MS = 300; // width/height/radius
+const OPACITY_MS = 200;
+const PRESS_MS = 110; // scale(.95) dip before the dictation actually starts
+const DOT_MS = 220;
+
+// cubic-bezier(.32,.72,0,1) — the doc's morph curve. Newton-Raphson to invert
+// x(t), then read y(t); 5 iterations is well past visual convergence.
+function cubicBezier(x1, y1, x2, y2) {
+  const cx = 3 * x1, bx = 3 * (x2 - x1) - cx, ax = 1 - cx - bx;
+  const cy = 3 * y1, by = 3 * (y2 - y1) - cy, ay = 1 - cy - by;
+  const xAt = (t) => ((ax * t + bx) * t + cx) * t;
+  const yAt = (t) => ((ay * t + by) * t + cy) * t;
+  const dxAt = (t) => (3 * ax * t + 2 * bx) * t + cx;
+  return (x) => {
+    let t = x;
+    for (let i = 0; i < 5; i++) {
+      const d = dxAt(t);
+      if (Math.abs(d) < 1e-6) break;
+      t -= (xAt(t) - x) / d;
+    }
+    return yAt(Math.max(0, Math.min(1, t)));
+  };
+}
+const EASE_MORPH = cubicBezier(0.32, 0.72, 0, 1);
+const EASE_LINEAR = (t) => t;
+
+// A CSS-transition-shaped tween: retargeting mid-flight restarts from wherever
+// the value currently is, so interrupting a morph never snaps.
+const mkTween = (v) => ({ from: v, to: v, t0: 0, dur: 0, ease: EASE_MORPH });
+function tweenValue(tw, now) {
+  if (tw.dur <= 0) return tw.to;
+  const p = Math.min(1, (now - tw.t0) / tw.dur);
+  return tw.from + (tw.to - tw.from) * tw.ease(p);
+}
+function tweenTo(tw, to, now, dur, ease) {
+  if (tw.to === to) return;
+  tw.from = tweenValue(tw, now);
+  tw.to = to;
+  tw.t0 = now;
+  tw.dur = dur;
+  tw.ease = ease || EASE_MORPH;
+}
+
+const tw = {
+  w: mkTween(GEO.tucked.w), h: mkTween(GEO.tucked.h), r: mkTween(GEO.tucked.r),
+  op: mkTween(GEO.tucked.op), shadow: mkTween(GEO.tucked.shadow),
+  dot: mkTween(12), dotOp: mkTween(1), press: mkTween(1),
+};
+let pillHover = false;
+let pressUntil = 0;
+
+const isExpandedState = (n) => n !== 'idle';
+
+/// Target geometry for the current phase. Expanded states keep their existing
+/// per-state widths (error/cancelled toasts are wider) — this only decides the
+/// tucked/hover/expanded morph.
+function targetGeo(name) {
+  if (isExpandedState(name)) {
+    return { w: pillWidthFor(name), h: PH, r: CR, op: 1, shadow: 1 };
+  }
+  return pillHover ? GEO.hover : GEO.tucked;
+}
+
 const canvas = document.getElementById('pill');
 const ctx = canvas.getContext('2d');
 
@@ -64,32 +136,36 @@ function setState(name) {
 function rr(x, y, w, h, r) { ctx.beginPath(); ctx.roundRect(x, y, w, h, r); }
 const easeOut = (t) => 1 - Math.pow(1 - t, 3);
 
-function pillBase(x, y, w, h, alpha, dark) {
+/// `r` is the corner radius and `sc` scales the neumorphic shadow — both
+/// animate during the tucked↔expanded morph, so neither can stay the constant
+/// it used to be (the doc shrinks the shadow along with the pill).
+function pillBase(x, y, w, h, alpha, dark, r, sc) {
   const bg = dark ? CL.plum : CL.cream;
   const sh = dark ? CL.plumShadow : CL.creamShadow;
   const lt = dark ? CL.plumLight : CL.creamLight;
+  const blur = 10 * sc, off = 4 * sc;
   ctx.save();
-  rr(x, y, w, h, CR);
+  rr(x, y, w, h, r);
   ctx.shadowColor = sh;
-  ctx.shadowBlur = 10;
-  ctx.shadowOffsetX = 4;
-  ctx.shadowOffsetY = 4;
+  ctx.shadowBlur = blur;
+  ctx.shadowOffsetX = off;
+  ctx.shadowOffsetY = off;
   ctx.fillStyle = 'rgba(0,0,0,0)';
   ctx.fill();
   ctx.shadowColor = lt;
-  ctx.shadowBlur = 10;
-  ctx.shadowOffsetX = -4;
-  ctx.shadowOffsetY = -4;
+  ctx.shadowBlur = blur;
+  ctx.shadowOffsetX = -off;
+  ctx.shadowOffsetY = -off;
   ctx.fillStyle = 'rgba(0,0,0,0)';
   ctx.fill();
   ctx.restore();
-  rr(x, y, w, h, CR);
+  rr(x, y, w, h, r);
   ctx.fillStyle = bg;
   ctx.globalAlpha = alpha;
   ctx.fill();
   ctx.globalAlpha = 1;
   ctx.save();
-  rr(x, y, w, h, CR);
+  rr(x, y, w, h, r);
   ctx.clip();
   const hg = ctx.createLinearGradient(0, y, 0, y + h * 0.5);
   hg.addColorStop(0, `rgba(255,255,255,${0.10 * alpha})`);
@@ -99,7 +175,7 @@ function pillBase(x, y, w, h, alpha, dark) {
   ctx.restore();
   ctx.lineWidth = 1;
   ctx.strokeStyle = dark ? `rgba(255,255,255,${0.06 * alpha})` : `rgba(150,128,104,${0.12 * alpha})`;
-  rr(x + 0.5, y + 0.5, w - 1, h - 1, CR - 0.5);
+  rr(x + 0.5, y + 0.5, w - 1, h - 1, Math.max(0, r - 0.5));
   ctx.stroke();
 }
 
@@ -156,15 +232,76 @@ function countdownBar(x, y, w, h, pct, dark) {
   ctx.restore();
 }
 
-function drawState(x, y, w, h, now) {
+/// The resting indicator: a lilac orb with three slow clouds drifting inside
+/// it, clipped to the orb so they read as depth rather than as separate dots.
+/// `d` is the diameter, tweened 12→14 on hover (and scaled up as it dissolves
+/// into the expanded pill), so every offset below is expressed relative to the
+/// doc's 12px baseline.
+function drawTuckedDot(cx, cy, d, alpha, dark, now) {
+  if (d <= 0.5 || alpha <= 0.01) return;
+  const rad = d / 2, k = d / 12;
+  ctx.save();
+  ctx.globalAlpha = alpha;
+  ctx.beginPath();
+  ctx.arc(cx, cy, rad, 0, Math.PI * 2);
+  ctx.clip();
+
+  // Base orb: radial-gradient(circle at 38% 32%, #D6C8F0, #B7A1E4 40%, #8E74D0 80%)
+  const gx = cx - rad + d * 0.38, gy = cy - rad + d * 0.32;
+  const g = ctx.createRadialGradient(gx, gy, 0, gx, gy, d * 0.9);
+  if (dark) {
+    g.addColorStop(0, '#EDE4FB'); g.addColorStop(0.4, '#D6C8F0'); g.addColorStop(0.8, '#C9B8EE');
+  } else {
+    g.addColorStop(0, '#D6C8F0'); g.addColorStop(0.4, '#B7A1E4'); g.addColorStop(0.8, '#8E74D0');
+  }
+  ctx.fillStyle = g;
+  ctx.fillRect(cx - rad, cy - rad, d, d);
+
+  // mm-blob / mm-bounce, sampled analytically. Each cloud is a soft radial
+  // fading to transparent, so they blend instead of stacking as hard circles.
+  const blob = (t, per, delay) => {
+    const p = (((now / 1000 - delay) / per) % 1 + 1) % 1;
+    const seg = (a, b, u) => a + (b - a) * (0.5 - 0.5 * Math.cos(Math.PI * u));
+    if (p < 1 / 3) { const u = p * 3; return [seg(0, 3, u), seg(0, -2, u), seg(1, 1.16, u)]; }
+    if (p < 2 / 3) { const u = (p - 1 / 3) * 3; return [seg(3, -3, u), seg(-2, 1, u), seg(1.16, 0.88, u)]; }
+    const u = (p - 2 / 3) * 3; return [seg(-3, 0, u), seg(1, 0, u), seg(0.88, 1, u)];
+  };
+  const bounce = (per, delay) => {
+    const p = (((now / 1000 - delay) / per) % 1 + 1) % 1;
+    return 4 * Math.cos(2 * Math.PI * p);
+  };
+  const cloud = (ox, oy, size, color, a) => {
+    const cg = ctx.createRadialGradient(ox, oy, 0, ox, oy, size);
+    cg.addColorStop(0, color.replace('ALPHA', a));
+    cg.addColorStop(0.7, color.replace('ALPHA', '0'));
+    ctx.fillStyle = cg;
+    ctx.beginPath();
+    ctx.arc(ox, oy, size, 0, Math.PI * 2);
+    ctx.fill();
+  };
+  const left = cx - rad, top = cy - rad;
+  let [bx, by, bs] = blob(now, 3.8, -1.2);
+  cloud(left + (-2 + 4 + bx) * k, top + (-1 + 4 + by) * k, 4 * k * bs, 'rgba(214,200,240,ALPHA)', '0.90');
+  [bx, by, bs] = blob(now, 4.6, -2.8);
+  cloud(left + (d / k - 1 - 3 + bx) * k, top + (1 + 3 + by) * k, 3 * k * bs, 'rgba(255,254,250,ALPHA)', '0.85');
+  const yb = bounce(3.2, -0.8);
+  cloud(left + (2 + 3.5) * k, top + (d / k + 1 - 3.5 + yb) * k, 3.5 * k, 'rgba(183,161,228,ALPHA)', '0.80');
+
+  ctx.restore();
+  ctx.globalAlpha = 1;
+}
+
+function drawState(x, y, w, h, now, radius, shadowScale, baseAlpha) {
   const name = state.name;
   const sincePhase = now - state.since;
   const dark = document.documentElement.getAttribute('data-theme') === 'dark' ||
     (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches &&
      document.documentElement.getAttribute('data-theme') !== 'light');
 
-  let alpha = 1, dy = 0;
-  if (sincePhase < 180) { const e = easeOut(sincePhase / 180); alpha = e; dy = (1 - e) * 4; }
+  // baseAlpha carries the tucked pill's resting translucency (0.62 per the
+  // doc); the per-state fades below multiply into it rather than replace it.
+  let alpha = baseAlpha === undefined ? 1 : baseAlpha, dy = 0;
+  if (sincePhase < 180) { const e = easeOut(sincePhase / 180); alpha *= e; dy = (1 - e) * 4; }
   if (name === 'done') {
     if (sincePhase > 600) { const f = Math.min(1, (sincePhase - 600) / 400); alpha *= 1 - f; dy += f * 4; }
     if (sincePhase >= 1000) { setState('idle'); return; }
@@ -195,31 +332,17 @@ function drawState(x, y, w, h, now) {
   const muted = dark ? CL.mutedDark : CL.muted;
   const txt = dark ? CL.txtDark : CL.txt;
 
-  pillBase(x, y, w, h, alpha, dark);
+  pillBase(x, y, w, h, alpha, dark, radius, shadowScale);
   ctx.globalAlpha = alpha;
   // Recomputed below for whichever branch runs; 'done' has no button.
   activeBtn = null;
 
   if (name === 'idle') {
-    // No button: this only shows at all in always-visible mode, and its only
-    // interaction is a body click (see the canvas click handler) that starts
-    // a dictation — there's nothing to cancel yet. Dot is centered on the
-    // whole pill rather than offset for a button that isn't drawn here.
-    const cx = x + w / 2;
-    const breathe = 0.5 + 0.5 * Math.sin(now * 0.0015);
-    const rd = 11 + breathe * 2;
-    const grad = ctx.createRadialGradient(cx - 2, yc - 2, 1, cx, yc, rd);
-    if (dark) {
-      grad.addColorStop(0, 'rgba(230,218,247,0.9)');
-      grad.addColorStop(1, 'rgba(201,184,238,0.3)');
-    } else {
-      grad.addColorStop(0, 'rgba(183,161,228,0.9)');
-      grad.addColorStop(1, 'rgba(142,116,208,0.4)');
-    }
-    ctx.fillStyle = grad;
-    ctx.beginPath();
-    ctx.arc(cx, yc, rd, 0, Math.PI * 2);
-    ctx.fill();
+    // The tucked dot. No button: the only interaction here is a body click
+    // (see the canvas click handler) that starts a dictation — nothing to
+    // cancel yet — so it sits centred rather than offset for a button that
+    // isn't drawn.
+    drawTuckedDot(x + w / 2, yc, tweenValue(tw.dot, now), alpha * tweenValue(tw.dotOp, now), dark, now);
   } else if (name === 'listening') {
     const cx = (contentL + xr) / 2;
     const nBars = 5;
@@ -437,10 +560,31 @@ function frame(now) {
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.clearRect(0, 0, cw, ch);
   if (state.name !== 'idle' || alwaysVisible) {
-    const w = pillWidthFor(state.name);
+    // Retarget every frame: cheap (tweenTo early-outs when the target is
+    // unchanged) and it means a state change mid-morph is picked up
+    // immediately rather than waiting for the current tween to land.
+    const g = targetGeo(state.name);
+    tweenTo(tw.w, g.w, now, MORPH_MS);
+    tweenTo(tw.h, g.h, now, MORPH_MS);
+    tweenTo(tw.r, g.r, now, MORPH_MS);
+    tweenTo(tw.op, g.op, now, OPACITY_MS, EASE_LINEAR);
+    tweenTo(tw.shadow, g.shadow, now, MORPH_MS);
+    // The dot swells and dissolves as the pill expands (doc: scale 3.4,
+    // opacity 0) so it reads as becoming the pill rather than being replaced.
+    const expanded = isExpandedState(state.name);
+    tweenTo(tw.dot, expanded ? 12 * 3.4 : (pillHover ? 14 : 12), now, expanded ? MORPH_MS : DOT_MS);
+    tweenTo(tw.dotOp, expanded ? 0 : 1, now, 180, EASE_LINEAR);
+    // Press dip: a short scale(.95) that self-releases, so a click reads as
+    // physical even though the state change comes back asynchronously.
+    tweenTo(tw.press, now < pressUntil ? 0.95 : 1, now, PRESS_MS, EASE_LINEAR);
+
+    const scale = tweenValue(tw.press, now);
+    const w = tweenValue(tw.w, now) * scale;
+    const h = tweenValue(tw.h, now) * scale;
+    const r = Math.min(tweenValue(tw.r, now), h / 2);
     const px = Math.round((cw - w) / 2);
-    const py = Math.round((ch - PH) / 2);
-    drawState(px, py, w, PH, now);
+    const py = Math.round((ch - h) / 2);
+    drawState(px, py, w, h, now, r, tweenValue(tw.shadow, now), tweenValue(tw.op, now));
   }
   requestAnimationFrame(frame);
 }
@@ -463,15 +607,33 @@ canvas.addEventListener('click', (e) => {
   // Windows hit-test level (spawn_overlay_hittest in main.rs); the bounds
   // here mirror pillWidthFor('idle') so a click just past the pill's edge
   // (still inside the transparent window) is a no-op.
-  if (state.name === 'idle' && alwaysVisible) {
-    const w = pillWidthFor('idle');
-    const px = Math.round((window.innerWidth - w) / 2);
-    const py = Math.round((window.innerHeight - PH) / 2);
-    if (e.offsetX >= px && e.offsetX <= px + w && e.offsetY >= py && e.offsetY <= py + PH) {
-      invoke('start_dictation');
-    }
+  if (state.name === 'idle' && alwaysVisible && overTuckedPill(e)) {
+    // Dip first, then start. The visual press is local and immediate; the
+    // actual 'listening' state arrives from Rust a beat later, and the morph
+    // tween picks it up from wherever the dip left off.
+    pressUntil = performance.now() + PRESS_MS;
+    invoke('start_dictation');
   }
 });
+
+/// Hit-test against the HOVER rect (62x20), not the resting 46x16 one. The
+/// pill grows the moment the cursor arrives, so the hover box is what's
+/// actually under the pointer at click time — and using one stable rect for
+/// both states stops the pill oscillating at the boundary as it resizes.
+function overTuckedPill(e) {
+  const g = GEO.hover;
+  const px = (window.innerWidth - g.w) / 2;
+  const py = (window.innerHeight - g.h) / 2;
+  return e.offsetX >= px && e.offsetX <= px + g.w && e.offsetY >= py && e.offsetY <= py + g.h;
+}
+
+// Hover only reaches us at all while Rust has turned click-through off (the
+// cursor poll in spawn_overlay_hittest), so this refines that coarse gate to
+// the exact pill rect rather than the whole transparent window.
+canvas.addEventListener('mousemove', (e) => {
+  pillHover = alwaysVisible && !isExpandedState(state.name) && overTuckedPill(e);
+});
+canvas.addEventListener('mouseleave', () => { pillHover = false; });
 
 if (document.fonts && document.fonts.load) {
   Promise.all([
