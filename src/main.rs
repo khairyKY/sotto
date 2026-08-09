@@ -26,6 +26,7 @@ mod tray;
 use config::{ActivationMode, AppTone, Config, DictEntry, EntryKind, InjectionMode, PolishMode};
 use hotkey::DictationEvent;
 use single_instance::SingleInstanceGuard;
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicU32, AtomicU8, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -35,6 +36,23 @@ use tracing_subscriber::fmt::writer::MakeWriterExt;
 
 /// Ignore captured clips shorter than this — almost always an accidental tap.
 const MIN_CLIP_SAMPLES: usize = 16_000 / 2; // 0.5s at 16 kHz
+
+// ── chunked transcription (all counts are 16 kHz samples) ──────────────
+//
+// Nothing below CHUNK_MIN_SAMPLES is ever cut, so a normal short dictation
+// never touches any of this and behaves exactly as it did before.
+//
+// ponytail: fixed thresholds, no adaptation to the room's noise floor. If a
+// noisy mic stops finding pauses, every take just falls back to cutting at
+// CHUNK_MAX_SAMPLES — degraded, not broken. Raise SILENCE_RMS if that happens.
+const CHUNK_MIN_SAMPLES: usize = 16_000 * 10; // don't cut before 10s of audio
+const CHUNK_MAX_SAMPLES: usize = 16_000 * 24; // cut by 24s, pause or not
+const SILENCE_WIN: usize = 16_000 * 300 / 1000; // pause detector window, 300ms
+const SILENCE_STEP: usize = 16_000 * 50 / 1000; // scan stride, 50ms
+/// RMS below this counts as a pause rather than speech.
+const SILENCE_RMS: f32 = 0.015;
+/// How often the audio thread wakes to collect audio while recording.
+const CHUNK_POLL: Duration = Duration::from_millis(250);
 
 /// App-window zoom bounds. Below 0.5 the sidebar labels stop being legible;
 /// above 2.0 the 760px min-width layout starts clipping.
@@ -1099,7 +1117,22 @@ fn spawn_pipeline(
         });
     }
 
-    // Dictation worker.
+    // ── Dictation pipeline ───────────────────────────────────────────────
+    //
+    // Two threads, because they have incompatible jobs. The audio thread owns
+    // the recorder (cpal's Stream is !Send — it can never leave the thread
+    // that created it) and must always be free to answer the hotkey. The
+    // transcribe thread owns the ASR model, the polisher and the retry stash,
+    // and runs the slow transcribe → polish → inject pipeline.
+    //
+    // These used to be one thread, and that was the bug: a Start arriving
+    // while a take was transcribing sat unread in the channel until that take
+    // had been fully injected, so hitting the hotkey to dictate again during a
+    // transcription appeared to do nothing. Splitting them buys both of the
+    // things that were missing — recording starts immediately no matter what
+    // the model is doing (takes queue and deliver in order), and the audio
+    // thread can hand over finished chunks *during* recording, so the wait
+    // after release is the tail of the take instead of all of it.
     let injection_mode = cfg.injection_mode;
     let polisher = polish::Polisher::new(controls.clone(), cfg.llm.clone());
     let history = controls.history.clone();
@@ -1111,27 +1144,196 @@ fn spawn_pipeline(
     let microphone = controls.microphone.clone();
     let sound_enabled = controls.sound_enabled.clone();
     let take_info = controls.take_info.clone();
+    let polish_mode = controls.polish_mode.clone();
+    let chunking = cfg.chunked_transcription;
+    let (work_tx, work_rx) = crossbeam_channel::unbounded::<Work>();
+
+    // Transcribe thread.
+    {
+        let app = app.clone();
+        let listening = listening.clone();
+        let cancelled = cancelled.clone();
+        let stats_enabled = stats_enabled.clone();
+        std::thread::spawn(move || {
+            let mut asr = asr::Asr::new();
+            // Warm the ASR model before serving work, so the first dictation
+            // doesn't eat the ~5s load. Anything that arrives meanwhile just
+            // queues on the channel.
+            asr.preload();
+            // Same reasoning for Harper's lint set (~640 ms).
+            polisher.warm_rules();
+            // The last dictation, kept in memory so Escape/error is
+            // recoverable via Retry. Cleared on successful delivery.
+            let mut stash: Option<Take> = None;
+            // Text from chunks transcribed while the user was still talking,
+            // keyed by take. Usually holds at most one entry — but a queued
+            // earlier take can still be waiting while the next one records.
+            let mut partials: HashMap<u64, Partial> = HashMap::new();
+
+            for work in work_rx {
+                match work {
+                    // An empty chunk is a silent one — register the take as
+                    // chunked so Finish only transcribes the tail, but never
+                    // hand the model room tone to put words to.
+                    Work::Chunk { id, samples } if samples.is_empty() => {
+                        partials.entry(id).or_insert_with(|| Partial::Text(String::new()));
+                    }
+                    Work::Chunk { id, samples } => match asr.transcribe(&samples) {
+                        Ok(text) => {
+                            if let Partial::Text(acc) =
+                                partials.entry(id).or_insert_with(|| Partial::Text(String::new()))
+                            {
+                                if !text.is_empty() {
+                                    if !acc.is_empty() {
+                                        acc.push(' ');
+                                    }
+                                    acc.push_str(&text);
+                                }
+                            }
+                        }
+                        // One failed chunk poisons the whole take: its partial
+                        // text now has a hole in it, and delivering text with a
+                        // silent gap is far worse than being slow. Marked here,
+                        // re-transcribed whole at Finish. Chunking stays a pure
+                        // optimization — it can never change what gets injected.
+                        Err(err) => {
+                            tracing::warn!(?err, id, "chunk failed — will re-transcribe whole take");
+                            partials.insert(id, Partial::Poisoned);
+                        }
+                    },
+                    Work::Finish { id, mut take } => {
+                        match partials.remove(&id) {
+                            Some(Partial::Text(text)) => take.prefix_text = text,
+                            // Poisoned (or never chunked): start from zero.
+                            Some(Partial::Poisoned) | None => take.sent = 0,
+                        }
+                        process_take(
+                            &app, &mut asr, &polisher, &history, &suppressed, &cancelled,
+                            &listening, injection_mode, &stats_enabled, take, &mut stash,
+                        );
+                        publish_take(&app, &take_info, &stash);
+                    }
+                    Work::Cancelled { id, mut take } => {
+                        partials.remove(&id);
+                        // Only worth stashing if there's enough audio to retry.
+                        if take.samples.len() >= MIN_CLIP_SAMPLES {
+                            record_outcome(&take, &stats_enabled, "cancelled");
+                            take.reason = "Cancelled";
+                            stash = Some(take);
+                        }
+                        publish_take(&app, &take_info, &stash);
+                    }
+                    Work::Retry => {
+                        if let Some(take) = stash.take() {
+                            cancelled.store(false, Ordering::SeqCst);
+                            show_overlay(&app);
+                            tracing::info!(has_text = take.raw_text.is_some(), "retrying last dictation");
+                            process_take(
+                                &app, &mut asr, &polisher, &history, &suppressed, &cancelled,
+                                &listening, injection_mode, &stats_enabled, take, &mut stash,
+                            );
+                        } else {
+                            tracing::info!("retry requested but nothing stashed");
+                        }
+                        publish_take(&app, &take_info, &stash);
+                    }
+                    Work::Dismiss => {
+                        stash = None;
+                        publish_take(&app, &take_info, &stash);
+                    }
+                    // Queued behind any in-flight work on purpose: if the model
+                    // is busy the sidecar can wait, and the user is still
+                    // talking either way.
+                    Work::Prewarm => polisher.prewarm(),
+                    Work::Repolish(text) => {
+                        let out = polisher.polish(&text);
+                        if !out.text.is_empty() {
+                            if let Ok(mut cb) = arboard::Clipboard::new() {
+                                let _ = cb.set_text(out.text.clone());
+                            }
+                            // Brief "done" pill as the only feedback — the
+                            // result is on the clipboard, nothing is injected.
+                            show_overlay(&app);
+                            emit_state(&app, "done");
+                            tracing::info!("re-polished and copied {} chars", out.text.len());
+                        }
+                    }
+                }
+            }
+        });
+    }
+
+    // Audio thread.
     std::thread::spawn(move || {
         let mut recorder = audio::Recorder::new(level, microphone);
-        let mut asr = asr::Asr::new();
-        // Warm the ASR model on this thread before serving events, so the
-        // first dictation doesn't eat the ~5s load. Any Start that arrives
-        // meanwhile just queues on the channel.
-        asr.preload();
-        // Same reasoning for Harper's lint set (~640 ms): pay it here, behind
-        // the ASR load, not on the user's first dictation.
-        polisher.warm_rules();
-        // The last dictation, kept in memory so Escape/error is recoverable
-        // via Retry. Overwritten by the next Start; cleared on successful
-        // delivery.
-        let mut stash: Option<Take> = None;
+        // Everything captured for the take in progress, at 16 kHz, and how
+        // much of it has already gone to the transcribe thread as chunks. The
+        // full audio is always kept: chunking hands out *copies*, so a Retry
+        // can still re-transcribe the take from scratch.
+        let mut all: Vec<f32> = Vec::new();
+        let mut sent: usize = 0;
+        let mut take_id: u64 = 0;
+        let mut recording = false;
 
-        for event in rx {
+        loop {
+            // Poll only while recording — an idle Sotto has no reason to wake
+            // up four times a second for the rest of the session.
+            let event = if recording {
+                match rx.recv_timeout(CHUNK_POLL) {
+                    Ok(e) => Some(e),
+                    Err(crossbeam_channel::RecvTimeoutError::Timeout) => None,
+                    Err(_) => break,
+                }
+            } else {
+                match rx.recv() {
+                    Ok(e) => Some(e),
+                    Err(_) => break,
+                }
+            };
+
+            // Timed out mid-recording: collect what's been captured and hand
+            // over a chunk if enough has piled up behind a pause.
+            let Some(event) = event else {
+                all.extend(recorder.drain());
+                if chunking {
+                    if let Some(cut) = chunk_cut(&all[sent..]) {
+                        let end = sent + cut;
+                        let chunk = &all[sent..end];
+                        // A chunk that's silence end to end is sent *empty*:
+                        // fed room tone the model invents a phrase and it gets
+                        // injected as if it were speech (one-shot could do that
+                        // once per take; chunking would do it once per chunk).
+                        //
+                        // Empty rather than not at all — the take still has to
+                        // be recorded as chunked, or Finish sees no partial,
+                        // assumes chunking never happened, and re-transcribes
+                        // the whole take from zero.
+                        let silent = rms(chunk) < SILENCE_RMS;
+                        let _ = work_tx.send(Work::Chunk {
+                            id: take_id,
+                            samples: if silent { Vec::new() } else { chunk.to_vec() },
+                        });
+                        tracing::info!(
+                            id = take_id,
+                            secs = cut as f64 / 16_000.0,
+                            silent,
+                            "chunk sent"
+                        );
+                        sent = end;
+                    }
+                }
+                continue;
+            };
+
             match event {
                 DictationEvent::Start => {
                     cancelled.store(false, Ordering::SeqCst);
                     match recorder.start() {
                         Ok(()) => {
+                            take_id += 1;
+                            all.clear();
+                            sent = 0;
+                            recording = true;
                             listening.store(true, Ordering::Relaxed);
                             if sound_enabled.load(Ordering::Relaxed) {
                                 sounds::tick();
@@ -1140,10 +1342,10 @@ fn spawn_pipeline(
                             // dictation doesn't reroute the injection.
                             focus_target.store(inject::capture_focus(), Ordering::Relaxed);
                             // Warm the LLM sidecar while the user speaks.
-                            polisher.prewarm();
+                            let _ = work_tx.send(Work::Prewarm);
                             show_overlay(&app);
                             emit_state(&app, "listening");
-                            tracing::info!("listening");
+                            tracing::info!(id = take_id, "listening");
                         }
                         Err(err) => {
                             emit_state(&app, "error");
@@ -1156,20 +1358,20 @@ fn spawn_pipeline(
                     // polish is handled by the stage-boundary flag checks in
                     // process_take (the flag was already set by the listener).
                     if listening.swap(false, Ordering::Relaxed) {
+                        recording = false;
                         if sound_enabled.load(Ordering::Relaxed) {
                             sounds::tock();
                         }
-                        let samples = recorder.stop().unwrap_or_default();
+                        all.extend(recorder.stop().unwrap_or_default());
                         cancelled.store(false, Ordering::SeqCst); // consumed here
-                        let mut take = Take::new(samples, focus_target.swap(0, Ordering::Relaxed), &polisher);
+                        let take = Take::new(
+                            std::mem::take(&mut all),
+                            focus_target.swap(0, Ordering::Relaxed),
+                            PolishMode::from_u8(polish_mode.load(Ordering::Relaxed)),
+                        );
                         emit_state(&app, "cancelled");
                         tracing::info!("dictation cancelled while recording");
-                        // Only worth stashing if there's enough audio to retry.
-                        if take.samples.len() >= MIN_CLIP_SAMPLES {
-                            record_outcome(&take, &stats_enabled, "cancelled");
-                            take.reason = "Cancelled";
-                            stash = Some(take);
-                        }
+                        let _ = work_tx.send(Work::Cancelled { id: take_id, take });
                     }
                 }
                 DictationEvent::Stop => {
@@ -1180,71 +1382,139 @@ fn spawn_pipeline(
                     {
                         sounds::tock();
                     }
-                    let samples = match recorder.stop() {
-                        Ok(s) => s,
+                    recording = false;
+                    match recorder.stop() {
+                        Ok(s) => all.extend(s),
                         Err(err) => {
                             emit_state(&app, "error");
                             tracing::error!(?err, "failed to stop capture");
+                            // Everything drained while recording is still good
+                            // audio — hand it over to be stashed rather than
+                            // dropped, which also clears any chunk partials
+                            // held for this take.
+                            let take = Take::new(
+                                std::mem::take(&mut all),
+                                focus_target.swap(0, Ordering::Relaxed),
+                                PolishMode::from_u8(polish_mode.load(Ordering::Relaxed)),
+                            );
+                            let _ = work_tx.send(Work::Cancelled { id: take_id, take });
+                            sent = 0;
                             continue;
                         }
-                    };
-                    if samples.len() < MIN_CLIP_SAMPLES {
+                    }
+                    if all.len() < MIN_CLIP_SAMPLES {
                         emit_state(&app, "idle");
+                        all.clear();
+                        sent = 0;
                         continue;
                     }
-                    let mut take = Take::new(samples, focus_target.swap(0, Ordering::Relaxed), &polisher);
+                    let mut take = Take::new(
+                        std::mem::take(&mut all),
+                        focus_target.swap(0, Ordering::Relaxed),
+                        PolishMode::from_u8(polish_mode.load(Ordering::Relaxed)),
+                    );
+                    take.sent = sent;
+                    sent = 0;
                     // Cancel arrived during/right after recording.
                     if cancelled.swap(false, Ordering::SeqCst) {
                         emit_state(&app, "cancelled");
-                        record_outcome(&take, &stats_enabled, "cancelled");
-                        take.reason = "Cancelled";
-                        stash = Some(take);
+                        let _ = work_tx.send(Work::Cancelled { id: take_id, take });
                         continue;
                     }
-                    process_take(
-                        &app, &mut asr, &polisher, &history, &suppressed, &cancelled,
-                        injection_mode, &stats_enabled, take, &mut stash,
-                    );
+                    let _ = work_tx.send(Work::Finish { id: take_id, take });
                 }
                 DictationEvent::Retry => {
-                    if let Some(take) = stash.take() {
-                        cancelled.store(false, Ordering::SeqCst);
-                        show_overlay(&app);
-                        tracing::info!(has_text = take.raw_text.is_some(), "retrying last dictation");
-                        process_take(
-                            &app, &mut asr, &polisher, &history, &suppressed, &cancelled,
-                            injection_mode, &stats_enabled, take, &mut stash,
-                        );
-                    } else {
-                        tracing::info!("retry requested but nothing stashed");
-                    }
+                    let _ = work_tx.send(Work::Retry);
                 }
                 DictationEvent::Dismiss => {
-                    stash = None;
+                    let _ = work_tx.send(Work::Dismiss);
                 }
                 DictationEvent::Repolish(text) => {
-                    let out = polisher.polish(&text);
-                    if !out.text.is_empty() {
-                        if let Ok(mut cb) = arboard::Clipboard::new() {
-                            let _ = cb.set_text(out.text.clone());
-                        }
-                        // Brief "done" pill as the only feedback — the result
-                        // is on the clipboard, nothing is injected.
-                        show_overlay(&app);
-                        emit_state(&app, "done");
-                        tracing::info!("re-polished and copied {} chars", out.text.len());
-                    }
+                    let _ = work_tx.send(Work::Repolish(text));
                 }
             }
-            // Single choke point for every path above — keeps the tray menu's
-            // "Retry last dictation" and Home's alert card honest, and pushes
-            // the change to an already-open window instead of waiting for a
-            // refresh.
-            let info = stash.as_ref().map(TakeInfo::from);
-            *take_info.lock().unwrap() = info.clone();
-            let _ = app.emit("take-changed", info);
         }
     });
+}
+
+/// Work handed from the audio thread to the transcribe thread. `id` ties a
+/// chunk to the take it came from, so a chunk that lands after the next take
+/// has already started recording still joins the right transcript.
+enum Work {
+    Chunk { id: u64, samples: Vec<f32> },
+    Finish { id: u64, take: Take },
+    Cancelled { id: u64, take: Take },
+    Retry,
+    Dismiss,
+    Repolish(String),
+    /// Spin the LLM sidecar up while the user is still speaking.
+    Prewarm,
+}
+
+/// Chunk text accumulated for a take that's still being recorded.
+enum Partial {
+    Text(String),
+    /// A chunk failed to transcribe, so the accumulated text has a gap in it
+    /// and must be thrown away in favour of one whole-take pass.
+    Poisoned,
+}
+
+/// Push the current retry-stash state to the tray menu and Home's alert card.
+/// Called after anything that can change the stash, so "Retry last dictation"
+/// is never offering something that isn't there.
+fn publish_take(
+    app: &tauri::AppHandle,
+    take_info: &Arc<Mutex<Option<TakeInfo>>>,
+    stash: &Option<Take>,
+) {
+    let info = stash.as_ref().map(TakeInfo::from);
+    *take_info.lock().unwrap() = info.clone();
+    let _ = app.emit("take-changed", info);
+}
+
+/// Where to cut the next chunk out of the not-yet-sent audio (16 kHz mono),
+/// or `None` to keep accumulating.
+///
+/// Cuts land in a pause, never mid-word. A boundary inside a word garbles it
+/// on both sides, and one mid-sentence makes the following chunk come back
+/// capitalized as though a new sentence had started — so the cut point is the
+/// quietest 300 ms in the search window, and if nothing quiet enough turns up
+/// the chunk simply keeps growing until the hard ceiling.
+///
+/// Below `CHUNK_MIN_SAMPLES` nothing is ever cut, so ordinary short dictations
+/// take exactly the path they took before chunking existed.
+/// Root-mean-square level of a slice — how loud it is, 0.0 for pure silence.
+fn rms(s: &[f32]) -> f32 {
+    if s.is_empty() {
+        return 0.0;
+    }
+    (s.iter().map(|v| v * v).sum::<f32>() / s.len() as f32).sqrt()
+}
+
+fn chunk_cut(pending: &[f32]) -> Option<usize> {
+    if pending.len() < CHUNK_MIN_SAMPLES {
+        return None;
+    }
+    let hi = pending.len().min(CHUNK_MAX_SAMPLES);
+    if hi < CHUNK_MIN_SAMPLES + SILENCE_WIN {
+        // Not enough room to look for a pause yet.
+        return (pending.len() >= CHUNK_MAX_SAMPLES).then_some(CHUNK_MAX_SAMPLES);
+    }
+    let mut best_rms = f32::MAX;
+    let mut best_at = CHUNK_MIN_SAMPLES;
+    let mut i = CHUNK_MIN_SAMPLES;
+    while i + SILENCE_WIN <= hi {
+        let level = rms(&pending[i..i + SILENCE_WIN]);
+        if level < best_rms {
+            best_rms = level;
+            best_at = i;
+        }
+        i += SILENCE_STEP;
+    }
+    // A real pause, or the ceiling forcing our hand — cut in the middle of the
+    // quietest window so both sides keep a little padding.
+    (best_rms < SILENCE_RMS || pending.len() >= CHUNK_MAX_SAMPLES)
+        .then_some(best_at + SILENCE_WIN / 2)
 }
 
 /// One dictation attempt kept in memory for a possible Retry. Never written to
@@ -1256,6 +1526,13 @@ struct Take {
     focus_target: isize,
     audio_ms: u64,
     tier: String,
+    /// Text already transcribed from chunks handed over while recording. The
+    /// final pass transcribes only `samples[sent..]` and appends it to this.
+    prefix_text: String,
+    /// How much of `samples` `prefix_text` already covers. Zero means "nothing
+    /// was chunked" — the whole take still needs transcribing, which is also
+    /// what a Retry or a poisoned chunk resets to.
+    sent: usize,
     /// Why this take wasn't delivered, in the user's words — set at whichever
     /// stash site caught it, shown verbatim by Home's alert card.
     reason: &'static str,
@@ -1272,7 +1549,10 @@ impl From<&Take> for TakeInfo {
 }
 
 impl Take {
-    fn new(samples: Vec<f32>, focus_target: isize, polisher: &polish::Polisher) -> Self {
+    /// `mode` is read from the shared atom rather than from the `Polisher`,
+    /// which now lives on the transcribe thread and isn't reachable from the
+    /// audio thread that builds takes.
+    fn new(samples: Vec<f32>, focus_target: isize, mode: PolishMode) -> Self {
         // Recorder returns 16 kHz mono, so ms = samples / 16.
         let audio_ms = samples.len() as u64 * 1000 / 16_000;
         Take {
@@ -1280,9 +1560,23 @@ impl Take {
             raw_text: None,
             focus_target,
             audio_ms,
-            tier: mode_str(polisher.mode()).into(),
+            tier: mode_str(mode).into(),
             reason: "",
+            prefix_text: String::new(),
+            sent: 0,
         }
+    }
+}
+
+/// Glue two transcript pieces together. Chunk boundaries land in a pause and
+/// each side is already punctuated by the model, so a single space is the
+/// right join — and either side being empty is normal (a silent chunk, or no
+/// chunking at all).
+fn join_text(a: &str, b: &str) -> String {
+    match (a.trim(), b.trim()) {
+        ("", b) => b.to_string(),
+        (a, "") => a.to_string(),
+        (a, b) => format!("{a} {b}"),
     }
 }
 
@@ -1314,18 +1608,45 @@ fn process_take(
     history: &history::History,
     suppressed: &Arc<AtomicBool>,
     cancelled: &Arc<AtomicBool>,
+    listening: &Arc<AtomicBool>,
     injection_mode: InjectionMode,
     stats_enabled: &Arc<AtomicBool>,
     mut take: Take,
     stash: &mut Option<Take>,
 ) {
+    // Overlay states from this pipeline are suppressed while a *new* take is
+    // being recorded: now that takes can overlap, a background one finishing
+    // must not yank the pill off the live "listening" state and flash "done"
+    // at someone who is still mid-sentence. Delivery itself is unaffected.
+    let emit_state = |app: &tauri::AppHandle, s: &str| {
+        if !listening.load(Ordering::Relaxed) {
+            emit_state(app, s);
+        }
+    };
     // Stage 1 — transcription (skipped on a retry that already has text).
     if take.raw_text.is_none() {
         emit_state(app, "transcribing");
-        match asr.transcribe(&take.samples) {
-            Ok(t) => take.raw_text = Some(t),
+        // Only the tail: `sent` bytes were already transcribed as chunks while
+        // the user was speaking, and `prefix_text` holds that result. `sent` is
+        // 0 whenever chunking didn't happen or can't be trusted, which makes
+        // this the original whole-take call.
+        let tail = &take.samples[take.sent.min(take.samples.len())..];
+        // Releasing the key just after a chunk cut leaves a sliver of a tail.
+        // Handing that to the model invites a hallucinated word tacked onto
+        // the end, so anything this short is treated as the silence it is.
+        let tail_text = if take.sent > 0 && tail.len() < MIN_CLIP_SAMPLES {
+            Ok(String::new())
+        } else {
+            asr.transcribe(tail)
+        };
+        match tail_text {
+            Ok(t) => take.raw_text = Some(join_text(&take.prefix_text, &t)),
             Err(err) => {
                 tracing::error!(?err, "transcription failed");
+                // Drop the chunked prefix so a Retry re-transcribes cleanly
+                // rather than gluing new text onto a stale half-transcript.
+                take.prefix_text.clear();
+                take.sent = 0;
                 // Distinguish "the model isn't on disk yet" (first-run
                 // download still in flight) from a real failure — the take is
                 // stashed either way, so ↻ works once the download lands.
@@ -1640,6 +1961,8 @@ mod tests {
             audio_ms,
             tier: "off".into(),
             reason,
+            prefix_text: String::new(),
+            sent: 0,
         }
     }
 
@@ -1692,6 +2015,82 @@ mod tests {
     fn anchor_xy_middle_center() {
         assert_eq!(anchor("middle-center"), (830, 480));
     }
+    // ── E2: chunked transcription ────────────────────────────────────
+    //
+    // `speech` is deliberately loud enough to sit above SILENCE_RMS and
+    // `quiet` below it — these tests are about where the cut lands, and a
+    // signal that straddles the threshold would make them meaningless.
+    fn speech(n: usize) -> Vec<f32> {
+        (0..n).map(|i| if i % 2 == 0 { 0.4 } else { -0.4 }).collect()
+    }
+    fn quiet(n: usize) -> Vec<f32> {
+        vec![0.0; n]
+    }
+
+    #[test]
+    fn short_takes_are_never_chunked() {
+        // The common case: a few seconds of dictation must take exactly the
+        // path it took before chunking existed.
+        assert_eq!(chunk_cut(&speech(16_000 * 5)), None);
+        assert_eq!(chunk_cut(&speech(CHUNK_MIN_SAMPLES - 1)), None);
+    }
+
+    #[test]
+    fn no_cut_while_still_mid_sentence() {
+        // Past the minimum but talking straight through with no pause — the
+        // chunk keeps growing rather than cutting a word in half.
+        assert_eq!(chunk_cut(&speech(CHUNK_MIN_SAMPLES + 16_000)), None);
+    }
+
+    #[test]
+    fn cuts_inside_the_pause() {
+        // 10s of speech, a 1s pause, then more speech. The cut has to land
+        // inside the pause, not in either burst of speech.
+        let pause_at = CHUNK_MIN_SAMPLES + 16_000 / 2;
+        let mut audio = speech(pause_at);
+        audio.extend(quiet(16_000));
+        audio.extend(speech(16_000 * 3));
+        let cut = chunk_cut(&audio).expect("a clear pause should produce a cut");
+        assert!(
+            cut >= pause_at && cut <= pause_at + 16_000,
+            "cut at {cut} is outside the pause [{pause_at}, {}]",
+            pause_at + 16_000
+        );
+    }
+
+    #[test]
+    fn unbroken_speech_still_cuts_at_the_ceiling() {
+        // Someone who never pauses can't be allowed to defer transcription
+        // forever — past the ceiling we cut anyway and accept the seam.
+        let cut = chunk_cut(&speech(CHUNK_MAX_SAMPLES + 16_000))
+            .expect("must cut once past CHUNK_MAX_SAMPLES");
+        assert!(cut >= CHUNK_MIN_SAMPLES && cut <= CHUNK_MAX_SAMPLES);
+    }
+
+    #[test]
+    fn silence_is_recognised_as_silence() {
+        // The guard that stops a chunk of pure room tone from being handed to
+        // the model, which answers it with an invented phrase.
+        assert!(rms(&quiet(16_000)) < SILENCE_RMS);
+        assert!(rms(&speech(16_000)) > SILENCE_RMS);
+        // Mostly-quiet audio with a real burst of speech in it must NOT be
+        // mistaken for silence, or that speech is dropped outright.
+        let mut sparse = quiet(16_000 * 9);
+        sparse.extend(speech(16_000));
+        assert!(rms(&sparse) > SILENCE_RMS, "a spoken second inside a quiet chunk must survive");
+    }
+
+    #[test]
+    fn join_text_handles_empty_sides() {
+        // Empty sides are routine: a silent chunk, or no chunking at all.
+        assert_eq!(join_text("", "hello"), "hello");
+        assert_eq!(join_text("hello", ""), "hello");
+        assert_eq!(join_text("", ""), "");
+        assert_eq!(join_text("first part.", "Second part."), "first part. Second part.");
+        // No double space when a piece arrives already padded.
+        assert_eq!(join_text("first. ", " Second."), "first. Second.");
+    }
+
     #[test]
     fn anchor_xy_middle_right() {
         assert_eq!(anchor("middle-right"), (1652, 480));

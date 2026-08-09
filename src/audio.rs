@@ -36,6 +36,11 @@ pub struct Recorder {
     /// User-selected input device name, or `None` for the OS default. Read
     /// live from settings so a change applies on the next dictation, no restart.
     device_name: Arc<Mutex<Option<String>>>,
+    /// Device-rate samples left over from the last `drain` — the tail that
+    /// didn't fill a whole 16 kHz output sample. Carried instead of dropped:
+    /// at 48 kHz that's up to 2 samples per drain, which over a few hundred
+    /// drains in a long take would silently eat audible slivers of speech.
+    carry: Vec<f32>,
 }
 
 impl Recorder {
@@ -48,6 +53,7 @@ impl Recorder {
             level,
             device_rate: 0,
             device_name,
+            carry: Vec::new(),
         }
     }
 
@@ -138,13 +144,76 @@ impl Recorder {
         Ok(())
     }
 
-    /// Stop capturing and return the audio as 16 kHz mono f32 in [-1.0, 1.0].
+    /// Take everything captured since the last call, as 16 kHz mono, leaving
+    /// the stream running. This is what makes transcribing *during* recording
+    /// possible: the worker pulls audio out as the user speaks instead of
+    /// waiting for the whole take.
+    ///
+    /// Whatever doesn't fill a complete output sample stays in `carry` and is
+    /// picked up by the next call, so draining a take in N pieces yields the
+    /// same samples as draining it in one.
+    pub fn drain(&mut self) -> Vec<f32> {
+        let fresh = std::mem::take(&mut *self.buffer.lock().unwrap());
+        if self.carry.is_empty() {
+            self.carry = fresh;
+        } else {
+            self.carry.extend_from_slice(&fresh);
+        }
+        let (out, consumed) = resample_prefix(&self.carry, self.device_rate);
+        self.carry.drain(..consumed);
+        out
+    }
+
+    /// Stop capturing and return whatever audio is left as 16 kHz mono f32 in
+    /// [-1.0, 1.0]. Any carried remainder is flushed here, since there's no
+    /// next drain to pick it up.
     pub fn stop(&mut self) -> anyhow::Result<Vec<f32>> {
         self.stream = None; // dropping the stream stops capture
         self.level.store(0.0f32.to_bits(), Ordering::Relaxed);
-        let samples = std::mem::take(&mut *self.buffer.lock().unwrap());
-        Ok(resample_to_16k(&samples, self.device_rate))
+        let fresh = std::mem::take(&mut *self.buffer.lock().unwrap());
+        let mut rest = std::mem::take(&mut self.carry);
+        rest.extend_from_slice(&fresh);
+        Ok(resample_to_16k(&rest, self.device_rate))
     }
+}
+
+/// Resample as much of `input` as forms whole output samples, returning the
+/// output and how much input it consumed. The unconsumed tail is the caller's
+/// to carry forward.
+///
+/// Same box-filter/linear scheme as `resample_to_16k` — the difference is only
+/// that this one refuses to emit a final output sample whose input span runs
+/// off the end of the slice, which is exactly the sample that would be wrong
+/// if more audio is still coming.
+fn resample_prefix(input: &[f32], in_rate: u32) -> (Vec<f32>, usize) {
+    if input.is_empty() || in_rate == 0 || in_rate == TARGET_RATE {
+        return (input.to_vec(), input.len());
+    }
+    let ratio = in_rate as f64 / TARGET_RATE as f64;
+    let out_len = (input.len() as f64 / ratio) as usize;
+    if out_len == 0 {
+        return (Vec::new(), 0);
+    }
+    let mut out = Vec::with_capacity(out_len);
+    if ratio > 1.0 {
+        for j in 0..out_len {
+            let start = (j as f64 * ratio) as usize;
+            let end = (((j + 1) as f64 * ratio) as usize).max(start + 1).min(input.len());
+            let slice = &input[start..end];
+            out.push(slice.iter().sum::<f32>() / slice.len() as f32);
+        }
+    } else {
+        for j in 0..out_len {
+            let pos = j as f64 * ratio;
+            let i = pos as usize;
+            let frac = (pos - i as f64) as f32;
+            let a = input[i];
+            let b = *input.get(i + 1).unwrap_or(&a);
+            out.push(a + (b - a) * frac);
+        }
+    }
+    let consumed = ((out_len as f64 * ratio) as usize).min(input.len());
+    (out, consumed)
 }
 
 /// Store the RMS of a callback's mono samples as the live capture level.
@@ -152,6 +221,50 @@ fn publish_level(level: &AtomicU32, sumsq: f32, n: usize) {
     if n > 0 {
         let rms = (sumsq / n as f32).sqrt();
         level.store(rms.to_bits(), Ordering::Relaxed);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The seam test for chunked transcription: a take drained in many small
+    /// pieces has to yield the same audio as one drained whole. If this drifts,
+    /// long dictations quietly lose slivers of speech at every drain boundary —
+    /// the kind of bug that shows up as "it dropped a word" and nothing else.
+    #[test]
+    fn piecewise_drain_matches_one_shot() {
+        let rate = 48_000;
+        let input: Vec<f32> = vec![0.5; rate as usize * 3]; // 3s of steady tone
+        let one_shot = resample_to_16k(&input, rate);
+
+        // Mirrors Recorder::drain + the final flush in stop().
+        let mut carry: Vec<f32> = Vec::new();
+        let mut pieces: Vec<f32> = Vec::new();
+        for block in input.chunks(1024) {
+            carry.extend_from_slice(block);
+            let (out, consumed) = resample_prefix(&carry, rate);
+            carry.drain(..consumed);
+            pieces.extend(out);
+        }
+        pieces.extend(resample_to_16k(&carry, rate));
+
+        assert!(
+            (pieces.len() as i64 - one_shot.len() as i64).abs() <= 1,
+            "piecewise produced {} samples, one-shot {}",
+            pieces.len(),
+            one_shot.len()
+        );
+        assert!(pieces.iter().all(|&s| (s - 0.5).abs() < 1e-6), "seam artifact in output");
+    }
+
+    #[test]
+    fn resample_prefix_never_over_consumes() {
+        let input = vec![0.1f32; 1000];
+        for rate in [44_100, 48_000, 16_000, 8_000] {
+            let (_, consumed) = resample_prefix(&input, rate);
+            assert!(consumed <= input.len(), "rate {rate} consumed {consumed} of {}", input.len());
+        }
     }
 }
 

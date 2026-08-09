@@ -251,6 +251,16 @@ pub struct Config {
     /// `apply_formatting_commands` for why it applies even when polish is Off.
     #[serde(default = "default_true")]
     pub formatting_commands: bool,
+    /// Transcribe long takes in pieces *while* you're still speaking, so the
+    /// wait after you release the key is the last few seconds of audio instead
+    /// of all of it. Short takes are never chunked (see `CHUNK_MIN_SAMPLES`).
+    ///
+    /// The knob exists because this is a real trade-off, not a free win: a
+    /// chunk boundary is a point where the model loses context, so a long take
+    /// can come back very slightly differently punctuated than it would have
+    /// in one pass. Set false to go back to one-shot transcription.
+    #[serde(default = "default_true")]
+    pub chunked_transcription: bool,
     /// Default tone instruction appended to the AI-polish system prompt.
     /// Empty = off — today's prompt, byte-identical. AI tier only: Rules/Off
     /// strip and fix, they don't re-voice a sentence, so this has no effect
@@ -322,6 +332,7 @@ impl Default for Config {
             dictionary: Vec::new(),
             replacements_enabled: true,
             formatting_commands: true,
+            chunked_transcription: true,
             tone: String::new(),
             app_tones: Vec::new(),
             start_hidden: true,

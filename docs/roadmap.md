@@ -52,7 +52,22 @@ Rules can't fix real grammar; the AI tier can and its warm cost is ~1.7 s.
   before/after, checked by Kai — the MVP bar is "grammar fully delivered",
   and only a human reads that bar.
 
-### E2 — latency that doesn't scale with take length (M–L)
+### E2 — latency that doesn't scale with take length — **DONE 2026-08-09**
+
+Shipped in v0.5.4 with N2 (same change — see N2 for the thread split). Measured
+on a 14 s take: a 10.25 s chunk was cut at a pause and transcribed *during*
+recording (1691 ms, finished ~2 s before the key was released), leaving a
+3.88 s tail that took **597 ms** after release — against ~2.3 s for the whole
+take at the same real-time factor. Post-release wait is now a function of the
+tail, not of how long you spoke.
+
+Cuts land in the quietest 300 ms window between 10 s and 24 s of unsent audio,
+so they fall in pauses rather than mid-word; past 24 s it cuts anyway. Takes
+under 10 s are never chunked and follow exactly the old path. A failed chunk
+poisons its take and forces one whole-take pass, so chunking can never deliver
+text with a hole in it. `chunked_transcription = false` in config.toml reverts.
+
+Original plan, for the record:
 
 Chunked incremental transcription: transcribe accumulated audio in ~15–20 s
 chunks *during* recording on the worker thread, stitch, final-pass the tail
@@ -428,11 +443,34 @@ Two halves, one setting away from each other:
   canvas click handler routes body-clicks (not just button hits) only in idle.
   Escape/✕ semantics unchanged.
 
-### N2 — Multi-take pipelining (M) — re-evaluate AFTER E2
+### N2 — Multi-take pipelining — **DONE 2026-08-09**, shipped with E2
 
 Kai's ask: start a second dictation while the first is still transcribing/
 polishing. Today the worker is one serial loop — `Stop` blocks until inject
 completes, so a new `Start` queues on the channel but recording can't begin.
+
+**Shipped together with E2, because they turned out to be the same change.**
+Both needed the worker split into an audio thread (owns the `!Send` recorder,
+never blocks) and a transcribe thread (owns the model). Once that seam existed,
+chunk hand-off during recording and "start take 2 while take 1 works" were the
+same mechanism used twice. The plan below said to ship E2 first and then ask
+whether this still itched — Kai answered before it was measured ("just a minute
+ago I wanted to transcribe something else while I had a transcribe running"),
+so both went in at once.
+
+Of the three "needs care" items: (a) take order is preserved for free — one
+channel, one consumer, FIFO; (b) the compound-state pill was **not** built —
+instead background takes are barred from touching the overlay while a new take
+is recording, so the pill always shows the live take (see `process_take`'s
+shadowed `emit_state`); (c) the single stash was **kept** — the last
+non-delivered take is still the one Retry offers, which is what "retry last
+dictation" has always meant.
+
+Known trade-off, watch in real use: a queued take injects the moment it's
+ready, which briefly pulls focus to *its* origin window while you're still
+speaking the next one. Each take still lands in its own window (focus is
+captured per-take at Start), but the focus jump is visible. The alternative —
+holding delivery until recording stops — was rejected as defeating the point.
 
 Design if built today: on `Stop`, hand the take to a processing queue (second
 thread or `spawn` per take), return the worker to accepting `Start`
