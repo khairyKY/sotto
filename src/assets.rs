@@ -233,29 +233,112 @@ fn provision(app: &AppHandle, assets: &[Asset]) -> Result<()> {
     Ok(())
 }
 
-/// Stream `url` to `dest` via a `.part` sibling, renaming only on success.
-/// ponytail: no HTTP-range resume — a dropped download restarts that file from
-/// zero. Add `Range` resume if large-file retries over flaky links become a
-/// real complaint; correctness (never a half-written final file) holds either way.
+/// What to do with a `.part` of `part_len` bytes given the status/Content-Range
+/// of a `Range: bytes=<part_len>-` request. Pure so the branch that must never
+/// get it wrong (append vs. truncate-and-restart) is unit-testable without a
+/// real HTTP round trip — a wrong answer here means a silently corrupt model.
+#[derive(Debug, PartialEq, Eq)]
+enum Resume {
+    /// Truncate (or create fresh) and write from byte 0.
+    Restart,
+    /// Append starting at `part_len` — the response is confirmed to be the tail.
+    Append,
+}
+
+fn resume_decision(part_len: u64, status: u16, content_range: Option<&str>) -> Resume {
+    if part_len == 0 {
+        return Resume::Restart; // nothing to resume
+    }
+    if status == 206 {
+        // Content-Range is "bytes start-end/total" (RFC 9110 §14.4). `start`
+        // must be exactly what we asked to resume from, and `total` can't be
+        // smaller than what we already have — either mismatch means this
+        // isn't a tail of our `.part` and appending would silently corrupt it.
+        if let Some((start, _end, total)) = content_range.and_then(parse_content_range) {
+            if start == part_len && total >= part_len {
+                return Resume::Append;
+            }
+        }
+    }
+    Resume::Restart
+}
+
+fn parse_content_range(s: &str) -> Option<(u64, u64, u64)> {
+    let (range, total) = s.strip_prefix("bytes ")?.split_once('/')?;
+    let (start, end) = range.split_once('-')?;
+    Some((start.parse().ok()?, end.parse().ok()?, total.parse().ok()?))
+}
+
+/// Stream `url` to `dest` via a `.part` sibling, renaming only on success. If
+/// `.part` already has bytes from an interrupted run, resumes with an HTTP
+/// `Range` request instead of restarting the file from zero — the difference
+/// between losing a second and losing 90% of a 1 GB model on a flaky link.
 fn download_to(app: &AppHandle, name: &str, url: &str, dest: &Path) -> Result<()> {
     if let Some(parent) = dest.parent() {
         fs::create_dir_all(parent)?;
     }
     let part = PathBuf::from(format!("{}.part", dest.display()));
+    let part_len = fs::metadata(&part).map(|m| m.len()).unwrap_or(0);
 
-    let resp = ureq::get(url).call().with_context(|| format!("GET {url}"))?;
-    let total: u64 = resp
-        .headers()
-        .get("content-length")
-        .and_then(|v| v.to_str().ok())
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(0);
+    let ranged_resp = if part_len > 0 {
+        match ureq::get(url).header("Range", format!("bytes={part_len}-")).call() {
+            Ok(resp) => Some(resp),
+            // .part is already >= the remote size — most likely a completed
+            // download that crashed right before the final rename. No
+            // checksum to trust that blindly, so redo it clean.
+            Err(ureq::Error::StatusCode(416)) => None,
+            Err(e) => return Err(e).with_context(|| format!("GET {url}")),
+        }
+    } else {
+        None
+    };
+
+    let (resp, append) = match ranged_resp {
+        Some(resp) => {
+            let status = resp.status().as_u16();
+            let content_range = resp.headers().get("content-range").and_then(|v| v.to_str().ok());
+            match resume_decision(part_len, status, content_range) {
+                Resume::Append => (resp, true),
+                // A 200 to our Range request means the server ignored it and
+                // is sending the whole file from byte 0 — reuse this response.
+                Resume::Restart if status == 200 => (resp, false),
+                // Mismatched/unparseable Content-Range: this response's body
+                // is a tail we can't place, not the whole file — don't read
+                // it, fetch a clean one instead.
+                Resume::Restart => (ureq::get(url).call().with_context(|| format!("GET {url}"))?, false),
+            }
+        }
+        None => (ureq::get(url).call().with_context(|| format!("GET {url}"))?, false),
+    };
+
+    let total: u64 = if append {
+        // This response's own Content-Length is just the remaining bytes;
+        // the full size lives in Content-Range, already validated above.
+        resp.headers()
+            .get("content-range")
+            .and_then(|v| v.to_str().ok())
+            .and_then(parse_content_range)
+            .map(|(_, _, total)| total)
+            .unwrap_or(0)
+    } else {
+        resp.headers()
+            .get("content-length")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0)
+    };
 
     let mut reader = resp.into_body().into_reader();
-    let mut file = fs::File::create(&part)
-        .with_context(|| format!("creating {}", part.display()))?;
+    let mut file = if append {
+        fs::OpenOptions::new()
+            .append(true)
+            .open(&part)
+            .with_context(|| format!("opening {}", part.display()))?
+    } else {
+        fs::File::create(&part).with_context(|| format!("creating {}", part.display()))?
+    };
     let mut buf = vec![0u8; 1 << 16];
-    let mut received: u64 = 0;
+    let mut received: u64 = if append { part_len } else { 0 };
     let mut last_emit = std::time::Instant::now();
 
     loop {
@@ -272,6 +355,13 @@ fn download_to(app: &AppHandle, name: &str, url: &str, dest: &Path) -> Result<()
     }
     file.flush()?;
     drop(file);
+    // A stream that just ends short of `total` is a silent truncation, not a
+    // success — renaming it would park a half-written model at its final name,
+    // where it reads as "installed" forever and only ever fails to load. Bail
+    // instead and leave the `.part`: the next run resumes it from here.
+    if total > 0 && received != total {
+        anyhow::bail!("{name}: got {received} of {total} bytes — connection dropped");
+    }
     fs::rename(&part, dest)
         .with_context(|| format!("finalizing {}", dest.display()))?;
     let _ = app.emit("asset-progress", Progress { name: name.into(), received, total });
@@ -348,5 +438,62 @@ mod tests {
             Kind::File { dest } => assert_eq!(dest(), config::whisper_model_path("egyptian-small")),
             _ => panic!("egyptian should be a File asset"),
         }
+    }
+
+    #[test]
+    fn resume_appends_on_matching_206() {
+        let d = resume_decision(1000, 206, Some("bytes 1000-1999/2000"));
+        assert_eq!(d, Resume::Append);
+    }
+
+    #[test]
+    fn resume_restarts_on_200() {
+        // Server ignored our Range header and is sending the whole file —
+        // must truncate, not append, or the old bytes stay prepended.
+        let d = resume_decision(1000, 200, None);
+        assert_eq!(d, Resume::Restart);
+    }
+
+    #[test]
+    fn resume_restarts_on_content_range_start_mismatch() {
+        // Server claims to be sending from byte 500, not the 1000 we asked
+        // to resume from — trusting this would splice the wrong bytes in.
+        let d = resume_decision(1000, 206, Some("bytes 500-1999/2000"));
+        assert_eq!(d, Resume::Restart);
+    }
+
+    #[test]
+    fn resume_restarts_when_total_shrank_below_part_len() {
+        // Remote total is smaller than what we already have on disk — the
+        // remote file isn't a superset of our `.part` anymore.
+        let d = resume_decision(2000, 206, Some("bytes 2000-2999/1500"));
+        assert_eq!(d, Resume::Restart);
+    }
+
+    #[test]
+    fn resume_restarts_on_unparseable_content_range() {
+        let d = resume_decision(1000, 206, Some("garbage"));
+        assert_eq!(d, Resume::Restart);
+    }
+
+    #[test]
+    fn resume_restarts_on_missing_content_range_for_206() {
+        let d = resume_decision(1000, 206, None);
+        assert_eq!(d, Resume::Restart);
+    }
+
+    #[test]
+    fn fresh_download_when_no_part_exists() {
+        // part_len == 0: always a plain restart, regardless of what a
+        // (hypothetical) response would say.
+        let d = resume_decision(0, 200, None);
+        assert_eq!(d, Resume::Restart);
+    }
+
+    #[test]
+    fn parses_content_range() {
+        assert_eq!(parse_content_range("bytes 1000-1999/2000"), Some((1000, 1999, 2000)));
+        assert_eq!(parse_content_range("bytes */2000"), None);
+        assert_eq!(parse_content_range("not a content-range"), None);
     }
 }

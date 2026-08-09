@@ -77,6 +77,27 @@ const tw = {
 };
 let pillHover = false;
 let pressUntil = 0;
+// Which screen edge the window is anchored to. The canvas (280x120) is sized
+// for the widest toast, so centring the much smaller pill inside it left the
+// tucked pill floating ~60px off the edge it's meant to hug — and 125px in on
+// left/right anchors. Anchoring the pill within the canvas, to the same edge
+// as the window, is what makes "tucked" actually tucked.
+let overlayPosition = 'bottom-center';
+const EDGE_INSET = 8; // room for the pill's own drop shadow
+
+/// Top-left of the pill inside the canvas, anchored to the configured edge.
+/// Expanded states therefore grow *inward*, away from the screen edge, which
+/// is the natural direction.
+function pillOrigin(cw, ch, w, h) {
+  const [v, hz] = overlayPosition.split('-'); // e.g. "bottom-center"
+  const x = hz === 'left' ? EDGE_INSET
+    : hz === 'right' ? cw - w - EDGE_INSET
+    : (cw - w) / 2;
+  const y = v === 'top' ? EDGE_INSET
+    : v === 'bottom' ? ch - h - EDGE_INSET
+    : (ch - h) / 2;
+  return [Math.round(x), Math.round(y)];
+}
 
 const isExpandedState = (n) => n !== 'idle';
 
@@ -113,7 +134,10 @@ const tauriWin = window.__TAURI__?.window ? window.__TAURI__.window.getCurrentWi
 const invoke = (cmd) => { if (window.__TAURI__) window.__TAURI__.core.invoke(cmd); else console.log('[mock invoke]', cmd); };
 
 if (window.__TAURI__) {
-  window.__TAURI__.core.invoke('get_overlay_settings').then((s) => { alwaysVisible = !!s.alwaysVisible; });
+  window.__TAURI__.core.invoke('get_overlay_settings').then((s) => {
+    alwaysVisible = !!s.alwaysVisible;
+    if (s.position) overlayPosition = s.position;
+  });
 }
 
 function setState(name) {
@@ -582,8 +606,7 @@ function frame(now) {
     const w = tweenValue(tw.w, now) * scale;
     const h = tweenValue(tw.h, now) * scale;
     const r = Math.min(tweenValue(tw.r, now), h / 2);
-    const px = Math.round((cw - w) / 2);
-    const py = Math.round((ch - h) / 2);
+    const [px, py] = pillOrigin(cw, ch, w, h);
     drawState(px, py, w, h, now, r, tweenValue(tw.shadow, now), tweenValue(tw.op, now));
   }
   requestAnimationFrame(frame);
@@ -622,8 +645,7 @@ canvas.addEventListener('click', (e) => {
 /// both states stops the pill oscillating at the boundary as it resizes.
 function overTuckedPill(e) {
   const g = GEO.hover;
-  const px = (window.innerWidth - g.w) / 2;
-  const py = (window.innerHeight - g.h) / 2;
+  const [px, py] = pillOrigin(window.innerWidth, window.innerHeight, g.w, g.h);
   return e.offsetX >= px && e.offsetX <= px + g.w && e.offsetY >= py && e.offsetY <= py + g.h;
 }
 

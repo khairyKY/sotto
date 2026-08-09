@@ -531,6 +531,11 @@ fn set_overlay_position(position: String, app: tauri::AppHandle, state: tauri::S
     }
     if let Some(w) = app.get_webview_window("overlay") {
         position_overlay(&w, &position);
+        // The canvas anchors the pill against the same edge the window is
+        // anchored to, so it has to hear about the change too — otherwise the
+        // window moves to the new corner while the pill stays tucked to the
+        // old one until the next restart.
+        let _ = w.emit("overlay-position", &position);
     }
 }
 
@@ -563,10 +568,18 @@ fn set_overlay_always_visible(enabled: bool, app: tauri::AppHandle, state: tauri
 #[serde(rename_all = "camelCase")]
 struct OverlaySettingsDto {
     always_visible: bool,
+    /// The overlay canvas is 280x120 — big enough for the widest toast — but
+    /// the pill inside it is much smaller, so drawing it centred leaves it
+    /// floating ~60px off the screen edge it's supposed to be tucked against.
+    /// The canvas anchors the pill itself; it needs to know which edge.
+    position: String,
 }
 #[tauri::command]
 fn get_overlay_settings(state: tauri::State<'_, AppState>) -> OverlaySettingsDto {
-    OverlaySettingsDto { always_visible: state.controls.overlay_always_visible.load(Ordering::Relaxed) }
+    OverlaySettingsDto {
+        always_visible: state.controls.overlay_always_visible.load(Ordering::Relaxed),
+        position: state.controls.overlay_position.lock().unwrap().clone(),
+    }
 }
 
 /// The overlay's idle-pill body click when always-visible is on (N1) — same
@@ -801,7 +814,12 @@ fn main() -> anyhow::Result<()> {
                 }
             }
             spawn_pipeline(app.handle().clone(), controls.clone(), cfg.clone(), tx.clone(), rx.clone());
-            spawn_overlay_hittest(app.handle().clone(), controls.overlay_state.clone(), controls.overlay_always_visible.clone());
+            spawn_overlay_hittest(
+                app.handle().clone(),
+                controls.overlay_state.clone(),
+                controls.overlay_always_visible.clone(),
+                controls.overlay_position.clone(),
+            );
             spawn_update_check(app.handle().clone());
             assets::spawn_provision_if_missing(app.handle().clone());
             tracing::info!("Sotto ready — hold the hotkey and speak");
@@ -982,6 +1000,30 @@ const OVERLAY_MARGIN: f64 = 8.0;
 /// physical position. Split out from `position_overlay` so it's unit-testable
 /// without a real window/monitor. An unrecognized anchor (hand-edited config)
 /// falls back to bottom-center rather than panicking or landing off-screen.
+/// Where the pill sits INSIDE the overlay canvas, in CSS px. Must stay in
+/// lockstep with `pillOrigin()` in ui/overlay.js — the canvas draws with it and
+/// the cursor hit-test below measures with it, so a divergence means clicking
+/// empty space. Anchored rather than centred because the canvas (280x120) is
+/// sized for the widest toast, and centring a 46x16 tucked pill in it left the
+/// pill floating ~60px off the edge it is supposed to be tucked against.
+const OVERLAY_EDGE_INSET: f64 = 8.0; // room for the pill's own drop shadow
+fn overlay_pill_origin(cw: f64, ch: f64, pw: f64, ph: f64, anchor: &str) -> (f64, f64) {
+    let mut parts = anchor.split('-');
+    let v = parts.next().unwrap_or("bottom");
+    let h = parts.next().unwrap_or("center");
+    let x = match h {
+        "left" => OVERLAY_EDGE_INSET,
+        "right" => cw - pw - OVERLAY_EDGE_INSET,
+        _ => (cw - pw) / 2.0,
+    };
+    let y = match v {
+        "top" => OVERLAY_EDGE_INSET,
+        "bottom" => ch - ph - OVERLAY_EDGE_INSET,
+        _ => (ch - ph) / 2.0,
+    };
+    (x.round(), y.round())
+}
+
 fn anchor_xy(mon_w: f64, mon_h: f64, pill_w: f64, pill_h: f64, anchor: &str, margin: f64) -> (i32, i32) {
     let (h, v) = match anchor {
         "top-left" => ("left", "top"),
@@ -1398,7 +1440,12 @@ fn emit_state(app: &tauri::AppHandle, s: &str) {
 /// cursor is actually inside the pill's rectangle. A 30 ms cursor poll is the
 /// only way to do this — mouse events can't reach the webview while
 /// click-through is on, so JS can't hit-test for us.
-fn spawn_overlay_hittest(app: tauri::AppHandle, ui_state: Arc<Mutex<String>>, always_visible: Arc<AtomicBool>) {
+fn spawn_overlay_hittest(
+    app: tauri::AppHandle,
+    ui_state: Arc<Mutex<String>>,
+    always_visible: Arc<AtomicBool>,
+    position: Arc<Mutex<String>>,
+) {
     use windows::Win32::Foundation::POINT;
     use windows::Win32::UI::WindowsAndMessaging::GetCursorPos;
     std::thread::spawn(move || {
@@ -1438,15 +1485,22 @@ fn spawn_overlay_hittest(app: tauri::AppHandle, ui_state: Arc<Mutex<String>>, al
                     let scale = w.scale_factor().ok()?;
                     let mut pt = POINT::default();
                     unsafe { GetCursorPos(&mut pt).ok()? };
+                    // Mirror pillOrigin() in overlay.js: the pill is anchored to
+                    // the same screen edge as the window, NOT centred in it, so
+                    // the clickable rect has to be derived the same way or it
+                    // sits ~60px away from the pill you can actually see.
+                    let anchor = position.lock().unwrap().clone();
+                    let (cw, ch) = (size.width as f64 / scale, size.height as f64 / scale);
+                    let (ox, oy) = overlay_pill_origin(cw, ch, pill_w, pill_h, &anchor);
+                    let left = pos.x as f64 + ox * scale;
+                    let top = pos.y as f64 + oy * scale;
                     let (pw, ph) = (pill_w * scale, pill_h * scale);
-                    let cx = pos.x as f64 + size.width as f64 / 2.0;
-                    let cy = pos.y as f64 + size.height as f64 / 2.0;
                     let pad = 4.0 * scale;
                     Some(
-                        (pt.x as f64) >= cx - pw / 2.0 - pad
-                            && (pt.x as f64) <= cx + pw / 2.0 + pad
-                            && (pt.y as f64) >= cy - ph / 2.0 - pad
-                            && (pt.y as f64) <= cy + ph / 2.0 + pad,
+                        (pt.x as f64) >= left - pad
+                            && (pt.x as f64) <= left + pw + pad
+                            && (pt.y as f64) >= top - pad
+                            && (pt.y as f64) <= top + ph + pad,
                     )
                 })()
                 .unwrap_or(false);
@@ -1657,5 +1711,49 @@ mod tests {
     #[test]
     fn anchor_xy_unknown_falls_back_to_bottom_center() {
         assert_eq!(anchor("garbage"), anchor("bottom-center"));
+    }
+
+    // ── pill origin inside the 280x120 canvas ───────────────────────────
+    // The bug these guard: the pill used to be centred in the canvas, so a
+    // 46x16 tucked pill sat 60px below the top edge (and 125px in from the
+    // left) instead of tucked against it.
+    const CW: f64 = 280.0;
+    const CH: f64 = 120.0;
+    const TW: f64 = 46.0; // tucked
+    const TH: f64 = 16.0;
+
+    #[test]
+    fn tucked_pill_hugs_the_top_edge_not_the_canvas_centre() {
+        let (_, y) = overlay_pill_origin(CW, CH, TW, TH, "top-center");
+        assert_eq!(y, OVERLAY_EDGE_INSET);
+        assert_ne!(y, (CH - TH) / 2.0, "centring is the bug this replaced");
+    }
+
+    #[test]
+    fn tucked_pill_hugs_the_bottom_edge() {
+        let (_, y) = overlay_pill_origin(CW, CH, TW, TH, "bottom-center");
+        assert_eq!(y, CH - TH - OVERLAY_EDGE_INSET);
+    }
+
+    #[test]
+    fn tucked_pill_hugs_left_and_right_edges() {
+        assert_eq!(overlay_pill_origin(CW, CH, TW, TH, "middle-left").0, OVERLAY_EDGE_INSET);
+        assert_eq!(overlay_pill_origin(CW, CH, TW, TH, "middle-right").0, CW - TW - OVERLAY_EDGE_INSET);
+    }
+
+    #[test]
+    fn centre_anchors_still_centre_on_that_axis() {
+        let (x, y) = overlay_pill_origin(CW, CH, TW, TH, "middle-center");
+        assert_eq!((x, y), (((CW - TW) / 2.0).round(), ((CH - TH) / 2.0).round()));
+    }
+
+    /// An expanded toast is wider than the tucked pill, so anchoring must grow
+    /// it *inward* from the edge rather than pushing it off-screen.
+    #[test]
+    fn expanded_pill_grows_inward_from_the_anchored_edge() {
+        let (x, y) = overlay_pill_origin(CW, CH, 248.0, 40.0, "bottom-right");
+        assert_eq!(x, CW - 248.0 - OVERLAY_EDGE_INSET);
+        assert_eq!(y, CH - 40.0 - OVERLAY_EDGE_INSET);
+        assert!(x >= 0.0 && y >= 0.0, "must stay inside the canvas");
     }
 }

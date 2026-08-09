@@ -258,6 +258,15 @@ body {
   display: inline-block;
   flex: none;
 }
+/* Polish "off" is the one state that silently degrades every dictation with
+   no other signal in the app — a chip, not plain text, so it can't blend in. */
+.status-warn {
+  color: var(--mm-coral);
+  background: var(--mm-blush);
+  padding: 1px 7px;
+  border-radius: 20px;
+  font-weight: 600;
+}
 
 /* ── insights ──────────────────────────────── */
 .segmented {
@@ -1185,6 +1194,12 @@ input[type="range"]::-webkit-slider-thumb {
   padding: 4px 9px;
   border-radius: 6px;
 }
+/* Per-row download progress — mirrors the assets-banner bar so a model switch
+   reads as "working", not "frozen", right where the user clicked Download. */
+.model-progress { display: flex; align-items: center; gap: 8px; }
+.model-progress-label { font: 500 11px 'JetBrains Mono'; color: var(--mm-muted-2); width: 30px; text-align: right; }
+.model-progress-bar { width: 70px; height: 5px; border-radius: 3px; background: var(--mm-border); overflow: hidden; flex: none; }
+.model-progress-fill { display: block; height: 100%; background: var(--mm-accent); transition: width 0.2s; }
 
 /* ── transforms layout ────────────────────────────── */
 .badge-beta {

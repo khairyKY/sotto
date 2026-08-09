@@ -159,13 +159,17 @@ function updateStatusBar(s) {
   const parts = [];
   if (s?.models?.length) {
     const sel = s.models.find(m => m.selected);
-    if (sel) parts.push(sel.name);
+    if (sel) parts.push(escapeHtml(sel.name));
   }
+  // Off silently degrades every dictation (no cleanup, no grammar fixes) and
+  // nothing else in the app shows it — this is the state that actually cost
+  // Khairy a long stretch of "why does polish feel broken". A warning chip
+  // instead of plain text so it can't be skimmed past like the rest of the line.
   if (s?.polish === "ai") parts.push("AI polish on");
   else if (s?.polish === "rules") parts.push("rules polish");
-  else parts.push("polish off");
-  parts.push("mic: " + (s?.microphone || "system default"));
-  $("status-text").textContent = parts.join(" · ");
+  else parts.push('<span class="status-warn">polish off</span>');
+  parts.push("mic: " + escapeHtml(s?.microphone || "system default"));
+  $("status-text").innerHTML = parts.join(" · ");
 }
 
 function renderRecent(entries) {
@@ -910,7 +914,20 @@ function loadHistory() { renderHistoryPage(historyEntries); }
 // selected but not yet downloaded, mid-download-and-restart. Only
 // installed + selected is truly ACTIVE; installed-but-not-selected offers a
 // switch, not-installed always offers Download regardless of selection.
+// assets_status()/get_settings() only ever say installed-or-not — the backend
+// has no "downloading" state — so the live per-row progress a Download click
+// needs is tracked entirely here, fed by the asset-progress/-ready/-error
+// events initAssets() already listens for. download_assets() fetches every
+// missing asset (runtime, ASR model, LLM…) as one undifferentiated stream
+// keyed by asset name, not model id, so it's all mirrored onto whichever row
+// the user actually clicked — the same simplification the banner above already makes.
+let downloadingModelId = null;
+let downloadProgress = null; // { name, pct } | null while downloadingModelId is set
+let downloadError = null;
+let modelsCache = [];
+
 function renderModels(models) {
+  modelsCache = models;
   const host = $("model-list");
   host.innerHTML = "";
   models.forEach((m, i) => {
@@ -918,8 +935,21 @@ function renderModels(models) {
     const row = document.createElement("div");
     row.className = "model-row";
 
+    const downloadingThis = downloadingModelId === m.id;
     let rightStatus = "";
-    if (m.selected && m.state === "installed") {
+    let metaOverride = null;
+    if (downloadingThis && downloadError) {
+      rightStatus = `<button class="btn btn-primary model-download-btn" style="font-size:11px; padding:4px 10px; border-radius:6px;">Retry</button>`;
+      metaOverride = `<span style="color:var(--mm-coral)">Download failed &middot; tap Retry</span>`;
+    } else if (downloadingThis) {
+      const pct = downloadProgress ? downloadProgress.pct : 0;
+      rightStatus = `
+        <div class="model-progress">
+          <span class="model-progress-label">${pct}%</span>
+          <span class="model-progress-bar"><span class="model-progress-fill" style="width:${pct}%"></span></span>
+        </div>`;
+      metaOverride = downloadProgress ? `Downloading ${escapeHtml(downloadProgress.name)}&hellip;` : "Starting download&hellip;";
+    } else if (m.selected && m.state === "installed") {
       rightStatus = `<span class="model-badge">ACTIVE</span>`;
     } else if (m.state === "installed") {
       rightStatus = `<button class="btn btn-outline model-select-btn" style="font-size:11px; padding:4px 10px; border-radius:6px;">Use this</button>`;
@@ -938,7 +968,7 @@ function renderModels(models) {
         </span>
         <div>
           <div class="name" style="font-weight: 500; color: var(--mm-ink);">${escapeHtml(m.name)} <span class="sub" style="color: var(--mm-muted-2); font-size: 11.5px; font-weight: 400;">${escapeHtml(m.variant)}</span></div>
-          <div class="meta" style="font: 400 11.5px 'Hanken Grotesk'; color: var(--mm-muted-3); margin-top: 2px;">${m.meta || (m.state === "installed" ? `Installed &middot; ${m.size} &middot; on-device` : `Not installed &middot; ${m.size}`)}</div>
+          <div class="meta" style="font: 400 11.5px 'Hanken Grotesk'; color: var(--mm-muted-3); margin-top: 2px;">${metaOverride || m.meta || (m.state === "installed" ? `Installed &middot; ${m.size} &middot; on-device` : `Not installed &middot; ${m.size}`)}</div>
         </div>
       </div>
       <div style="flex:1"></div>
@@ -959,7 +989,13 @@ function renderModels(models) {
 async function selectAsrModel(id, alsoDownload) {
   await invoke("set_asr_model", { model: id });
   showAsrRestartNote();
-  if (alsoDownload) invoke("download_assets");
+  if (alsoDownload) {
+    downloadingModelId = id;
+    downloadProgress = null;
+    downloadError = null;
+    renderModels(modelsCache); // immediate "starting…" feedback, don't wait for the first progress tick
+    invoke("download_assets");
+  }
   const s = await getSettings();
   renderModels(s.models || []);
 }
@@ -1228,15 +1264,32 @@ async function initAssets() {
       banner.hidden = false;
       fill.style.width = pct + "%";
       text.textContent = `Downloading ${p.name}… ${pct}% (${mbNow} / ${mbAll} MB)`;
+      // Mirror onto the Models row the user actually clicked Download for —
+      // see the comment above renderModels() for why this isn't matched by name.
+      if (downloadingModelId) {
+        downloadProgress = { name: p.name, pct };
+        renderModels(modelsCache);
+      }
     });
-    T.event.listen("assets-ready", () => {
+    T.event.listen("assets-ready", async () => {
       fill.style.width = "100%";
       text.textContent = "All models ready.";
       setTimeout(() => { banner.hidden = true; }, 1500);
+      if (downloadingModelId) {
+        downloadingModelId = null;
+        downloadProgress = null;
+        downloadError = null;
+        const s = await getSettings();
+        renderModels(s.models || []);
+      }
     });
     T.event.listen("asset-error", (e) => {
       banner.hidden = false;
       text.textContent = "Download failed: " + e.payload + " — restart Sotto to retry.";
+      if (downloadingModelId) {
+        downloadError = String(e.payload);
+        renderModels(modelsCache);
+      }
     });
   }
   const status = await invoke("assets_status");

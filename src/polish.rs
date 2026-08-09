@@ -4,9 +4,10 @@
 //!
 //! * **Tier 0 (rules)** — always available, runs in well under a millisecond,
 //!   uses no models and no GPU. Conservative and idempotent: it only removes
-//!   unambiguous filler words, normalizes whitespace, and capitalizes the first
-//!   letter. Parakeet already emits punctuation and casing, so Tier 0
-//!   deliberately does *not* try to re-punctuate. On top of that it runs
+//!   unambiguous filler words, collapses back-to-back word repeats
+//!   ("uh uh uh", "the the store"), normalizes whitespace, and capitalizes
+//!   the first letter. Parakeet already emits punctuation and casing, so
+//!   Tier 0 deliberately does *not* try to re-punctuate. On top of that it runs
 //!   `harper-core`'s offline grammar checker, restricted to mechanical,
 //!   single-suggestion lints (see `SAFE_LINT_KINDS`) — still instant, still
 //!   never a guess at what the user meant.
@@ -27,7 +28,15 @@ use std::sync::atomic::Ordering;
 /// is something a user essentially never means to keep in written text.
 /// Ambiguous ones ("like", "so", "you know", "well") are excluded on purpose —
 /// removing them changes meaning too often.
-const FILLERS: &[&str] = &["um", "uh", "uhh", "umm", "uhm", "erm", "er", "hmm"];
+const FILLERS: &[&str] =
+    &["um", "uh", "uhh", "umm", "uhm", "erm", "er", "hmm", "ah", "ahh", "eh", "mm", "mmm"];
+
+/// Words exempt from stutter collapse, because doubling them is legitimate
+/// often enough that removing the repeat is the bigger error: emphasis
+/// ("very very important", "no no no"), and real grammar ("he had had
+/// enough", "I know that that book is..."). Same bar as `FILLERS` in
+/// reverse — only words where the user plausibly *meant* the repeat.
+const LEGIT_DOUBLES: &[&str] = &["very", "really", "so", "no", "yes", "had", "that", "ha"];
 
 pub struct Polisher {
     /// Live tier, threshold, and dictionary — all editable from the tray /
@@ -358,7 +367,50 @@ fn collapse_space_around_breaks(text: &str) -> String {
 /// trims, so filtering + rejoining handles whitespace normalization for free.
 fn tier0(raw: &str) -> String {
     let kept: Vec<&str> = raw.split_whitespace().filter(|t| !is_filler(t)).collect();
-    capitalize_first(&kept.join(" "))
+    // Stutter collapse runs AFTER filler stripping: by now "uh uh uh" is
+    // already gone, so any run of identical tokens left is genuine word
+    // repetition ("the the store", "I I I think"), not disfluency.
+    let deduped = collapse_stutters(&kept);
+    capitalize_first(&deduped.join(" "))
+}
+
+/// Collapse a run of the same token repeated back-to-back to one occurrence,
+/// case-insensitively but keeping the first occurrence's own spelling/casing
+/// (so "we should go to The the store" keeps "The", not "the").
+///
+/// Words in `LEGIT_DOUBLES` are exempt — see there for why.
+///
+/// ponytail: no grammar-awareness here, so the exemption is a flat word list
+/// rather than a real judgement about the sentence. Harper's Repetition lint
+/// runs right after tier0 and independently flags some doubled words, so this
+/// isn't the only safety net. Upgrade path if a stutter slips through on an
+/// exempt word: gate the exemption on the repeat being comma-free.
+fn collapse_stutters<'a>(tokens: &[&'a str]) -> Vec<&'a str> {
+    let mut out: Vec<&str> = Vec::with_capacity(tokens.len());
+    for &tok in tokens {
+        let core = tok.trim_matches(|c: char| !c.is_alphanumeric());
+        // Numbers are never collapsed: "row 1 1 of 2" is two digits the user
+        // actually said, not a stutter — repeated digits read aloud are
+        // common and meaningful, unlike a repeated word, so they don't clear
+        // the "user never means to keep this" bar the rest of this pass does.
+        let is_numeric = !core.is_empty() && core.chars().all(|c| c.is_ascii_digit());
+        // A sentence-ending mark on the *previous* token means this token
+        // starts a new sentence ("I saw him. Him and I left"), not a
+        // stutter — commas don't count, since a stutter is often
+        // transcribed with a pause comma in between ("the, the store").
+        let new_sentence = out.last().is_some_and(|p: &&str| p.ends_with(['.', '!', '?']));
+        let exempt = LEGIT_DOUBLES.iter().any(|w| w.eq_ignore_ascii_case(core));
+        if !is_numeric && !new_sentence && !exempt {
+            if let Some(prev) = out.last() {
+                let prev_core = prev.trim_matches(|c: char| !c.is_alphanumeric());
+                if !prev_core.is_empty() && prev_core.eq_ignore_ascii_case(core) {
+                    continue; // drop the repeat; first occurrence's token (casing, punctuation) survives
+                }
+            }
+        }
+        out.push(tok);
+    }
+    out
 }
 
 /// True if `token`, stripped of surrounding punctuation and lowercased, is a
@@ -478,6 +530,54 @@ mod tests {
     #[test]
     fn empty_stays_empty() {
         assert_eq!(rules("   "), "");
+    }
+
+    // ── E0: stutter collapse ─────────────────────────────────────────
+
+    #[test]
+    fn collapses_the_exact_ten_uh_report_case() {
+        // Khairy's real report: a long run of "uh" plus a genuine word
+        // stutter ("the the") in the same dictation. Fillers strip first
+        // (each "uh" matches individually, run length doesn't matter), then
+        // stutter collapse cleans up what's left.
+        let raw = "uh uh uh uh uh uh uh uh uh uh I think we should go with the the plan";
+        assert_eq!(rules(raw), "I think we should go with the plan");
+    }
+
+    #[test]
+    fn collapses_repeated_words() {
+        assert_eq!(rules("the the store"), "The store");
+        assert_eq!(rules("I I I think"), "I think");
+    }
+
+    #[test]
+    fn stutter_collapse_preserves_first_occurrence_casing() {
+        // The survivor keeps the first occurrence's own casing, not the
+        // repeat's — checked mid-sentence where `capitalize_first` (which
+        // only touches index 0) can't paper over the difference.
+        assert_eq!(rules("we should go to The the store"), "We should go to The store");
+    }
+
+    #[test]
+    fn stutter_collapse_respects_sentence_boundaries() {
+        // Punctuation between the repeats means a new sentence, not a
+        // stutter — must survive untouched.
+        assert_eq!(rules("I saw him. Him and I left"), "I saw him. Him and I left");
+    }
+
+    #[test]
+    fn stutter_collapse_keeps_legitimate_doubles() {
+        // Emphasis and real grammar — collapsing these changes meaning, which
+        // is a worse failure than leaving a stutter in.
+        assert_eq!(rules("this is very very important"), "This is very very important");
+        assert_eq!(rules("he had had enough"), "He had had enough");
+        assert_eq!(rules("no no that's wrong"), "No no that's wrong");
+    }
+
+    #[test]
+    fn stutter_collapse_skips_numeric_tokens() {
+        // Repeated digits are meaningful, not disfluency — never collapsed.
+        assert_eq!(rules("row 1 1 of 2"), "Row 1 1 of 2");
     }
 
     // ── F1: voice formatting commands ───────────────────────────────
