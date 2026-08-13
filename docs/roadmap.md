@@ -1,5 +1,13 @@
 # Sotto roadmap
 
+> **2026-08-10 — read the handoff first:**
+> `D:\Coding\_claude-cloud\HANDOFF-sotto-2026-08-10.md`. E2 and N2 are done
+> (v0.5.4). Three P0 bugs are root-caused there with evidence — overlay rendering
+> behind the taskbar, the overlay being Alt-Tab-able, and AI polish discarding
+> tier0 (so the E0 filler/stutter work never reaches anyone running `mode = "ai"`).
+> New feature asks captured there too: audio retention, dictated quotes, and
+> learned mispronunciation correction.
+
 Originally written 2026-07-17 as a plan; rewritten 2026-07-18 as a status
 report; **reprioritized 2026-07-19 around an English-first MVP** after Kai's
 field report (below). The E-track section is now the live todo list and
