@@ -212,7 +212,7 @@ impl Polisher {
         let Some(llm) = &self.llm else { return rules };
 
         let t = std::time::Instant::now();
-        match llm.polish(raw, tone) {
+        match llm.polish(&rules, tone) {
             Ok(text) if !text.trim().is_empty() => {
                 tracing::info!(llm_ms = t.elapsed().as_millis(), "AI polish applied");
                 text
