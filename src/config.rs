@@ -25,9 +25,12 @@ impl ActivationMode {
     }
 }
 
-/// Which page an entry belongs to. Doesn't affect replacement behavior at
-/// all — both kinds fire the same way — it's purely which list the Settings
-/// UI shows the entry in.
+/// Which page an entry belongs to in the Settings UI — and, since both kinds
+/// also fire at a different point in the polish pipeline (see `polish.rs`'s
+/// `polish_with_tone`), which pass replaces it: `Word` entries run BEFORE
+/// polish (so the LLM sees the correct token instead of an ASR fragment it
+/// might "correct" away), `Snippet` entries run AFTER (so grammar rewriting
+/// never gets a chance to mangle a longer expansion like an email address).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EntryKind {

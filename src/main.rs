@@ -67,10 +67,11 @@ pub struct Controls {
     pub activation: Arc<AtomicU8>,
     pub hotkey_idx: Arc<AtomicUsize>,
     pub ai_min_words: Arc<AtomicUsize>,
-    /// Live replacements: `(all phrases longest-first, replacement)`.
+    /// Live replacements: `(all phrases longest-first, replacement, kind)`.
     /// Disabled entries are filtered out here rather than checked per
-    /// dictation, so the hot path stays a plain iteration.
-    pub dictionary: Arc<Mutex<Vec<(Vec<String>, String)>>>,
+    /// dictation, so the hot path stays a plain iteration. `kind` decides
+    /// which polish-pipeline pass applies the entry — see `EntryKind`.
+    pub dictionary: Arc<Mutex<Vec<(Vec<String>, String, EntryKind)>>>,
     /// Master switch for all replacements — live-toggled from Settings.
     pub replacements_enabled: Arc<AtomicBool>,
     /// "New line"/"new paragraph" voice commands — live-toggled from Settings,
@@ -483,13 +484,13 @@ fn set_formatting_commands(enabled: bool, state: tauri::State<'_, AppState>) {
 /// Config entries -> the shape the polisher iterates: enabled ones only, each
 /// flattened to all its phrases longest-first. One function so the startup path
 /// and the live-edit path can't drift apart.
-fn live_dictionary(entries: &[DictEntry]) -> Vec<(Vec<String>, String)> {
+fn live_dictionary(entries: &[DictEntry]) -> Vec<(Vec<String>, String, EntryKind)> {
     entries
         .iter()
         .filter(|e| e.enabled)
         .map(|e| {
             let phrases = e.phrases().into_iter().map(str::to_string).collect();
-            (phrases, e.replacement.clone())
+            (phrases, e.replacement.clone(), e.kind.unwrap_or_default())
         })
         .collect()
 }
@@ -817,7 +818,6 @@ fn main() -> anyhow::Result<()> {
                 harden_utility_window(&w);
                 if cfg.overlay.always_visible {
                     let _ = w.show();
-                    harden_utility_window(&w); // re-assert after show() — see harden_utility_window's doc
                 }
             }
             if let Some(w) = app.get_webview_window("menu") {
@@ -885,8 +885,8 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
                         let x = (position.x - mw + 10.0) as i32;
                         let y = (position.y - mh - 5.0) as i32;
                         let _ = w.set_position(tauri::PhysicalPosition::new(x, y));
-                        let _ = w.show();
                         harden_utility_window(&w);
+                        let _ = w.show();
                         let _ = w.set_focus();
                     }
                 }
@@ -1042,7 +1042,19 @@ fn overlay_pill_origin(cw: f64, ch: f64, pw: f64, ph: f64, anchor: &str) -> (f64
     (x.round(), y.round())
 }
 
-fn anchor_xy(mon_w: f64, mon_h: f64, pill_w: f64, pill_h: f64, anchor: &str, margin: f64) -> (i32, i32) {
+/// `area_x`/`area_y` are the top-left of the placement area (a monitor's work
+/// area, which may not start at (0, 0) — either a secondary monitor, or a
+/// primary monitor with a top- or left-docked taskbar).
+fn anchor_xy(
+    area_x: f64,
+    area_y: f64,
+    area_w: f64,
+    area_h: f64,
+    pill_w: f64,
+    pill_h: f64,
+    anchor: &str,
+    margin: f64,
+) -> (i32, i32) {
     let (h, v) = match anchor {
         "top-left" => ("left", "top"),
         "top-center" => ("center", "top"),
@@ -1055,28 +1067,78 @@ fn anchor_xy(mon_w: f64, mon_h: f64, pill_w: f64, pill_h: f64, anchor: &str, mar
         _ => ("center", "bottom"), // bottom-center, and the unknown-anchor fallback
     };
     let x = match h {
-        "left" => margin,
-        "right" => mon_w - pill_w - margin,
-        _ => (mon_w - pill_w) / 2.0,
+        "left" => area_x + margin,
+        "right" => area_x + area_w - pill_w - margin,
+        _ => area_x + (area_w - pill_w) / 2.0,
     };
     let y = match v {
-        "top" => margin,
-        "middle" => (mon_h - pill_h) / 2.0,
-        _ => mon_h - pill_h - margin,
+        "top" => area_y + margin,
+        "middle" => area_y + (area_h - pill_h) / 2.0,
+        _ => area_y + area_h - pill_h - margin,
     };
     (x as i32, y as i32)
+}
+
+/// Target (x, y) for the overlay window at `anchor`, without moving it —
+/// shared by `position_overlay` (applies it immediately) and the hittest
+/// loop (nudges it for the taskbar auto-hide bar first, then applies it).
+/// Uses the monitor's WORK AREA, not its full size: a pinned taskbar's
+/// reserved strip is excluded from the work area automatically, so this
+/// alone fixes placement for anyone with a normal (non-auto-hide) taskbar.
+/// Uses the window's real `outer_size()` rather than a hardcoded guess —
+/// same fix already applied to the tray menu's positioning, see `build_tray`.
+fn overlay_target_xy(w: &tauri::WebviewWindow, anchor: &str) -> Option<(i32, i32)> {
+    let mon = w.current_monitor().ok()??;
+    let work = mon.work_area();
+    let size = w.outer_size().ok()?;
+    Some(anchor_xy(
+        work.position.x as f64,
+        work.position.y as f64,
+        work.size.width as f64,
+        work.size.height as f64,
+        size.width as f64,
+        size.height as f64,
+        anchor,
+        OVERLAY_MARGIN * mon.scale_factor(),
+    ))
 }
 
 /// Position the (always-on-top, transparent) overlay window at the
 /// configured anchor.
 fn position_overlay(w: &tauri::WebviewWindow, anchor: &str) {
-    if let Ok(Some(mon)) = w.current_monitor() {
-        let sz = mon.size();
-        let scale = mon.scale_factor();
-        let ww = 260.0 * scale;
-        let wh = 120.0 * scale;
-        let (x, y) = anchor_xy(sz.width as f64, sz.height as f64, ww, wh, anchor, OVERLAY_MARGIN * scale);
+    if let Some((x, y)) = overlay_target_xy(w, anchor) {
         let _ = w.set_position(tauri::PhysicalPosition::new(x, y));
+    }
+}
+
+/// How far Windows' bottom-docked auto-hide taskbar has slid onto the
+/// primary monitor: 0 when fully hidden (a couple hover-trigger px poking
+/// above the edge), up to the bar's own height when fully shown. Used to
+/// nudge a bottom-anchored overlay up so the taskbar sliding in on hover
+/// doesn't cover the very pill the user is reaching for.
+/// ponytail: single Shell_TrayWnd probe on the primary monitor — switch to
+/// ABM_GETAUTOHIDEBAREX if a secondary-monitor taskbar or a non-bottom dock
+/// ever needs to be handled.
+fn taskbar_intrusion_px() -> f64 {
+    use windows::Win32::Foundation::RECT;
+    use windows::Win32::UI::WindowsAndMessaging::{
+        FindWindowW, GetSystemMetrics, GetWindowRect, SM_CYSCREEN,
+    };
+    use windows::core::PCWSTR;
+    unsafe {
+        let class: Vec<u16> = "Shell_TrayWnd\0".encode_utf16().collect();
+        let Ok(tray) = FindWindowW(PCWSTR(class.as_ptr()), PCWSTR::null()) else {
+            return 0.0;
+        };
+        if tray.is_invalid() {
+            return 0.0;
+        }
+        let mut rect = RECT::default();
+        if GetWindowRect(tray, &mut rect).is_err() {
+            return 0.0;
+        }
+        let screen_h = GetSystemMetrics(SM_CYSCREEN) as f64;
+        (screen_h - rect.top as f64).clamp(0.0, (rect.bottom - rect.top) as f64)
     }
 }
 
@@ -1771,6 +1833,10 @@ fn spawn_overlay_hittest(
     use windows::Win32::UI::WindowsAndMessaging::GetCursorPos;
     std::thread::spawn(move || {
         let mut ignoring = true; // window starts click-through
+        // Eased auto-hide-taskbar clearance, in physical px — see
+        // `taskbar_intrusion_px`. Persists across ticks so the nudge
+        // animates instead of snapping.
+        let mut taskbar_clear = 0.0_f64;
         loop {
             // Pill width per state — must mirror pillWidthFor() in overlay.js.
             // idle only gets a hitbox in always-visible mode, where the whole
@@ -1800,6 +1866,26 @@ fn spawn_overlay_hittest(
                 continue;
             };
             if let Some(w) = app.get_webview_window("overlay") {
+                // Auto-hide taskbar clearance: only a bottom anchor can ever
+                // sit inside a bottom-docked bar's band, so this is a no-op
+                // for every other anchor. Eases toward the target over a few
+                // ticks so the bar sliding in doesn't yank the pill.
+                let anchor_now = position.lock().unwrap().clone();
+                if anchor_now.starts_with("bottom") {
+                    let intrusion = taskbar_intrusion_px();
+                    taskbar_clear += (intrusion - taskbar_clear) * 0.4;
+                    if let Some((bx, by)) = overlay_target_xy(&w, &anchor_now) {
+                        let target_y = by - taskbar_clear.round() as i32;
+                        let needs_move =
+                            w.outer_position().map(|p| p.y != target_y).unwrap_or(false);
+                        if needs_move {
+                            let _ = w.set_position(tauri::PhysicalPosition::new(bx, target_y));
+                        }
+                    }
+                } else {
+                    taskbar_clear = 0.0;
+                }
+
                 let inside = (|| {
                     let pos = w.outer_position().ok()?;
                     let size = w.outer_size().ok()?;
@@ -1839,28 +1925,21 @@ fn show_overlay(app: &tauri::AppHandle) {
     if let Some(w) = app.get_webview_window("overlay") {
         let anchor = app.state::<AppState>().controls.overlay_position.lock().unwrap().clone();
         position_overlay(&w, &anchor);
-        let _ = w.show();
         harden_utility_window(&w);
+        let _ = w.show();
     }
 }
 
 /// Keep a borderless utility popup (the overlay pill / tray menu) out of
-/// Alt-Tab and the taskbar's own preview surfaces — not just off the taskbar
-/// button, which `skip_taskbar` alone covers.
+/// Alt-Tab and the taskbar's own preview surfaces.
 ///
-/// Why this exists: these windows toggle show()/hide() constantly (the pill
-/// every dictation, the menu every right-click), and on Windows the
-/// taskbar-hidden extended style can get dropped across that cycling —
-/// `skip_taskbar` silently stops holding and the window becomes a normal
-/// Alt-Tab-able top-level window again. When that happens Windows renders it
-/// in Alt-Tab / taskbar-hover previews with its OWN synthetic titlebar and
-/// min/max/close chrome — a transparent pill wrapped in native window
-/// controls it never asked for, framed in the OS's focus-accent border. Not a
-/// CSS bug: nothing in overlay.html/menu.html draws that chrome, Windows does,
-/// because it thinks this is switchable top-level window.
-/// Re-asserting WS_EX_TOOLWINDOW (and clearing WS_EX_APPWINDOW) after every
-/// show() is the fix — call this at every show() site, not just once at
-/// creation.
+/// `set_skip_taskbar` (below) only removes the taskbar *button* — it's
+/// `ITaskbarList::DeleteTab` under the hood and has no bearing on Alt-Tab
+/// eligibility at all. `WS_EX_TOOLWINDOW` is the actual Alt-Tab exclusion,
+/// and it's a create-time style: Windows decides Alt-Tab membership when a
+/// window is first shown, so this must run *before* `w.show()` at every show
+/// site, not after — reasserting it on an already-visible window doesn't
+/// reliably pull it back out.
 fn harden_utility_window(w: &tauri::WebviewWindow) {
     let _ = w.set_skip_taskbar(true);
     if let Ok(raw) = w.hwnd() {
@@ -1983,16 +2062,20 @@ mod tests {
         assert_eq!(i.audio_ms, 4200);
     }
 
-    // 1920x1080 monitor, the 260x120 unscaled pill size, 8px margin — same
-    // numbers `position_overlay` passes in practice at scale 1.0.
+    // 1920x1080 work area starting at the monitor origin, the real 280x120
+    // overlay window size, 8px margin — same numbers `position_overlay`
+    // passes in practice at scale 1.0 on a single monitor with a normal
+    // (non-auto-hide) taskbar.
+    const AREA_X: f64 = 0.0;
+    const AREA_Y: f64 = 0.0;
     const MON_W: f64 = 1920.0;
     const MON_H: f64 = 1080.0;
-    const PILL_W: f64 = 260.0;
+    const PILL_W: f64 = 280.0;
     const PILL_H: f64 = 120.0;
     const MARGIN: f64 = 8.0;
 
     fn anchor(name: &str) -> (i32, i32) {
-        anchor_xy(MON_W, MON_H, PILL_W, PILL_H, name, MARGIN)
+        anchor_xy(AREA_X, AREA_Y, MON_W, MON_H, PILL_W, PILL_H, name, MARGIN)
     }
 
     #[test]
@@ -2001,11 +2084,11 @@ mod tests {
     }
     #[test]
     fn anchor_xy_top_center() {
-        assert_eq!(anchor("top-center"), (830, 8));
+        assert_eq!(anchor("top-center"), (820, 8));
     }
     #[test]
     fn anchor_xy_top_right() {
-        assert_eq!(anchor("top-right"), (1652, 8));
+        assert_eq!(anchor("top-right"), (1632, 8));
     }
     #[test]
     fn anchor_xy_middle_left() {
@@ -2013,7 +2096,16 @@ mod tests {
     }
     #[test]
     fn anchor_xy_middle_center() {
-        assert_eq!(anchor("middle-center"), (830, 480));
+        assert_eq!(anchor("middle-center"), (820, 480));
+    }
+    #[test]
+    fn anchor_xy_respects_monitor_origin() {
+        // A secondary monitor to the right of a 1920-wide primary: every
+        // coordinate anchor_xy returns must be relative to ITS origin, not
+        // the desktop's (0, 0) — this is what a work-area-aware caller
+        // relies on for anything but the primary monitor.
+        let (x, y) = anchor_xy(1920.0, 0.0, MON_W, MON_H, PILL_W, PILL_H, "bottom-right", MARGIN);
+        assert_eq!((x, y), (1920 + 1632, 952));
     }
     // ── E2: chunked transcription ────────────────────────────────────
     //
@@ -2093,7 +2185,7 @@ mod tests {
 
     #[test]
     fn anchor_xy_middle_right() {
-        assert_eq!(anchor("middle-right"), (1652, 480));
+        assert_eq!(anchor("middle-right"), (1632, 480));
     }
     #[test]
     fn anchor_xy_bottom_left() {
@@ -2101,11 +2193,11 @@ mod tests {
     }
     #[test]
     fn anchor_xy_bottom_center() {
-        assert_eq!(anchor("bottom-center"), (830, 952));
+        assert_eq!(anchor("bottom-center"), (820, 952));
     }
     #[test]
     fn anchor_xy_bottom_right() {
-        assert_eq!(anchor("bottom-right"), (1652, 952));
+        assert_eq!(anchor("bottom-right"), (1632, 952));
     }
     #[test]
     fn anchor_xy_unknown_falls_back_to_bottom_center() {

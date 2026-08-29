@@ -15,7 +15,7 @@
 //!   Wispr-Flow-style rewriting. Not wired yet (Phase 2b); the seam is here and
 //!   currently falls back to Tier 0 so behavior is already correct.
 
-use crate::config::{LlmConfig, PolishMode};
+use crate::config::{EntryKind, LlmConfig, PolishMode};
 use crate::llm::Llm;
 use crate::Controls;
 use harper_core::linting::{Lint, LintGroup, LintKind, Linter};
@@ -127,6 +127,30 @@ impl Polisher {
         } else {
             raw
         };
+
+        // Dictionary / snippet replacements apply on top of every tier —
+        // unless the master switch is off, in which case nothing fires and
+        // the entries are left untouched on disk. Split by kind: `Word`
+        // entries (short glossary terms — proper nouns, abbreviations like
+        // "E and" -> "e&") run BEFORE polish, so the LLM sees the correct
+        // token. Left for AI polish to see the raw phrase, a short fragment
+        // like "E and" reads as a dangling conjunction to a grammar-cleanup
+        // pass and gets silently dropped — by the time a post-polish
+        // dictionary pass ran, the phrase it was matching for no longer
+        // existed. `Snippet` entries (longer expansions — emails, addresses,
+        // text blocks) stay AFTER polish, unchanged, so grammar rewriting
+        // never gets a chance to mangle the expansion itself.
+        let dict = self.controls.dictionary.lock().unwrap();
+        let replacements_on = self.controls.replacements_enabled.load(Ordering::Relaxed);
+        let worded;
+        let (raw, word_hits) = if dict.is_empty() || !replacements_on {
+            (raw, 0)
+        } else {
+            let (fixed, hits) = apply_dictionary(raw, &dict, EntryKind::Word);
+            worded = fixed;
+            (worded.as_str(), hits)
+        };
+
         let cleaned = match self.mode() {
             // Tone rewrites voice, which only the AI tier can do — Rules just
             // strips/fixes, it can't re-voice a sentence. `tone` is unused on
@@ -136,20 +160,17 @@ impl Polisher {
             PolishMode::Rules => self.apply_harper(&tier0(raw)),
             PolishMode::Ai => self.polish_ai(raw, tone),
         };
-        // Diff BEFORE the dictionary pass so corrected-words and dict-hits
-        // don't double-count the same word.
+        // Diff against the word-dictionary-corrected raw, not the ASR-
+        // original one, so a Word-entry substitution is never miscounted as
+        // a tier0/AI correction — and BEFORE the snippet pass below, so
+        // corrected-words and dict-hits don't double-count the same word.
         let corrected_words = changed_words(raw, &cleaned);
-        // Dictionary / snippet replacements apply on top of every tier — unless
-        // the master switch is off, in which case nothing fires and the entries
-        // are left untouched on disk.
-        let dict = self.controls.dictionary.lock().unwrap();
-        let replacements_on = self.controls.replacements_enabled.load(Ordering::Relaxed);
-        let (text, dict_hits) = if dict.is_empty() || !replacements_on {
+        let (text, snippet_hits) = if dict.is_empty() || !replacements_on {
             (cleaned, 0)
         } else {
-            apply_dictionary(&cleaned, &dict)
+            apply_dictionary(&cleaned, &dict, EntryKind::Snippet)
         };
-        PolishResult { text, corrected_words, dict_hits }
+        PolishResult { text, corrected_words, dict_hits: word_hits + snippet_hits }
     }
 
     /// Pre-spawn the LLM sidecar so its load overlaps recording. Called when
@@ -437,13 +458,18 @@ fn capitalize_first(s: &str) -> String {
 /// are effectively ASCII), and word-boundary-checked so "arrow" doesn't hit
 /// inside "arrows". Returns the rewritten text plus how many replacements
 /// fired (the "dictionary fixes" stat).
-/// Apply replacements. Each entry is `(phrases, replacement)` where `phrases`
-/// is every way you say it (primary + aliases), already longest-first, and
-/// disabled entries have been dropped before we get here.
-fn apply_dictionary(text: &str, dict: &[(Vec<String>, String)]) -> (String, usize) {
+/// Apply replacements. Each entry is `(phrases, replacement, kind)` where
+/// `phrases` is every way you say it (primary + aliases), already
+/// longest-first; disabled entries have been dropped before we get here.
+/// Only entries matching `only` fire — see `polish_with_tone` for why Word
+/// and Snippet entries run at different points in the pipeline.
+fn apply_dictionary(text: &str, dict: &[(Vec<String>, String, EntryKind)], only: EntryKind) -> (String, usize) {
     let mut out = text.to_string();
     let mut hits = 0;
-    for (phrases, replacement) in dict {
+    for (phrases, replacement, kind) in dict {
+        if *kind != only {
+            continue;
+        }
         for spoken in phrases {
             if !spoken.trim().is_empty() {
                 let (next, n) = replace_whole_ci(&out, spoken, replacement);
@@ -626,15 +652,48 @@ mod tests {
             replacement: "here is a new line for you".into(),
             aliases: vec![],
             enabled: true,
-            kind: None,
+            kind: Some(crate::config::EntryKind::Snippet),
         };
         *controls.dictionary.lock().unwrap() = vec![(
             entry.phrases().into_iter().map(str::to_string).collect::<Vec<_>>(),
             entry.replacement.clone(),
+            entry.kind.unwrap(),
         )];
         let p = Polisher::new(controls, cfg.llm.clone());
         let out = p.polish("please insert my snippet now");
         assert_eq!(out.text, "please insert here is a new line for you now");
+    }
+
+    #[test]
+    fn word_kind_entries_run_before_tier0_so_a_filler_word_inside_the_phrase_survives() {
+        // The real bug: a Word entry whose spoken phrase happens to contain
+        // what tier0 treats as a filler ("uh") used to lose the match
+        // entirely, because dictionary replacement ran AFTER tier0 had
+        // already stripped it — "uh huh" -> tier0 drops "uh" -> "huh" ->
+        // dictionary looks for "uh huh", finds nothing. This is the
+        // deterministic half of the fix that lets "E and" -> "e&" survive
+        // AI polish, which drops a stray trailing "and" the same way.
+        let cfg = crate::config::Config::default();
+        let controls = crate::Controls::from_config(&cfg);
+        controls.polish_mode.store(PolishMode::Rules.as_u8(), Ordering::Relaxed);
+        let entry = crate::config::DictEntry {
+            spoken: "uh huh".into(),
+            replacement: "yes".into(),
+            aliases: vec![],
+            enabled: true,
+            kind: Some(crate::config::EntryKind::Word),
+        };
+        *controls.dictionary.lock().unwrap() = vec![(
+            entry.phrases().into_iter().map(str::to_string).collect::<Vec<_>>(),
+            entry.replacement.clone(),
+            entry.kind.unwrap(),
+        )];
+        let p = Polisher::new(controls, cfg.llm.clone());
+        let out = p.polish("uh huh that works");
+        assert_eq!(out.dict_hits, 1, "the Word entry must have matched before tier0 ate \"uh\"");
+        let lower = out.text.to_ascii_lowercase();
+        assert!(lower.starts_with("yes"), "expected the entry's replacement, got {:?}", out.text);
+        assert!(!lower.contains("huh"), "the un-replaced fragment must not survive: {:?}", out.text);
     }
 
     /// Fresh `LintGroup` per call — simpler than sharing one across tests,
@@ -670,15 +729,15 @@ mod tests {
     #[test]
     fn dictionary_replaces_whole_phrases_case_insensitively() {
         let dict = vec![
-            (vec!["gee pee tee".to_string()], "GPT".to_string()),
-            (vec!["arrow".to_string()], "→".to_string()),
+            (vec!["gee pee tee".to_string()], "GPT".to_string(), EntryKind::Word),
+            (vec!["arrow".to_string()], "→".to_string(), EntryKind::Word),
         ];
-        assert_eq!(apply_dictionary("use Gee Pee Tee now", &dict), ("use GPT now".into(), 1));
-        assert_eq!(apply_dictionary("arrow key", &dict), ("→ key".into(), 1));
+        assert_eq!(apply_dictionary("use Gee Pee Tee now", &dict, EntryKind::Word), ("use GPT now".into(), 1));
+        assert_eq!(apply_dictionary("arrow key", &dict, EntryKind::Word), ("→ key".into(), 1));
         // Whole-word only: "arrows" must not become "→s".
-        assert_eq!(apply_dictionary("two arrows here", &dict), ("two arrows here".into(), 0));
+        assert_eq!(apply_dictionary("two arrows here", &dict, EntryKind::Word), ("two arrows here".into(), 0));
         // No entries → untouched.
-        assert_eq!(apply_dictionary("nothing", &[]), ("nothing".into(), 0));
+        assert_eq!(apply_dictionary("nothing", &[], EntryKind::Word), ("nothing".into(), 0));
     }
 
     #[test]
@@ -690,14 +749,15 @@ mod tests {
             replacement: "khairyshhn1@gmail.com".into(),
             aliases: vec!["my primary email".into(), "my personal email".into()],
             enabled: true,
-            kind: None,
+            kind: Some(EntryKind::Snippet),
         };
         let dict = vec![(
             entry.phrases().into_iter().map(str::to_string).collect::<Vec<_>>(),
             entry.replacement.clone(),
+            entry.kind.unwrap(),
         )];
         for said in ["my main email", "My Primary Email", "my personal email"] {
-            let (out, hits) = apply_dictionary(&format!("send it to {said} please"), &dict);
+            let (out, hits) = apply_dictionary(&format!("send it to {said} please"), &dict, EntryKind::Snippet);
             assert_eq!(out, "send it to khairyshhn1@gmail.com please", "failed for {said:?}");
             assert_eq!(hits, 1);
         }
@@ -712,15 +772,16 @@ mod tests {
             replacement: "personal@example.com".into(),
             aliases: vec!["my work email".into()],
             enabled: true,
-            kind: None,
+            kind: Some(EntryKind::Snippet),
         };
         // phrases() sorts longest-first, which is what makes this safe.
         assert_eq!(entry.phrases(), vec!["my work email", "my email"]);
         let dict = vec![(
             entry.phrases().into_iter().map(str::to_string).collect::<Vec<_>>(),
             entry.replacement.clone(),
+            entry.kind.unwrap(),
         )];
-        let (out, _) = apply_dictionary("send my work email now", &dict);
+        let (out, _) = apply_dictionary("send my work email now", &dict, EntryKind::Snippet);
         assert_eq!(out, "send personal@example.com now");
     }
 
@@ -729,8 +790,8 @@ mod tests {
         // Disabled entries must survive on disk but never fire. The filtering
         // happens in main::live_dictionary, so assert the shape it produces:
         // an empty phrase list is what "off" looks like to apply_dictionary.
-        let dict: Vec<(Vec<String>, String)> = vec![];
-        assert_eq!(apply_dictionary("my main email", &dict), ("my main email".into(), 0));
+        let dict: Vec<(Vec<String>, String, EntryKind)> = vec![];
+        assert_eq!(apply_dictionary("my main email", &dict, EntryKind::Word), ("my main email".into(), 0));
     }
 
     #[test]
