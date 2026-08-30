@@ -256,6 +256,10 @@ struct SettingsPayload {
     microphone_options: Vec<String>,
     paused: bool,
     sound_enabled: bool,
+    /// "Usage stats" toggle state — without this the Data & privacy switch
+    /// always rendered off on load regardless of the real setting, since
+    /// `s.statsEnabled` had no field here to read.
+    stats_enabled: bool,
     has_take: bool,
     /// Details for Home's "last dictation wasn't delivered" card.
     take_info: Option<TakeInfo>,
@@ -386,6 +390,7 @@ fn get_settings(state: tauri::State<'_, AppState>) -> SettingsPayload {
         microphone_options: audio::list_input_devices(),
         paused: c.paused.load(Ordering::Relaxed),
         sound_enabled: c.sound_enabled.load(Ordering::Relaxed),
+        stats_enabled: c.stats_enabled.load(Ordering::Relaxed),
         has_take: take_info.is_some(),
         take_info,
         data_dir: config::data_dir().display().to_string(),
