@@ -1447,6 +1447,32 @@ async function boot() {
     };
   }
 
+  // Recording retention: toggle, size display, folder link, clear button.
+  if ($("retention-enabled-toggle")) {
+    $("retention-enabled-toggle").setAttribute("aria-checked", String(!!s.retentionEnabled));
+    initSwitch($("retention-enabled-toggle"), (on) => invoke("set_retention_enabled", { enabled: on }));
+  }
+  if ($("recordings-size")) {
+    const mb = s.recordingsSizeMb || 0;
+    const cap = s.retentionMaxMb || 500;
+    $("recordings-size").textContent = `${mb} MB kept, capped at ${cap} MB`;
+  }
+  if ($("recordings-folder-path") && s.recordingsDir) {
+    $("recordings-folder-path").textContent = s.recordingsDir;
+  }
+  if ($("open-recordings-folder")) {
+    $("open-recordings-folder").onclick = () => invoke("open_url", { url: s.recordingsDir || "" });
+  }
+  if ($("clear-recordings-btn")) {
+    $("clear-recordings-btn").onclick = async () => {
+      const confirmClear = confirm("Are you sure you want to delete all kept recordings?");
+      if (confirmClear) {
+        await invoke("clear_recordings");
+        $("recordings-size").textContent = `0 MB kept, capped at ${s.retentionMaxMb || 500} MB`;
+      }
+    };
+  }
+
   initSegmented($("activation"), (v) => invoke("set_activation", { mode: v }));
   initSegmented($("polish"), (v) => { invoke("set_polish", { mode: v }); updateToneDisabled(v); });
   if ($("theme")) initSegmented($("theme"), (v) => {

@@ -17,6 +17,7 @@ mod inject;
 mod job;
 mod llm;
 mod polish;
+mod recordings;
 mod single_instance;
 mod sounds;
 mod startup;
@@ -97,6 +98,11 @@ pub struct Controls {
     /// Live "record usage stats" flag — flipped from settings without a
     /// restart, read by the worker at record time.
     pub stats_enabled: Arc<AtomicBool>,
+    /// Live "keep recordings" flag — same shape as `stats_enabled`, but for
+    /// `recordings::record` (audio + raw + polished text). Off by default;
+    /// unlike stats this persists dictated content, so it's opt-in per
+    /// `RetentionConfig`.
+    pub retention_enabled: Arc<AtomicBool>,
     /// Selected input device name, or `None` for the OS default. Read by
     /// `Recorder::start` on every dictation, so a change applies immediately.
     pub microphone: Arc<Mutex<Option<String>>>,
@@ -151,6 +157,7 @@ impl Controls {
             focus_target: Arc::new(AtomicIsize::new(0)),
             cancelled: Arc::new(AtomicBool::new(false)),
             stats_enabled: Arc::new(AtomicBool::new(cfg.stats_enabled)),
+            retention_enabled: Arc::new(AtomicBool::new(cfg.retention.enabled)),
             microphone: Arc::new(Mutex::new(cfg.microphone.clone())),
             overlay_state: Arc::new(Mutex::new("idle".to_string())),
             overlay_position: Arc::new(Mutex::new(cfg.overlay.position.clone())),
@@ -264,6 +271,16 @@ struct SettingsPayload {
     asr_model: String,
     /// BCP-47 code, or "auto".
     asr_language: String,
+    /// "Keep recordings" master switch — drives the Data & privacy toggle.
+    retention_enabled: bool,
+    /// Configured size budget in MB, for the row's descriptive text.
+    retention_max_mb: u64,
+    /// Where kept recordings live, for the "Open folder" link. Same value
+    /// as `assets_dir` + "/recordings" — computed here so the frontend
+    /// never has to know that join itself.
+    recordings_dir: String,
+    /// Current total size of kept recordings, in MB.
+    recordings_size_mb: u64,
 }
 
 // ── commands ───────────────────────────────────────────────────────────
@@ -376,6 +393,10 @@ fn get_settings(state: tauri::State<'_, AppState>) -> SettingsPayload {
         zoom: cfg.zoom,
         asr_model: cfg.asr.model.clone(),
         asr_language: cfg.asr.language.clone(),
+        retention_enabled: c.retention_enabled.load(Ordering::Relaxed),
+        retention_max_mb: cfg.retention.max_mb,
+        recordings_dir: recordings::recordings_dir().display().to_string(),
+        recordings_size_mb: recordings::total_size_mb(),
     }
 }
 
@@ -718,6 +739,19 @@ fn set_stats_enabled(enabled: bool, state: tauri::State<'_, AppState>) {
     let _ = cfg.save();
 }
 
+#[tauri::command]
+fn set_retention_enabled(enabled: bool, state: tauri::State<'_, AppState>) {
+    state.controls.retention_enabled.store(enabled, Ordering::Relaxed);
+    let mut cfg = state.cfg.lock().unwrap();
+    cfg.retention.enabled = enabled;
+    let _ = cfg.save();
+}
+
+#[tauri::command]
+fn clear_recordings() {
+    recordings::clear();
+}
+
 /// Send tracing to a file, not just stdout.
 ///
 /// Release builds are `windows_subsystem = "windows"` — there is no console, so
@@ -804,7 +838,8 @@ fn main() -> anyhow::Result<()> {
             set_asr_model, set_asr_language,
             open_url, check_update, install_update, retry_last, cancel_dictation, dismiss_take,
             repolish_copy,
-            get_stats, clear_stats, set_stats_enabled, set_microphone, set_sound_enabled, set_zoom,
+            get_stats, clear_stats, set_stats_enabled, set_retention_enabled, clear_recordings,
+            set_microphone, set_sound_enabled, set_zoom,
             set_replacements_enabled,
             set_formatting_commands,
             menu_action,
@@ -1203,6 +1238,7 @@ fn spawn_pipeline(
     let focus_target = controls.focus_target.clone();
     let cancelled = controls.cancelled.clone();
     let stats_enabled = controls.stats_enabled.clone();
+    let retention_enabled = controls.retention_enabled.clone();
     let microphone = controls.microphone.clone();
     let sound_enabled = controls.sound_enabled.clone();
     let take_info = controls.take_info.clone();
@@ -1216,6 +1252,7 @@ fn spawn_pipeline(
         let listening = listening.clone();
         let cancelled = cancelled.clone();
         let stats_enabled = stats_enabled.clone();
+        let retention_enabled = retention_enabled.clone();
         std::thread::spawn(move || {
             let mut asr = asr::Asr::new();
             // Warm the ASR model before serving work, so the first dictation
@@ -1271,7 +1308,7 @@ fn spawn_pipeline(
                         }
                         process_take(
                             &app, &mut asr, &polisher, &history, &suppressed, &cancelled,
-                            &listening, injection_mode, &stats_enabled, take, &mut stash,
+                            &listening, injection_mode, &stats_enabled, &retention_enabled, take, &mut stash,
                         );
                         publish_take(&app, &take_info, &stash);
                     }
@@ -1292,7 +1329,7 @@ fn spawn_pipeline(
                             tracing::info!(has_text = take.raw_text.is_some(), "retrying last dictation");
                             process_take(
                                 &app, &mut asr, &polisher, &history, &suppressed, &cancelled,
-                                &listening, injection_mode, &stats_enabled, take, &mut stash,
+                                &listening, injection_mode, &stats_enabled, &retention_enabled, take, &mut stash,
                             );
                         } else {
                             tracing::info!("retry requested but nothing stashed");
@@ -1673,6 +1710,7 @@ fn process_take(
     listening: &Arc<AtomicBool>,
     injection_mode: InjectionMode,
     stats_enabled: &Arc<AtomicBool>,
+    retention_enabled: &Arc<AtomicBool>,
     mut take: Take,
     stash: &mut Option<Take>,
 ) {
@@ -1774,6 +1812,25 @@ fn process_take(
             history.push(result.text.clone());
             emit_state(app, "done");
             emit_history(app, history);
+            if retention_enabled.load(Ordering::Relaxed) {
+                // ponytail: synchronous write, right here on the worker
+                // thread — it lands after injection, so the user already
+                // has their text, and a mu-law WAV of a short take is a
+                // sub-millisecond write on any real disk. Move this to a
+                // channel if a very long take ever measurably stalls the
+                // next one.
+                let max_mb = app.state::<AppState>().cfg.lock().unwrap().retention.max_mb;
+                recordings::record(
+                    &take.samples,
+                    &raw,
+                    &result.text,
+                    &app_name,
+                    &config::asr_model(),
+                    &take.tier,
+                    take.audio_ms,
+                    max_mb,
+                );
+            }
             if stats_enabled.load(Ordering::Relaxed) {
                 let words = result.text.split_whitespace().count();
                 stats::record(&stats::entry_now(

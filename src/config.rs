@@ -281,6 +281,11 @@ pub struct Config {
     /// Insights dashboard. Fully local either way.
     #[serde(default = "default_true")]
     pub stats_enabled: bool,
+    /// Opt-in retention of raw audio + raw/polished transcript per take, so
+    /// they can be compared later (see `recordings.rs`). Off by default --
+    /// unlike stats, this persists dictated content and audio to disk.
+    #[serde(default)]
+    pub retention: RetentionConfig,
     /// UI theme: "light", "dark", or "system" (follow OS preference).
     #[serde(default = "default_theme")]
     pub theme: String,
@@ -340,6 +345,7 @@ impl Default for Config {
             app_tones: Vec::new(),
             start_hidden: true,
             stats_enabled: true,
+            retention: RetentionConfig::default(),
             theme: default_theme(),
             microphone: None,
             sound_enabled: true,
@@ -463,6 +469,24 @@ impl Default for OverlayConfig {
             position: "bottom-center".to_string(),
             always_visible: false,
         }
+    }
+}
+
+/// Opt-in recording retention (see `recordings.rs`). `#[serde(default)]` on
+/// the struct means a hand-edited config missing this whole section loads
+/// with retention off, same as a fresh install.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RetentionConfig {
+    pub enabled: bool,
+    /// Total size budget for kept recordings, in MB. Oldest evicted first
+    /// once exceeded -- see `recordings::enforce_cap`.
+    pub max_mb: u64,
+}
+
+impl Default for RetentionConfig {
+    fn default() -> Self {
+        Self { enabled: false, max_mb: 500 }
     }
 }
 
@@ -597,6 +621,45 @@ assets_dir = '  D:\sotto  '
         .unwrap();
         // Trimmed at use, so a stray space in a hand-edited config still works.
         assert_eq!(cfg.assets_dir.trim(), r"D:\sotto");
+    }
+
+    #[test]
+    fn retention_defaults_off_when_the_whole_section_is_missing() {
+        // A config written before retention existed has no [retention]
+        // table at all -- must still load, off, at the documented default
+        // cap, not fail to parse or silently turn itself on.
+        let cfg: Config = toml::from_str(
+            r#"
+hotkey = "ControlRight"
+activation_mode = "toggle"
+injection_mode = "paste"
+"#,
+        )
+        .unwrap();
+        assert!(!cfg.retention.enabled);
+        assert_eq!(cfg.retention.max_mb, 500);
+    }
+
+    #[test]
+    fn retention_round_trips_through_toml() {
+        let cfg: Config = toml::from_str(
+            r#"
+hotkey = "ControlRight"
+activation_mode = "toggle"
+injection_mode = "paste"
+
+[retention]
+enabled = true
+max_mb = 250
+"#,
+        )
+        .unwrap();
+        assert!(cfg.retention.enabled);
+        assert_eq!(cfg.retention.max_mb, 250);
+        let saved = toml::to_string(&cfg).unwrap();
+        let reloaded: Config = toml::from_str(&saved).unwrap();
+        assert!(reloaded.retention.enabled);
+        assert_eq!(reloaded.retention.max_mb, 250);
     }
 }
 
