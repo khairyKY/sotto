@@ -78,6 +78,9 @@ pub struct Controls {
     /// "New line"/"new paragraph" voice commands — live-toggled from Settings,
     /// read by the polisher on every dictation (see `polish.rs`).
     pub formatting_commands: Arc<AtomicBool>,
+    /// "straight" or "curly" — glyphs spoken quote commands produce. Shares
+    /// `formatting_commands`'s toggle, not its own; see `polish.rs`.
+    pub quote_style: Arc<Mutex<String>>,
     /// Default tone instruction for AI polish; empty = off. Same live-editable
     /// shape as `dictionary` — settings writes it, the polisher reads it live.
     pub tone: Arc<Mutex<String>>,
@@ -147,6 +150,7 @@ impl Controls {
             dictionary: Arc::new(Mutex::new(live_dictionary(&cfg.dictionary))),
             replacements_enabled: Arc::new(AtomicBool::new(cfg.replacements_enabled)),
             formatting_commands: Arc::new(AtomicBool::new(cfg.formatting_commands)),
+            quote_style: Arc::new(Mutex::new(cfg.quote_style.clone())),
             tone: Arc::new(Mutex::new(cfg.tone.clone())),
             app_tones: Arc::new(Mutex::new(
                 cfg.app_tones.iter().map(|e| (e.app.clone(), e.tone.clone())).collect(),
@@ -240,6 +244,8 @@ struct SettingsPayload {
     dictionary: Vec<DictEntryDto>,
     replacements_enabled: bool,
     formatting_commands: bool,
+    /// "straight" or "curly" — drives the quote-style segmented control.
+    quote_style: String,
     /// Default tone instruction; "" = off.
     tone: String,
     app_tones: Vec<AppToneDto>,
@@ -351,6 +357,7 @@ fn get_settings(state: tauri::State<'_, AppState>) -> SettingsPayload {
             .collect(),
         replacements_enabled: cfg.replacements_enabled,
         formatting_commands: cfg.formatting_commands,
+        quote_style: c.quote_style.lock().unwrap().clone(),
         tone: c.tone.lock().unwrap().clone(),
         app_tones: c.app_tones.lock().unwrap().iter().map(|(a, t)| AppToneDto { app: a.clone(), tone: t.clone() }).collect(),
         history: c.history.snapshot().into_iter().map(|e| HistoryDto { time: e.time, text: e.text }).collect(),
@@ -504,6 +511,14 @@ fn set_formatting_commands(enabled: bool, state: tauri::State<'_, AppState>) {
     state.controls.formatting_commands.store(enabled, Ordering::Relaxed);
     let mut cfg = state.cfg.lock().unwrap();
     cfg.formatting_commands = enabled;
+    let _ = cfg.save();
+}
+
+#[tauri::command]
+fn set_quote_style(style: String, state: tauri::State<'_, AppState>) {
+    *state.controls.quote_style.lock().unwrap() = style.clone();
+    let mut cfg = state.cfg.lock().unwrap();
+    cfg.quote_style = style;
     let _ = cfg.save();
 }
 
@@ -846,7 +861,7 @@ fn main() -> anyhow::Result<()> {
             get_stats, clear_stats, set_stats_enabled, set_retention_enabled, clear_recordings,
             set_microphone, set_sound_enabled, set_zoom,
             set_replacements_enabled,
-            set_formatting_commands,
+            set_formatting_commands, set_quote_style,
             menu_action,
             assets::assets_status, assets::download_assets
         ])

@@ -119,10 +119,14 @@ impl Polisher {
         // the words "new line" can never get chopped — the command can only
         // ever match what the user actually said. Its own toggle, independent
         // of polish mode: "new paragraph" always means the break, never the
-        // words, so it applies in Off/Rules/Ai alike.
+        // words, so it applies in Off/Rules/Ai alike. Quote commands (F2)
+        // share the same toggle and the same reasoning, and run right after
+        // line breaks so a literal "new line" spoken inside a quoted span
+        // still becomes a real break there too.
         let formatted;
         let raw = if self.controls.formatting_commands.load(Ordering::Relaxed) {
-            formatted = apply_formatting_commands(raw);
+            let style = QuoteStyle::from_config_str(&self.controls.quote_style.lock().unwrap());
+            formatted = apply_quote_commands(&apply_formatting_commands(raw), style);
             formatted.as_str()
         } else {
             raw
@@ -379,6 +383,169 @@ fn collapse_space_around_breaks(text: &str) -> String {
             }
         } else {
             out.push(c);
+        }
+    }
+    out
+}
+
+/// Which quote-mark glyphs spoken quote commands produce. Straight is the
+/// default: it's the one choice that's safe everywhere, including code
+/// editors and terminals, where curly quotes are a syntax error waiting to
+/// happen. Curly is the opt-in for anyone who mostly dictates prose.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum QuoteStyle {
+    Straight,
+    Curly,
+}
+
+impl QuoteStyle {
+    fn from_config_str(s: &str) -> Self {
+        if s.eq_ignore_ascii_case("curly") { QuoteStyle::Curly } else { QuoteStyle::Straight }
+    }
+    fn glyphs(self) -> (&'static str, &'static str) {
+        match self {
+            QuoteStyle::Straight => ("\"", "\""),
+            QuoteStyle::Curly => ("\u{201C}", "\u{201D}"), // “ ”
+        }
+    }
+}
+
+/// Rewrite spoken quote commands (F2) into literal quote-mark glyphs. Two
+/// independent forms, both whole-phrase and case-insensitive:
+/// - "open quote" / "close quote" — two standalone tokens (the Dragon/Apple
+///   convention), each a plain phrase swap via `replace_whole_ci`.
+/// - "quote ... unquote" (also "quote on quote ...", ASR's common rendering
+///   of a doubled "quote, unquote" filler) — wraps the SPAN between the two
+///   in quote marks; see `apply_paired_quote` for the closer-must-exist
+///   guard.
+///
+/// Token form runs first: "open quote" and "close quote" both contain the
+/// bare word "quote", so resolving them before the paired form's scan for a
+/// standalone "quote" keeps the two forms from colliding with each other.
+fn apply_quote_commands(raw: &str, style: QuoteStyle) -> String {
+    let (open, close) = style.glyphs();
+    let text = replace_and_trim_after(raw, "open quote", open);
+    let text = replace_and_trim_before(&text, "close quote", close);
+    apply_paired_quote(&text, open, close)
+}
+
+/// Like `replace_whole_ci`, but also consumes one whitespace character
+/// immediately AFTER the match — "open quote hello" -> `"hello`, not
+/// `" hello`. A quote mark hugs its content; it doesn't float a space away
+/// from it.
+fn replace_and_trim_after(hay: &str, needle: &str, rep: &str) -> String {
+    let mut out = String::new();
+    let mut rest = hay;
+    loop {
+        let Some((start, end)) = find_whole_ci(rest, needle) else {
+            out.push_str(rest);
+            break;
+        };
+        out.push_str(&rest[..start]);
+        out.push_str(rep);
+        let after = &rest[end..];
+        rest = after.strip_prefix(' ').unwrap_or(after);
+    }
+    out
+}
+
+/// Mirror of `replace_and_trim_after`, trimming one whitespace character
+/// immediately BEFORE the match instead.
+fn replace_and_trim_before(hay: &str, needle: &str, rep: &str) -> String {
+    let mut out = String::new();
+    let mut rest = hay;
+    loop {
+        let Some((start, end)) = find_whole_ci(rest, needle) else {
+            out.push_str(rest);
+            break;
+        };
+        let before = &rest[..start];
+        out.push_str(before.strip_suffix(' ').unwrap_or(before));
+        out.push_str(rep);
+        rest = &rest[end..];
+    }
+    out
+}
+
+/// First whole-word, case-insensitive occurrence of `needle` in `hay`, as a
+/// byte range into `hay`. Same boundary rule as `replace_whole_ci` (kept
+/// independent rather than sharing code with it — `replace_whole_ci`'s
+/// left-boundary check relies on scanning the ORIGINAL string with a single
+/// global index, and slicing into it mid-scan would silently break that
+/// check at the slice's own start).
+fn find_whole_ci(hay: &str, needle: &str) -> Option<(usize, usize)> {
+    let hay_lc = hay.to_ascii_lowercase();
+    let needle_lc = needle.to_ascii_lowercase();
+    let hb = hay_lc.as_bytes();
+    let is_word = |b: u8| b.is_ascii_alphanumeric();
+    let mut i = 0;
+    while i <= hay_lc.len() {
+        let start = i + hay_lc[i..].find(&needle_lc)?;
+        let end = start + needle_lc.len();
+        let left_ok = start == 0 || !is_word(hb[start - 1]);
+        let right_ok = end == hb.len() || !is_word(hb[end]);
+        if left_ok && right_ok {
+            return Some((start, end));
+        }
+        let ch_len = hay[start..].chars().next().map_or(1, |c| c.len_utf8());
+        i = start + ch_len;
+    }
+    None
+}
+
+/// Wrap the span between a "quote" trigger and the next "unquote" in
+/// `open_glyph`/`close_glyph`. Only fires when a closer exists LATER in the
+/// same take — a lone "quote" ("a quote from the paper") is ordinary speech
+/// far more often than the start of a dictated pair, so it's left alone
+/// rather than guessed at.
+///
+/// ponytail: a single left-to-right greedy pass — a standalone "quote" that
+/// appears *before* a genuine, separate pair later in the same take gets
+/// wrongly treated as that pair's opener (its "unquote" closer is the only
+/// one found, so everything in between gets wrapped). Sentence-boundary
+/// scoping would fix it; not worth it until Kai actually dictates two
+/// separate quoted spans in one breath.
+fn apply_paired_quote(text: &str, open_glyph: &str, close_glyph: &str) -> String {
+    const OPENERS: &[&str] = &["quote on quote", "quote"]; // longest first
+    let mut out = String::new();
+    let mut rest = text;
+    loop {
+        // Earliest opener match; prefer the longest alias when several start
+        // at the same position (mirrors DictEntry::phrases' longest-first
+        // rule, for the same reason — "quote" is a valid whole-word match
+        // inside "quote on quote" too).
+        let mut best: Option<(usize, usize, usize)> = None; // (start, end, alias_idx)
+        for (idx, opener) in OPENERS.iter().enumerate() {
+            if let Some((start, end)) = find_whole_ci(rest, opener) {
+                let better = match best {
+                    None => true,
+                    Some((bstart, _, bidx)) => start < bstart || (start == bstart && idx < bidx),
+                };
+                if better {
+                    best = Some((start, end, idx));
+                }
+            }
+        }
+        let Some((ostart, oend, _)) = best else {
+            out.push_str(rest);
+            break;
+        };
+        match find_whole_ci(&rest[oend..], "unquote") {
+            Some((cstart_rel, cend_rel)) => {
+                let cstart = oend + cstart_rel;
+                let cend = oend + cend_rel;
+                out.push_str(&rest[..ostart]);
+                out.push_str(open_glyph);
+                out.push_str(rest[oend..cstart].trim());
+                out.push_str(close_glyph);
+                rest = &rest[cend..];
+            }
+            // No closer anywhere after this opener — not a pair. Emit
+            // through the opener as plain text and keep scanning after it.
+            None => {
+                out.push_str(&rest[..oend]);
+                rest = &rest[oend..];
+            }
         }
     }
     out
@@ -662,6 +829,82 @@ mod tests {
         let p = Polisher::new(controls, cfg.llm.clone());
         let out = p.polish("please insert my snippet now");
         assert_eq!(out.text, "please insert here is a new line for you now");
+    }
+
+    // ── F2: voice quote commands ─────────────────────────────────────
+
+    #[test]
+    fn open_close_quote_tokens_hug_their_content() {
+        assert_eq!(
+            apply_quote_commands("she said open quote hello there close quote to me", QuoteStyle::Straight),
+            "she said \"hello there\" to me"
+        );
+    }
+
+    #[test]
+    fn open_close_quote_tokens_are_case_insensitive() {
+        assert_eq!(
+            apply_quote_commands("Open Quote hi Close Quote", QuoteStyle::Straight),
+            "\"hi\""
+        );
+    }
+
+    #[test]
+    fn paired_quote_unquote_wraps_the_span_between() {
+        assert_eq!(
+            apply_quote_commands("he said quote hello there unquote to me", QuoteStyle::Straight),
+            "he said \"hello there\" to me"
+        );
+    }
+
+    #[test]
+    fn quote_on_quote_is_an_alias_for_the_paired_opener() {
+        // ASR's common rendering of a doubled "quote, unquote" filler.
+        assert_eq!(
+            apply_quote_commands("he said quote on quote testing unquote", QuoteStyle::Straight),
+            "he said \"testing\""
+        );
+    }
+
+    #[test]
+    fn a_lone_quote_with_no_closer_is_left_alone() {
+        // The false-positive guard the plan calls out: "quote" without a
+        // later "unquote" is ordinary speech, not a dictated pair.
+        let s = "I found a quote from the paper";
+        assert_eq!(apply_quote_commands(s, QuoteStyle::Straight), s);
+    }
+
+    #[test]
+    fn two_separate_pairs_in_one_take_both_wrap() {
+        assert_eq!(
+            apply_quote_commands("quote a unquote and quote b unquote", QuoteStyle::Straight),
+            "\"a\" and \"b\""
+        );
+    }
+
+    #[test]
+    fn curly_style_uses_curly_glyphs() {
+        assert_eq!(apply_quote_commands("quote hi unquote", QuoteStyle::Curly), "\u{201C}hi\u{201D}");
+    }
+
+    #[test]
+    fn quote_commands_are_inert_when_formatting_toggle_is_off() {
+        let cfg = crate::config::Config::default();
+        let controls = crate::Controls::from_config(&cfg);
+        controls.formatting_commands.store(false, Ordering::Relaxed);
+        controls.polish_mode.store(PolishMode::Off.as_u8(), Ordering::Relaxed);
+        let p = Polisher::new(controls, cfg.llm.clone());
+        assert_eq!(p.polish("quote hello unquote").text, "quote hello unquote");
+    }
+
+    #[test]
+    fn curly_quote_style_setting_reaches_the_full_pipeline() {
+        let cfg = crate::config::Config::default();
+        let controls = crate::Controls::from_config(&cfg);
+        controls.polish_mode.store(PolishMode::Off.as_u8(), Ordering::Relaxed);
+        *controls.quote_style.lock().unwrap() = "curly".to_string();
+        let p = Polisher::new(controls, cfg.llm.clone());
+        assert_eq!(p.polish("quote hi unquote").text, "\u{201C}hi\u{201D}");
     }
 
     #[test]

@@ -1378,6 +1378,7 @@ async function boot() {
   // Settings: segmented controls & fields
   selectSegment($("activation"), s.activation);
   selectSegment($("polish"), s.polish);
+  if ($("quote-style")) selectSegment($("quote-style"), s.quoteStyle || "straight");
   // The theme picker has no UI (theme follows the OS per the design doc), but
   // guard rather than assume: an unguarded null here killed the whole rest of
   // boot() — settings, dictionary, snippets, history — in one TypeError.
@@ -1474,6 +1475,7 @@ async function boot() {
   }
 
   initSegmented($("activation"), (v) => invoke("set_activation", { mode: v }));
+  if ($("quote-style")) initSegmented($("quote-style"), (v) => invoke("set_quote_style", { style: v }));
   initSegmented($("polish"), (v) => { invoke("set_polish", { mode: v }); updateToneDisabled(v); });
   if ($("theme")) initSegmented($("theme"), (v) => {
     applyTheme(v);

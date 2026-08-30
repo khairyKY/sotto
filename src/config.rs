@@ -254,6 +254,11 @@ pub struct Config {
     /// `apply_formatting_commands` for why it applies even when polish is Off.
     #[serde(default = "default_true")]
     pub formatting_commands: bool,
+    /// Glyphs spoken quote commands ("open quote"/"quote ... unquote")
+    /// produce: "straight" (default — safe in code editors and terminals)
+    /// or "curly". Shares `formatting_commands`'s toggle, not its own.
+    #[serde(default = "default_quote_style")]
+    pub quote_style: String,
     /// Transcribe long takes in pieces *while* you're still speaking, so the
     /// wait after you release the key is the last few seconds of audio instead
     /// of all of it. Short takes are never chunked (see `CHUNK_MIN_SAMPLES`).
@@ -322,6 +327,10 @@ fn default_theme() -> String {
     "system".to_string()
 }
 
+fn default_quote_style() -> String {
+    "straight".to_string()
+}
+
 fn default_true() -> bool {
     true
 }
@@ -340,6 +349,7 @@ impl Default for Config {
             dictionary: Vec::new(),
             replacements_enabled: true,
             formatting_commands: true,
+            quote_style: default_quote_style(),
             chunked_transcription: true,
             tone: String::new(),
             app_tones: Vec::new(),

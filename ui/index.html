@@ -457,9 +457,20 @@
                 <div class="toggle-row">
                   <div class="row-label">
                     <div class="label">Voice formatting commands</div>
-                    <div class="sub">Say &ldquo;new line&rdquo; or &ldquo;new paragraph&rdquo; to insert a real line break instead of the words</div>
+                    <div class="sub">Say &ldquo;new line&rdquo;, &ldquo;open quote&rdquo; / &ldquo;close quote&rdquo;, or &ldquo;quote &hellip; unquote&rdquo; to insert real punctuation instead of the words</div>
                   </div>
                   <button class="switch" id="formatting-commands-toggle" role="switch" aria-checked="true"><span class="knob"></span></button>
+                </div>
+                <div class="divider"></div>
+                <div class="settings-row bare">
+                  <div class="row-label">
+                    <div class="label">Quote style</div>
+                    <div class="sub">Straight is safe everywhere, including code and terminals</div>
+                  </div>
+                  <div class="segmented" id="quote-style" data-value="straight">
+                    <button data-value="straight">Straight</button>
+                    <button data-value="curly">Curly</button>
+                  </div>
                 </div>
                 <div class="divider"></div>
                 <div class="toggle-row">
