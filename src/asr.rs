@@ -36,6 +36,19 @@ fn to_language_option(lang: &str) -> Option<String> {
 impl Asr {
     pub fn new() -> Self {
         let cfg = config::Config::load_or_init().unwrap_or_default();
+        // Parakeet ignores `language` entirely (see `transcribe`'s comment),
+        // so a non-"auto" value here is invisible until the day this engine
+        // switches to a Whisper model, which DOES respect it — a landmine
+        // left over from testing a different engine, not a live problem
+        // today. Flag it in the log rather than silently clearing it: it
+        // might be deliberate prep for that future switch.
+        if cfg.asr.model == "parakeet-v3" && cfg.asr.language != "auto" {
+            tracing::warn!(
+                language = %cfg.asr.language,
+                "asr.language is set but the active engine (Parakeet) ignores it — \
+                 it will take effect the moment the engine switches to Whisper"
+            );
+        }
         Self {
             model: None,
             engine: cfg.asr.model,
