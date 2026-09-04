@@ -449,10 +449,10 @@ fn apply_quote_commands(raw: &str, style: QuoteStyle) -> String {
     apply_paired_quote(&text, open, close)
 }
 
-/// Like `replace_whole_ci`, but also consumes one whitespace character
+/// Like `replace_whole_ci`, but also consumes one whitespace/comma character
 /// immediately AFTER the match — "open quote hello" -> `"hello`, not
-/// `" hello`. A quote mark hugs its content; it doesn't float a space away
-/// from it.
+/// `" hello`, and "open quote, hello" (Parakeet punctuating the discourse
+/// marker) -> `"hello`, not `", hello`. A quote mark hugs its content.
 fn replace_and_trim_after(hay: &str, needle: &str, rep: &str) -> String {
     let mut out = String::new();
     let mut rest = hay;
@@ -464,13 +464,13 @@ fn replace_and_trim_after(hay: &str, needle: &str, rep: &str) -> String {
         out.push_str(&rest[..start]);
         out.push_str(rep);
         let after = &rest[end..];
-        rest = after.strip_prefix(' ').unwrap_or(after);
+        rest = after.strip_prefix([' ', ',']).unwrap_or(after).trim_start_matches(' ');
     }
     out
 }
 
-/// Mirror of `replace_and_trim_after`, trimming one whitespace character
-/// immediately BEFORE the match instead.
+/// Mirror of `replace_and_trim_after`, trimming one trailing whitespace/comma
+/// character immediately BEFORE the match instead.
 fn replace_and_trim_before(hay: &str, needle: &str, rep: &str) -> String {
     let mut out = String::new();
     let mut rest = hay;
@@ -479,8 +479,11 @@ fn replace_and_trim_before(hay: &str, needle: &str, rep: &str) -> String {
             out.push_str(rest);
             break;
         };
-        let before = &rest[..start];
-        out.push_str(before.strip_suffix(' ').unwrap_or(before));
+        let mut before = &rest[..start];
+        before = before.strip_suffix(' ').unwrap_or(before);
+        before = before.strip_suffix(',').unwrap_or(before);
+        before = before.strip_suffix(' ').unwrap_or(before);
+        out.push_str(before);
         out.push_str(rep);
         rest = &rest[end..];
     }
@@ -513,18 +516,40 @@ fn find_whole_ci(hay: &str, needle: &str) -> Option<(usize, usize)> {
     None
 }
 
-/// Wrap the span between a "quote" trigger and the next "unquote" in
-/// `open_glyph`/`close_glyph`. Only fires when a closer exists LATER in the
-/// same take — a lone "quote" ("a quote from the paper") is ordinary speech
-/// far more often than the start of a dictated pair, so it's left alone
-/// rather than guessed at.
+/// Trim whitespace AND a leading/trailing comma. Parakeet punctuates a
+/// spoken "quote"/"unquote" used as a discourse marker with a comma of its
+/// own ("and I quote, I am the leader" — the comma is part of saying
+/// "quote", not part of what's quoted), so a plain `.trim()` leaks it into
+/// the span. Real dictation showed this; the hand-typed unit test inputs
+/// never had commas to catch it.
+fn trim_span(s: &str) -> &str {
+    s.trim_matches(|c: char| c.is_whitespace() || c == ',')
+}
+
+/// Wrap the span after a "quote" trigger in `open_glyph`/`close_glyph`.
+/// Closes on the next "unquote" if one is said. Otherwise, ONLY when
+/// "quote" is immediately followed by a comma (Parakeet punctuating the
+/// natural pause of "quote" used as a discourse marker — "and I quote, ..."),
+/// infers the close at the next sentence-ending punctuation, or the end of
+/// the text if there isn't one. Confirmed live: saying "and I quote ...
+/// unquote" isn't how Kai actually talks — twice in a row he said "and I
+/// quote, [sentence]." with no closer at all, so requiring "unquote" alone
+/// left every real attempt untouched.
+///
+/// The comma check is load-bearing, not decoration — an earlier version of
+/// this closed at the next terminal punctuation unconditionally whenever
+/// there was no "unquote", which fires on nearly every sentence eventually
+/// (nearly all of them end with SOME punctuation) and broke the exact case
+/// this function's false-positive guard exists for: "I found a quote from
+/// the paper" flows straight from "quote" into "from" with no pause,
+/// because there it's an ordinary noun, not an introduction — no comma, no
+/// inferred close, left alone, same as before this feature existed.
 ///
 /// ponytail: a single left-to-right greedy pass — a standalone "quote" that
 /// appears *before* a genuine, separate pair later in the same take gets
-/// wrongly treated as that pair's opener (its "unquote" closer is the only
-/// one found, so everything in between gets wrapped). Sentence-boundary
-/// scoping would fix it; not worth it until Kai actually dictates two
-/// separate quoted spans in one breath.
+/// wrongly treated as that pair's opener. Sentence-boundary scoping would
+/// fix it; not worth it until Kai actually dictates two separate quoted
+/// spans in one breath.
 fn apply_paired_quote(text: &str, open_glyph: &str, close_glyph: &str) -> String {
     const OPENERS: &[&str] = &["quote on quote", "quote"]; // longest first
     let mut out = String::new();
@@ -550,23 +575,49 @@ fn apply_paired_quote(text: &str, open_glyph: &str, close_glyph: &str) -> String
             out.push_str(rest);
             break;
         };
-        match find_whole_ci(&rest[oend..], "unquote") {
-            Some((cstart_rel, cend_rel)) => {
-                let cstart = oend + cstart_rel;
-                let cend = oend + cend_rel;
-                out.push_str(&rest[..ostart]);
-                out.push_str(open_glyph);
-                out.push_str(rest[oend..cstart].trim());
-                out.push_str(close_glyph);
-                rest = &rest[cend..];
-            }
-            // No closer anywhere after this opener — not a pair. Emit
-            // through the opener as plain text and keep scanning after it.
-            None => {
-                out.push_str(&rest[..oend]);
-                rest = &rest[oend..];
-            }
+        if let Some((cstart_rel, cend_rel)) = find_whole_ci(&rest[oend..], "unquote") {
+            let cstart = oend + cstart_rel;
+            let cend = oend + cend_rel;
+            out.push_str(&rest[..ostart]);
+            out.push_str(open_glyph);
+            out.push_str(trim_span(&rest[oend..cstart]));
+            out.push_str(close_glyph);
+            // "unquote" can carry the same trailing discourse-marker comma
+            // "quote" does ("...unquote, to me") -- strip ONLY the comma,
+            // not the space after it: unlike the opener/token forms, what
+            // follows "unquote" is the surrounding sentence continuing, not
+            // quoted content, so it keeps its normal word-separating space
+            // ("hello there" + "unquote, to me" -> ...hello there" to me,
+            // not ...hello there"to me).
+            let after = &rest[cend..];
+            rest = after.strip_prefix(',').unwrap_or(after);
+            continue;
         }
+        // No "unquote" said. Only infer a close when "quote" is immediately
+        // followed by a comma — Parakeet punctuating the natural pause of
+        // "quote" used as a discourse marker ("and I quote, ..."), the same
+        // signal `trim_span` already strips. Its ABSENCE is exactly what
+        // marks the false-positive case this guard exists for: "a quote
+        // from the paper" flows straight from "quote" into "from" with no
+        // pause, because there "quote" is an ordinary noun, not an
+        // introduction. Without this check, "close at the next terminal
+        // punctuation" fires on nearly every sentence eventually, since
+        // nearly every sentence ends with one — which is exactly what broke
+        // this guard the first time this was written.
+        if rest[oend..].trim_start_matches(' ').starts_with(',') {
+            let tail = &rest[oend..];
+            let close_at = tail.find(['.', '!', '?']).map(|i| i + 1).unwrap_or(tail.len());
+            out.push_str(&rest[..ostart]);
+            out.push_str(open_glyph);
+            out.push_str(trim_span(&tail[..close_at]));
+            out.push_str(close_glyph);
+            rest = &tail[close_at..];
+            continue;
+        }
+        // Neither signal present — not a pair. Emit the opener as plain
+        // text and keep scanning after it.
+        out.push_str(&rest[..oend]);
+        rest = &rest[oend..];
     }
     out
 }
@@ -607,8 +658,20 @@ fn collapse_stutters<'a>(tokens: &[&'a str]) -> Vec<&'a str> {
         // stutter — commas don't count, since a stutter is often
         // transcribed with a pause comma in between ("the, the store").
         let new_sentence = out.last().is_some_and(|p: &&str| p.ends_with(['.', '!', '?']));
+        // A token that OPENS a quoted span is a hard boundary too, same
+        // idea as new_sentence: "and I <quote>I am the leader..." tokenizes
+        // to "I" then a quote-glued "\"I" (no space between the glyph
+        // `apply_quote_commands` inserts and the word it wraps) — after
+        // `core` strips the leading `"`, that looks identical to a genuine
+        // stutter ("I I"), but it's a real word starting deliberately
+        // quoted material, not a repeat. Checked on the raw token, not
+        // `core`, since the quote glyph is exactly the punctuation `core`
+        // strips away — confirmed live: this silently ate an entire quoted
+        // opening, glyph included, the first time quote commands + stutter
+        // collapse combined on real input.
+        let starts_quoted = tok.starts_with('"') || tok.starts_with('\u{201C}');
         let exempt = LEGIT_DOUBLES.iter().any(|w| w.eq_ignore_ascii_case(core));
-        if !is_numeric && !new_sentence && !exempt {
+        if !is_numeric && !new_sentence && !starts_quoted && !exempt {
             if let Some(prev) = out.last() {
                 let prev_core = prev.trim_matches(|c: char| !c.is_alphanumeric());
                 if !prev_core.is_empty() && prev_core.eq_ignore_ascii_case(core) {
@@ -793,6 +856,33 @@ mod tests {
         assert_eq!(rules("row 1 1 of 2"), "Row 1 1 of 2");
     }
 
+    #[test]
+    fn stutter_collapse_does_not_eat_a_quote_glyph_glued_to_a_repeated_word() {
+        // The real bug, found live: apply_quote_commands glues the opening
+        // glyph directly to the quoted content's first word with no space
+        // ("and I" + quote of "I am the leader..." -> "...and I \"I am...").
+        // tier0's stutter-collapse strips punctuation before comparing
+        // tokens, so "I" then "\"I" looked like a genuine "I I" stutter and
+        // silently deleted the entire quoted opening, glyph included.
+        assert_eq!(
+            tier0("and I \"I am the leader of this group.\" and everyone believed him"),
+            "And I \"I am the leader of this group.\" and everyone believed him"
+        );
+    }
+
+    #[test]
+    fn quote_commands_survive_rules_mode_end_to_end() {
+        // Integration-level regression for the same bug: this exact input,
+        // run through the real pipeline (quote commands, THEN tier0), used
+        // to come out with the whole quoted opening deleted.
+        let cfg = crate::config::Config::default();
+        let controls = crate::Controls::from_config(&cfg);
+        controls.polish_mode.store(PolishMode::Rules.as_u8(), Ordering::Relaxed);
+        let p = Polisher::new(controls, cfg.llm.clone());
+        let out = p.polish("he said, and I quote, I am the leader of this group. and everyone believed him");
+        assert!(out.text.contains("\"I am the leader of this group."), "quote was eaten: {:?}", out.text);
+    }
+
     // ── F1: voice formatting commands ───────────────────────────────
 
     #[test]
@@ -889,9 +979,50 @@ mod tests {
     #[test]
     fn a_lone_quote_with_no_closer_is_left_alone() {
         // The false-positive guard the plan calls out: "quote" without a
-        // later "unquote" is ordinary speech, not a dictated pair.
+        // later "unquote" is ordinary speech, not a dictated pair. No comma
+        // right after "quote" here either -- it flows straight into "from",
+        // the second signal that rules out an inferred close too.
         let s = "I found a quote from the paper";
         assert_eq!(apply_quote_commands(s, QuoteStyle::Straight), s);
+    }
+
+    #[test]
+    fn a_comma_pause_after_quote_infers_the_close_at_the_next_period() {
+        // Kai's real, unprompted usage -- confirmed live, twice in a row:
+        // he never says "unquote". Parakeet punctuates "quote" as a
+        // discourse marker with a comma, which is the signal that lets this
+        // fire without also matching "a quote from the paper" (see the
+        // no-comma test above).
+        // "and I" stays outside the quote -- only the word "quote" itself
+        // becomes the glyph, same as "open quote"/"close quote" only ever
+        // replace the marker phrase, never any introductory words before it.
+        assert_eq!(
+            apply_quote_commands(
+                "he said, and I quote, I am the leader of this group. and everyone believed him",
+                QuoteStyle::Straight
+            ),
+            "he said, and I \"I am the leader of this group.\" and everyone believed him"
+        );
+    }
+
+    #[test]
+    fn a_comma_pause_after_quote_with_no_terminal_punctuation_closes_at_end_of_text() {
+        assert_eq!(
+            apply_quote_commands("she told me, quote, we start Monday", QuoteStyle::Straight),
+            "she told me, \"we start Monday\""
+        );
+    }
+
+    #[test]
+    fn explicit_unquote_still_trims_a_comma_on_either_side() {
+        // The same discourse-marker comma Parakeet adds around "quote" gets
+        // added around "unquote" too -- confirmed the hand-typed unit tests
+        // above never had commas to catch this, since they were typed
+        // directly rather than run through real ASR punctuation.
+        assert_eq!(
+            apply_quote_commands("he said, quote, hello there, unquote, to me", QuoteStyle::Straight),
+            "he said, \"hello there\" to me"
+        );
     }
 
     #[test]
