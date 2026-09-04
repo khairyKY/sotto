@@ -396,6 +396,52 @@ body {
   color: var(--mm-text);
 }
 .search-input::placeholder { color: var(--mm-muted-3); }
+
+/* ── pronunciation trainer ──────────────────── */
+.pron-listen-card { padding: 14px; margin-bottom: 16px; }
+.pron-listen-row { display: flex; align-items: center; gap: 12px; margin-top: 12px; }
+.pron-status { font: 500 12px "Hanken Grotesk"; color: var(--mm-muted-3); }
+.pron-status.active { color: var(--mm-accent-ink); }
+.pron-samples-list { display: flex; flex-direction: column; gap: 8px; margin-bottom: 4px; }
+.pron-sample-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: var(--mm-fg);
+  border-radius: 10px;
+  padding: 10px 12px;
+  box-shadow: var(--mm-raised-sm);
+  font: 500 13px "Hanken Grotesk";
+  animation: pron-sample-in 0.2s ease-out;
+}
+@keyframes pron-sample-in {
+  from { opacity: 0; transform: translateY(-4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.pron-sample-heard { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pron-sample-heard b { color: var(--mm-text); }
+.pron-sample-match { color: var(--mm-accent-ink); flex: none; }
+.pron-trained-container { padding: 4px; }
+.pron-trained-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+}
+.pron-trained-row + .pron-trained-row { border-top: 1px solid var(--mm-divider); }
+.pron-trained-word { font: 600 13px "Hanken Grotesk"; color: var(--mm-text); flex: none; width: 110px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pron-trained-heard { flex: 1; min-width: 0; font: 400 12px "Hanken Grotesk"; color: var(--mm-muted-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* Strength meter: fills toward full as more distinct mishearings are
+   captured (capped visually at 5 -- Kai's reference was a phone's
+   fingerprint-enrollment fill animation, kept here as a simple width
+   transition rather than a whole animation system for one gimmick). */
+.pron-strength { width: 60px; height: 6px; border-radius: 3px; background: var(--mm-border); flex: none; overflow: hidden; }
+.pron-strength-fill { height: 100%; background: var(--mm-accent); border-radius: 3px; transition: width 0.4s cubic-bezier(0.34, 1.56, 0.64, 1); }
+.pron-strength-fill.pron-level-up { animation: pron-pulse 0.5s ease-out; }
+@keyframes pron-pulse {
+  0% { box-shadow: 0 0 0 0 var(--mm-accent-glow, rgba(142,116,208,0.5)); }
+  100% { box-shadow: 0 0 0 6px rgba(142,116,208,0); }
+}
 .dict-entries { display: flex; flex-direction: column; gap: 8px; margin-bottom: 11px; }
 .dict-row {
   display: flex;

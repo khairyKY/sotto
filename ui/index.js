@@ -72,6 +72,7 @@ function navigate(page) {
   if (page === 'insights') loadInsights();
   if (page === 'history') loadHistory();
   if (page === 'home') loadHome();
+  if (page === 'pronunciation') loadPronunciation();
 }
 document.querySelectorAll('.nav-item').forEach(item => {
   item.onclick = (e) => { e.preventDefault(); navigate(item.dataset.page); };
@@ -908,6 +909,96 @@ function renderHistoryPage(entries) {
 }
 function loadHistory() { renderHistoryPage(historyEntries); }
 
+// ── pronunciation trainer ──
+let pronVocabulary = []; // [{word, heardAs: [...]}] from settings, refreshed after every correction
+let pronListening = null; // the word currently armed via set_pronunciation_target, or null
+
+// Strength is deliberately just "how many distinct mishearings have we
+// captured" -- capped at 5 for the fill bar. Kai's reference was a phone's
+// fingerprint-enrollment animation; this is the same idea at one line of
+// CSS transition, not a whole animation system for one gimmick.
+const PRON_STRENGTH_CAP = 5;
+
+function renderTrainedWords() {
+  const host = $("pron-trained-list");
+  host.innerHTML = "";
+  if (!pronVocabulary.length) {
+    host.innerHTML = '<div class="hist-empty">No words trained yet</div>';
+    return;
+  }
+  pronVocabulary.forEach(v => {
+    const pct = Math.min(100, (v.heardAs.length / PRON_STRENGTH_CAP) * 100);
+    const row = document.createElement("div");
+    row.className = "pron-trained-row";
+    row.innerHTML = `
+      <span class="pron-trained-word">${escapeHtml(v.word)}</span>
+      <span class="pron-trained-heard">${v.heardAs.length ? "heard as: " + escapeHtml(v.heardAs.join(", ")) : "no corrections yet"}</span>
+      <span class="pron-strength"><span class="pron-strength-fill" style="width:${pct}%"></span></span>
+    `;
+    host.appendChild(row);
+  });
+}
+
+function loadPronunciation() {
+  renderTrainedWords();
+}
+
+function pronSetListening(word) {
+  pronListening = word;
+  const status = $("pron-status");
+  const btn = $("pron-listen-btn");
+  if (word) {
+    status.textContent = `Listening — press your hotkey and say "${word}"`;
+    status.classList.add("active");
+    btn.textContent = "Stop listening";
+    $("pron-samples-list").innerHTML = "";
+  } else {
+    status.textContent = "";
+    status.classList.remove("active");
+    btn.textContent = "Listen for it";
+  }
+}
+
+function pronAddSampleRow(word, heard, matched) {
+  const row = document.createElement("div");
+  row.className = "pron-sample-row";
+  if (matched) {
+    row.innerHTML = `<span class="pron-sample-heard">Heard: <b>${escapeHtml(heard)}</b></span><span class="pron-sample-match" title="Matched">&#10003;</span>`;
+  } else {
+    row.innerHTML = `<span class="pron-sample-heard">Heard: <b>${escapeHtml(heard || "(nothing)")}</b></span><button class="btn btn-ghost" id="pron-add-correction">Add correction</button>`;
+    row.querySelector("#pron-add-correction").onclick = async () => {
+      await invoke("add_pronunciation_correction", { word, heard });
+      const s = await getSettings();
+      pronVocabulary = (s.vocabulary || []).map(v => ({ word: v.word, heardAs: v.heardAs || [] }));
+      renderTrainedWords();
+      // Flash the strength bar for the word that just leveled up.
+      document.querySelectorAll("#pron-trained-list .pron-trained-row").forEach(r => {
+        if (r.querySelector(".pron-trained-word")?.textContent === word) {
+          const bar = r.querySelector(".pron-strength-fill");
+          bar?.classList.add("pron-level-up");
+          setTimeout(() => bar?.classList.remove("pron-level-up"), 500);
+        }
+      });
+      row.querySelector("#pron-add-correction").replaceWith(document.createTextNode(" — added"));
+    };
+  }
+  $("pron-samples-list").prepend(row);
+}
+
+if ($("pron-listen-btn")) {
+  $("pron-listen-btn").onclick = () => {
+    if (pronListening) {
+      invoke("set_pronunciation_target", { word: null });
+      pronSetListening(null);
+      return;
+    }
+    const word = $("pron-word-input").value.trim();
+    if (!word) return;
+    invoke("set_pronunciation_target", { word });
+    pronSetListening(word);
+  };
+}
+
 // ── settings page wiring ──
 // `selected` (which engine set_asr_model chose) and `state` (installed vs.
 // download, i.e. is it actually on disk) are independent — a model can be
@@ -1507,12 +1598,21 @@ async function boot() {
   historyEntries = s.history || [];
   loadHistory();
 
+  // Pronunciation trainer data
+  pronVocabulary = (s.vocabulary || []).map(v => ({ word: v.word, heardAs: v.heardAs || [] }));
+  renderTrainedWords();
+
   // Live event listeners
   if (hasTauri && T.event) {
     T.event.listen("history-updated", (e) => {
       historyEntries = e.payload || [];
       renderHistoryPage(historyEntries);
       renderRecent(historyEntries);
+    });
+    T.event.listen("pronunciation-sample", (e) => {
+      const { word, heard, matched } = e.payload || {};
+      if (!pronListening || word !== pronListening) return;
+      pronAddSampleRow(word, heard, matched);
     });
     T.event.listen("navigate", (e) => {
       const page = e.payload;

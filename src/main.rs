@@ -87,6 +87,13 @@ pub struct Controls {
     /// Proper nouns/jargon hinted to the AI-tier system prompt — see
     /// `config::PolishConfig::vocabulary`.
     pub vocabulary: Arc<Mutex<Vec<VocabEntry>>>,
+    /// The Pronunciation Trainer's live target word, or `None` when the
+    /// panel isn't open/listening. Deliberately NOT persisted to config —
+    /// it's a live-session UI state, not a setting. When set, the next
+    /// dictation short-circuits in `process_take` before polish/injection:
+    /// a training utterance is never meant to land in a real document, it's
+    /// just "what did the engine hear", compared against this word.
+    pub training_word: Arc<Mutex<Option<String>>>,
     /// Per-app tone overrides: (app name, tone instruction) pairs.
     pub app_tones: Arc<Mutex<Vec<(String, String)>>>,
     pub history: history::History,
@@ -156,6 +163,7 @@ impl Controls {
             quote_style: Arc::new(Mutex::new(cfg.quote_style.clone())),
             tone: Arc::new(Mutex::new(cfg.tone.clone())),
             vocabulary: Arc::new(Mutex::new(cfg.polish.vocabulary.clone())),
+            training_word: Arc::new(Mutex::new(None)),
             app_tones: Arc::new(Mutex::new(
                 cfg.app_tones.iter().map(|e| (e.app.clone(), e.tone.clone())).collect(),
             )),
@@ -213,6 +221,21 @@ struct HistoryDto {
     time: String,
     text: String,
 }
+/// One Pronunciation Trainer attempt, emitted as a "pronunciation-sample"
+/// event — see `process_take`'s training short-circuit.
+#[derive(serde::Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct PronunciationSampleDto {
+    word: String,
+    heard: String,
+    matched: bool,
+}
+#[derive(serde::Serialize, serde::Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct VocabEntryDto {
+    word: String,
+    heard_as: Vec<String>,
+}
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ModelDto {
@@ -250,6 +273,9 @@ struct SettingsPayload {
     formatting_commands: bool,
     /// "straight" or "curly" — drives the quote-style segmented control.
     quote_style: String,
+    /// AI-polish vocabulary hints — also the Pronunciation Trainer's list of
+    /// already-trained words and what's been heard for each.
+    vocabulary: Vec<VocabEntryDto>,
     /// Default tone instruction; "" = off.
     tone: String,
     app_tones: Vec<AppToneDto>,
@@ -362,6 +388,13 @@ fn get_settings(state: tauri::State<'_, AppState>) -> SettingsPayload {
         replacements_enabled: cfg.replacements_enabled,
         formatting_commands: cfg.formatting_commands,
         quote_style: c.quote_style.lock().unwrap().clone(),
+        vocabulary: c
+            .vocabulary
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|e| VocabEntryDto { word: e.word.clone(), heard_as: e.heard_as.clone() })
+            .collect(),
         tone: c.tone.lock().unwrap().clone(),
         app_tones: c.app_tones.lock().unwrap().iter().map(|(a, t)| AppToneDto { app: a.clone(), tone: t.clone() }).collect(),
         history: c.history.snapshot().into_iter().map(|e| HistoryDto { time: e.time, text: e.text }).collect(),
@@ -523,6 +556,60 @@ fn set_quote_style(style: String, state: tauri::State<'_, AppState>) {
     *state.controls.quote_style.lock().unwrap() = style.clone();
     let mut cfg = state.cfg.lock().unwrap();
     cfg.quote_style = style;
+    let _ = cfg.save();
+}
+
+/// Pronunciation Trainer: arm/disarm listening for `word`. The next
+/// dictation (or `None` to stop listening) short-circuits in
+/// `process_take` — see its training-word check — reporting what was heard
+/// instead of polishing/injecting it.
+#[tauri::command]
+fn set_pronunciation_target(word: Option<String>, state: tauri::State<'_, AppState>) {
+    *state.controls.training_word.lock().unwrap() = word.filter(|w| !w.trim().is_empty());
+}
+
+/// Pronunciation Trainer's "add this correction" action. Writes BOTH
+/// layers this session's own testing showed are needed: `heard` joins
+/// `word`'s AI-polish vocabulary hint (works when the mishearing is close
+/// enough for the model to bridge, e.g. "clawed" -> "Claude"), AND becomes
+/// a deterministic Word-kind dictionary entry (works regardless of polish
+/// mode, and is the only reliable fix for a mishearing too far from the
+/// target for the LLM layer — e.g. "the German ICLI" -> "the Gemini CLI",
+/// confirmed in this same session). Skips the dictionary entry if an
+/// existing one already covers this exact phrase, so retraining the same
+/// mishearing twice doesn't pile up duplicates.
+#[tauri::command]
+fn add_pronunciation_correction(word: String, heard: String, state: tauri::State<'_, AppState>) {
+    let word = word.trim().to_string();
+    let heard = heard.trim().to_string();
+    if word.is_empty() || heard.is_empty() {
+        return;
+    }
+    let mut cfg = state.cfg.lock().unwrap();
+
+    match cfg.polish.vocabulary.iter_mut().find(|e| e.word.eq_ignore_ascii_case(&word)) {
+        Some(entry) => {
+            if !entry.heard_as.iter().any(|h| h.eq_ignore_ascii_case(&heard)) {
+                entry.heard_as.push(heard.clone());
+            }
+        }
+        None => cfg.polish.vocabulary.push(VocabEntry { word: word.clone(), heard_as: vec![heard.clone()] }),
+    }
+    *state.controls.vocabulary.lock().unwrap() = cfg.polish.vocabulary.clone();
+
+    let already_covered =
+        cfg.dictionary.iter().any(|e| e.enabled && e.phrases().iter().any(|p| p.eq_ignore_ascii_case(&heard)));
+    if !already_covered {
+        cfg.dictionary.push(DictEntry {
+            spoken: heard,
+            replacement: word,
+            aliases: vec![],
+            enabled: true,
+            kind: Some(EntryKind::Word),
+        });
+        *state.controls.dictionary.lock().unwrap() = live_dictionary(&cfg.dictionary);
+    }
+
     let _ = cfg.save();
 }
 
@@ -865,7 +952,7 @@ fn main() -> anyhow::Result<()> {
             get_stats, clear_stats, set_stats_enabled, set_retention_enabled, clear_recordings,
             set_microphone, set_sound_enabled, set_zoom,
             set_replacements_enabled,
-            set_formatting_commands, set_quote_style,
+            set_formatting_commands, set_quote_style, set_pronunciation_target, add_pronunciation_correction,
             menu_action,
             assets::assets_status, assets::download_assets
         ])
@@ -1263,6 +1350,7 @@ fn spawn_pipeline(
     let cancelled = controls.cancelled.clone();
     let stats_enabled = controls.stats_enabled.clone();
     let retention_enabled = controls.retention_enabled.clone();
+    let training_word = controls.training_word.clone();
     let microphone = controls.microphone.clone();
     let sound_enabled = controls.sound_enabled.clone();
     let take_info = controls.take_info.clone();
@@ -1277,6 +1365,7 @@ fn spawn_pipeline(
         let cancelled = cancelled.clone();
         let stats_enabled = stats_enabled.clone();
         let retention_enabled = retention_enabled.clone();
+        let training_word = training_word.clone();
         std::thread::spawn(move || {
             let mut asr = asr::Asr::new();
             // Warm the ASR model before serving work, so the first dictation
@@ -1332,7 +1421,7 @@ fn spawn_pipeline(
                         }
                         process_take(
                             &app, &mut asr, &polisher, &history, &suppressed, &cancelled,
-                            &listening, injection_mode, &stats_enabled, &retention_enabled, take, &mut stash,
+                            &listening, injection_mode, &stats_enabled, &retention_enabled, &training_word, take, &mut stash,
                         );
                         publish_take(&app, &take_info, &stash);
                     }
@@ -1353,7 +1442,7 @@ fn spawn_pipeline(
                             tracing::info!(has_text = take.raw_text.is_some(), "retrying last dictation");
                             process_take(
                                 &app, &mut asr, &polisher, &history, &suppressed, &cancelled,
-                                &listening, injection_mode, &stats_enabled, &retention_enabled, take, &mut stash,
+                                &listening, injection_mode, &stats_enabled, &retention_enabled, &training_word, take, &mut stash,
                             );
                         } else {
                             tracing::info!("retry requested but nothing stashed");
@@ -1735,6 +1824,7 @@ fn process_take(
     injection_mode: InjectionMode,
     stats_enabled: &Arc<AtomicBool>,
     retention_enabled: &Arc<AtomicBool>,
+    training_word: &Arc<Mutex<Option<String>>>,
     mut take: Take,
     stash: &mut Option<Take>,
 ) {
@@ -1796,6 +1886,24 @@ fn process_take(
         record_outcome(&take, stats_enabled, "error");
         take.reason = "Didn't catch any speech";
         *stash = Some(take);
+        return;
+    }
+
+    // Pronunciation Trainer short-circuit: a training utterance is never
+    // meant to land in a real document, so it skips polish/injection/
+    // history/stats entirely and just reports what the ASR engine actually
+    // heard, raw, compared against the target word. ponytail: a training
+    // attempt that comes back empty ("Didn't catch any speech", above)
+    // still falls through as a normal failed take rather than reporting
+    // into the panel too — the user just tries again; not worth a second
+    // short-circuit point for a case the overlay's error state already
+    // covers.
+    if let Some(target) = training_word.lock().unwrap().clone() {
+        let heard = raw.trim().to_string();
+        let matched = heard.eq_ignore_ascii_case(target.trim());
+        let _ = app.emit("pronunciation-sample", PronunciationSampleDto { word: target, heard, matched });
+        emit_state(app, "done");
+        *stash = None;
         return;
     }
 
