@@ -136,6 +136,46 @@ pub fn index_of(name: &str) -> usize {
         })
 }
 
+/// Toggle-mode's press/release state machine, split out from `run_listener`
+/// so the repeat-guard is unit-testable without a real OS hook (same reason
+/// `main.rs`'s `anchor_xy`/`chunk_cut` are split from their callers).
+///
+/// Only a genuine down-then-up transition flips `is_active` — not every
+/// `pressed` event. Windows repeats `KeyPress` for every OS auto-repeat tick
+/// while a key stays down (confirmed: rdev's low-level hook maps
+/// `WM_KEYDOWN` straight to `KeyPress`, no repeat filtering), so without this
+/// guard, holding the bound key even slightly past the repeat delay flipped
+/// `is_active` several times before the matching release — whether Stop
+/// actually landed then depended on the parity of however many repeats
+/// fired, which is exactly the "sometimes I need to press it twice" bug this
+/// fixes. Mirrors Hold mode's existing `!is_held` guard, which was already
+/// immune since it only reacts to `pressed && !is_held`.
+///
+/// Returns the new `(is_down, is_active)` state and the event to send, if
+/// any.
+fn toggle_step(
+    pressed: bool,
+    is_down: bool,
+    is_active: bool,
+    paused: bool,
+) -> (bool, bool, Option<DictationEvent>) {
+    if !pressed {
+        return (false, is_active, None); // release: just clear is_down
+    }
+    if is_down {
+        return (is_down, is_active, None); // OS auto-repeat while held — not a new press
+    }
+    if !is_active && paused {
+        // A genuine press, but pausing blocks *starting* a new dictation —
+        // still record that the key is down, or the eventual release would
+        // leave is_down stuck true and swallow the next real press.
+        return (true, is_active, None);
+    }
+    let new_active = !is_active;
+    let ev = Some(if new_active { DictationEvent::Start } else { DictationEvent::Stop });
+    (true, new_active, ev)
+}
+
 /// Blocks the calling thread forever, listening system-wide for the configured
 /// hotkey and emitting `DictationEvent`s on `tx`. Must run on its own
 /// dedicated OS thread — rdev owns the thread it's called from on Windows.
@@ -156,6 +196,7 @@ pub fn run_listener(
 ) {
     let mut is_held = false;
     let mut is_active = false; // toggle-mode recording state
+    let mut is_down = false; // toggle-mode: is the bound key *currently* down
 
     let callback = move |event: rdev::Event| {
         if suppressed.load(Ordering::SeqCst) {
@@ -211,17 +252,12 @@ pub fn run_listener(
                 }
             }
             ActivationMode::Toggle => {
-                // Only react on the press edge; ignore the matching release.
-                if pressed {
-                    if !is_active && paused.load(Ordering::Relaxed) {
-                        return;
-                    }
-                    is_active = !is_active;
-                    let _ = tx.send(if is_active {
-                        DictationEvent::Start
-                    } else {
-                        DictationEvent::Stop
-                    });
+                let (new_down, new_active, ev) =
+                    toggle_step(pressed, is_down, is_active, paused.load(Ordering::Relaxed));
+                is_down = new_down;
+                is_active = new_active;
+                if let Some(ev) = ev {
+                    let _ = tx.send(ev);
                 }
             }
         }
@@ -229,5 +265,70 @@ pub fn run_listener(
 
     if let Err(err) = listen(callback) {
         tracing::error!(?err, "rdev global hotkey listener stopped unexpectedly");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_clean_press_release_toggles_once() {
+        let (down, active, ev) = toggle_step(true, false, false, false);
+        assert!(down);
+        assert!(active);
+        assert_eq!(ev, Some(DictationEvent::Start));
+
+        let (down, active, ev) = toggle_step(false, down, active, false);
+        assert!(!down);
+        assert!(active); // release never flips is_active, only clears is_down
+        assert_eq!(ev, None);
+
+        let (down, active, ev) = toggle_step(true, down, active, false);
+        assert!(down);
+        assert!(!active);
+        assert_eq!(ev, Some(DictationEvent::Stop));
+    }
+
+    #[test]
+    fn os_auto_repeat_while_held_does_not_re_toggle() {
+        // The actual bug: a held key firing 3 raw KeyPress events (one real
+        // + two OS repeats) before the matching release must still toggle
+        // exactly once, not three times.
+        let (down, active, ev) = toggle_step(true, false, false, false);
+        assert_eq!((down, active, ev), (true, true, Some(DictationEvent::Start)));
+
+        let (down, active, ev) = toggle_step(true, down, active, false); // repeat #1
+        assert_eq!((down, active, ev), (true, true, None));
+        let (down, active, ev) = toggle_step(true, down, active, false); // repeat #2
+        assert_eq!((down, active, ev), (true, true, None));
+
+        let (down, active, ev) = toggle_step(false, down, active, false); // real release
+        assert_eq!((down, active, ev), (false, true, None));
+    }
+
+    #[test]
+    fn release_with_no_prior_press_is_a_no_op() {
+        assert_eq!(toggle_step(false, false, false, false), (false, false, None));
+    }
+
+    #[test]
+    fn paused_blocks_starting_but_still_tracks_the_key_as_down() {
+        // Regression guard for the stuck-is_down trap: if the paused branch
+        // didn't record is_down, the matching release would land on a
+        // "was never down" state, and a later un-paused press would be
+        // treated as a repeat of a press that never happened.
+        let (down, active, ev) = toggle_step(true, false, false, true);
+        assert_eq!((down, active, ev), (true, false, None));
+        let (down, active, ev) = toggle_step(false, down, active, true);
+        assert_eq!((down, active, ev), (false, false, None));
+    }
+
+    #[test]
+    fn paused_does_not_block_stopping_an_already_active_dictation() {
+        // "Pausing only blocks *starting* a new dictation" — an in-flight
+        // recording (is_active already true) must still be stoppable.
+        let (down, active, ev) = toggle_step(true, false, true, true);
+        assert_eq!((down, active, ev), (true, false, Some(DictationEvent::Stop)));
     }
 }
