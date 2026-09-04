@@ -15,7 +15,7 @@
 //!   Wispr-Flow-style rewriting. Not wired yet (Phase 2b); the seam is here and
 //!   currently falls back to Tier 0 so behavior is already correct.
 
-use crate::config::{EntryKind, LlmConfig, PolishMode};
+use crate::config::{EntryKind, LlmConfig, PolishMode, VocabEntry};
 use crate::llm::Llm;
 use crate::Controls;
 use harper_core::linting::{Lint, LintGroup, LintKind, Linter};
@@ -236,8 +236,9 @@ impl Polisher {
         }
         let Some(llm) = &self.llm else { return rules };
 
+        let vocabulary = vocabulary_clause(&self.controls.vocabulary.lock().unwrap());
         let t = std::time::Instant::now();
-        match llm.polish(&rules, tone) {
+        match llm.polish(&rules, tone, &vocabulary) {
             Ok(text) if !text.trim().is_empty() => {
                 tracing::info!(llm_ms = t.elapsed().as_millis(), "AI polish applied");
                 text
@@ -317,6 +318,25 @@ pub struct PolishResult {
 
 fn word_count(s: &str) -> usize {
     s.split_whitespace().count()
+}
+
+/// Build the LLM vocabulary clause: "Word (heard as a, b, c), Word2, ..."
+/// for each configured entry, skipping any with an empty `word`. An entry
+/// with no `heard_as` still names the word alone — less reliable per the
+/// note on `PolishConfig::vocabulary`, but still better than nothing.
+fn vocabulary_clause(entries: &[VocabEntry]) -> String {
+    entries
+        .iter()
+        .filter(|e| !e.word.trim().is_empty())
+        .map(|e| {
+            if e.heard_as.is_empty() {
+                e.word.clone()
+            } else {
+                format!("{} (heard as {})", e.word, e.heard_as.join(", "))
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// How many words differ between `a` and `b`, as `max(len) - LCS` over
@@ -1057,6 +1077,22 @@ mod tests {
         *controls.app_tones.lock().unwrap() =
             app_tones.iter().map(|(a, t)| (a.to_string(), t.to_string())).collect();
         Polisher::new(controls, cfg.llm.clone())
+    }
+
+    #[test]
+    fn vocabulary_clause_names_heard_as_variants() {
+        let entries = vec![
+            VocabEntry { word: "Claude".into(), heard_as: vec!["clawed".into(), "code".into()] },
+            VocabEntry { word: "Sotto".into(), heard_as: vec![] },
+        ];
+        assert_eq!(vocabulary_clause(&entries), "Claude (heard as clawed, code), Sotto");
+    }
+
+    #[test]
+    fn vocabulary_clause_skips_blank_entries_and_empty_list_is_empty_string() {
+        let entries = vec![VocabEntry { word: "  ".into(), heard_as: vec![] }];
+        assert_eq!(vocabulary_clause(&entries), "");
+        assert_eq!(vocabulary_clause(&[]), "");
     }
 
     #[test]

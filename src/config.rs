@@ -161,6 +161,19 @@ pub struct PolishConfig {
     /// `mode = ai`). Shorter clips stay on the instant rules tier — the LLM
     /// round-trip isn't worth it for a few words.
     pub ai_min_words: usize,
+    /// Proper nouns / jargon to hint the LLM toward when the transcript is
+    /// close but not exact — e.g. Parakeet mishearing "Claude" as "clawed"
+    /// or "code", which grammar cleanup alone can't fix since it isn't a
+    /// grammar problem. AI tier only; empty (the default) leaves the system
+    /// prompt byte-identical to before this existed. See `llm::system_prompt`.
+    ///
+    /// `heard_as` matters, not just `word`: measured against the real
+    /// sidecar model (Qwen2.5 1.5B), a bare name list ("prefer this
+    /// spelling: Claude, ...") left "clawed"/"code" untouched every time —
+    /// a model this small needs the concrete mishearing spelled out to
+    /// reliably act on it, not just the correct target.
+    #[serde(default)]
+    pub vocabulary: Vec<VocabEntry>,
 }
 
 impl Default for PolishConfig {
@@ -168,8 +181,20 @@ impl Default for PolishConfig {
         Self {
             mode: PolishMode::Rules,
             ai_min_words: 18,
+            vocabulary: Vec::new(),
         }
     }
+}
+
+/// One entry in `PolishConfig::vocabulary`. `heard_as` is optional (an empty
+/// list still names `word` in the prompt clause, just without concrete
+/// mishearing examples) but is what actually makes a correction reliable —
+/// see the comment on `vocabulary` above.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct VocabEntry {
+    pub word: String,
+    #[serde(default)]
+    pub heard_as: Vec<String>,
 }
 
 /// Tunables for the Tier 1 llama.cpp sidecar. Model and executable *paths* are

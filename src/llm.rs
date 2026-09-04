@@ -39,17 +39,68 @@ Arabic with English words), keep each word in the language it was spoken and \
 add the right punctuation for that script. Preserve existing line breaks. \
 Reply with ONLY the cleaned text, no preamble, no quotes.";
 
-/// Append the resolved tone as one extra clause. `tone` is already a short
-/// instruction sentence (a frontend preset or free-typed text), so this is
-/// just a space-join — no extra wording to protect the latency budget above.
-/// Empty tone (off, or no resolution matched) leaves the prompt untouched.
-fn system_prompt(tone: &str) -> String {
+/// Append the resolved tone and vocabulary clause as extra sentences. `tone`
+/// is already a short instruction sentence (a frontend preset or free-typed
+/// text), so this is just a space-join — no extra wording to protect the
+/// latency budget above. Both empty (the default) leaves the prompt
+/// byte-identical to before either existed.
+///
+/// `vocabulary_clause` is a fully-built sentence naming each word AND its
+/// known mishearings — e.g. "Claude (heard as clawed, code, clod), ..." —
+/// built by the caller from `config::PolishConfig::vocabulary`. The
+/// mishearings matter: measured against the real sidecar model, naming only
+/// the correct spelling ("prefer this exact spelling: Claude") left
+/// "clawed"/"code" untouched every time. See `request_with_timeout` for the
+/// other half of what makes this reliable — a worked example, not just a
+/// rule.
+fn system_prompt(tone: &str, vocabulary_clause: &str) -> String {
+    let mut prompt = SYSTEM_PROMPT.to_string();
     let tone = tone.trim();
-    if tone.is_empty() {
-        SYSTEM_PROMPT.to_string()
-    } else {
-        format!("{SYSTEM_PROMPT} {tone}")
+    if !tone.is_empty() {
+        prompt.push(' ');
+        prompt.push_str(tone);
     }
+    let vocabulary_clause = vocabulary_clause.trim();
+    if !vocabulary_clause.is_empty() {
+        prompt.push_str(&format!(
+            " The speaker often says one of these words, and the speech recognizer \
+             sometimes mishears it as a similar-sounding word: {vocabulary_clause}. If the \
+             transcript contains a mishearing of one of these, correct it back to the exact \
+             word."
+        ));
+    }
+    prompt
+}
+
+/// A worked example of correcting a misheard name, injected as real
+/// conversation turns (not described in the system prompt) whenever the
+/// vocabulary clause is non-empty. This is the piece that actually makes
+/// the correction reliable — measured against the real sidecar model
+/// (Qwen2.5 1.5B), *describing* the rule ("clawed means Claude, always fix
+/// it") left every test case untouched; *showing* one before/after pair
+/// fixed it, and correctly generalized to entries with no dedicated example
+/// of their own (a separate "High's flaw" -> "Kai's Flow" case, never
+/// demonstrated here, still got corrected once this example was in
+/// context). Deliberately fixed and generic — not built from the user's own
+/// `vocabulary` list, which usually won't contain "Claude" — because it's
+/// teaching the model a *pattern* to apply to whatever the list actually
+/// contains, not a specific substitution.
+///
+/// The second pair extends the lesson to "code" — an ordinary word that's
+/// ALSO one of Claude's real mishearings, unlike "clawed" which never means
+/// anything else. Confirmed the model doesn't just start correcting every
+/// "code" it sees: "I need to write some code for this project before the
+/// deadline" round-trips untouched with this exact example set in context,
+/// same as it does with only the first pair — the model already uses
+/// sentence context to judge "code" case by case, this just shows it what
+/// the OTHER case looks like.
+fn vocab_correction_example() -> [Message; 4] {
+    [
+        Message { role: "user", content: "clawed is really helpful today".to_string() },
+        Message { role: "assistant", content: "Claude is really helpful today.".to_string() },
+        Message { role: "user", content: "can you ask code to fix this for me".to_string() },
+        Message { role: "assistant", content: "Can you ask Claude to fix this for me?".to_string() },
+    ]
 }
 
 struct Inner {
@@ -112,7 +163,7 @@ impl Llm {
     /// Rewrite `raw` via the LLM, optionally re-voiced per `tone` (an
     /// instruction sentence, or "" for none). Returns `Err` on any failure so
     /// the caller can fall back to rules-based cleanup.
-    pub fn polish(&self, raw: &str, tone: &str) -> Result<String> {
+    pub fn polish(&self, raw: &str, tone: &str, vocabulary: &str) -> Result<String> {
         {
             let mut g = self.inner.lock().unwrap();
             self.ensure_spawned(&mut g)?;
@@ -131,7 +182,7 @@ impl Llm {
         // is free for English and only prevents a real cut-off for Arabic.
         let words = raw.split_whitespace().count() as u32;
         let max_tokens = (words * 4 + 24).min(self.cfg.max_tokens);
-        let out = self.request_with_timeout(raw, max_tokens, tone)?;
+        let out = self.request_with_timeout(raw, max_tokens, tone, vocabulary)?;
 
         self.inner.lock().unwrap().last_used = Instant::now();
         Ok(clean_output(&out))
@@ -199,13 +250,15 @@ impl Llm {
 
     /// POST the chat completion, bounding it with a hard wall-clock timeout by
     /// running the (blocking) request on a scratch thread.
-    fn request_with_timeout(&self, raw: &str, max_tokens: u32, tone: &str) -> Result<String> {
+    fn request_with_timeout(&self, raw: &str, max_tokens: u32, tone: &str, vocabulary: &str) -> Result<String> {
         let url = format!("http://127.0.0.1:{}/v1/chat/completions", self.cfg.port);
+        let mut messages = vec![Message { role: "system", content: system_prompt(tone, vocabulary) }];
+        if !vocabulary.trim().is_empty() {
+            messages.extend(vocab_correction_example());
+        }
+        messages.push(Message { role: "user", content: raw.to_string() });
         let body = ChatRequest {
-            messages: vec![
-                Message { role: "system", content: system_prompt(tone) },
-                Message { role: "user", content: raw.to_string() },
-            ],
+            messages,
             temperature: self.cfg.temperature,
             max_tokens,
             stream: false,
@@ -284,14 +337,55 @@ mod tests {
     use super::*;
 
     #[test]
+    fn vocab_correction_example_is_two_user_assistant_pairs() {
+        let msgs = vocab_correction_example();
+        assert_eq!(msgs.len(), 4);
+        assert_eq!(msgs[0].role, "user");
+        assert_eq!(msgs[1].role, "assistant");
+        assert_eq!(msgs[2].role, "user");
+        assert_eq!(msgs[3].role, "assistant");
+        // The corrected spelling actually appears in both example answers —
+        // guards against a future edit accidentally reversing a pair.
+        assert!(msgs[1].content.contains("Claude"));
+        assert!(msgs[3].content.contains("Claude"));
+    }
+
+    #[test]
     fn empty_tone_leaves_system_prompt_unchanged() {
-        assert_eq!(system_prompt(""), SYSTEM_PROMPT);
-        assert_eq!(system_prompt("   "), SYSTEM_PROMPT); // whitespace-only counts as off
+        assert_eq!(system_prompt("", ""), SYSTEM_PROMPT);
+        assert_eq!(system_prompt("   ", "   "), SYSTEM_PROMPT); // whitespace-only counts as off
     }
 
     #[test]
     fn tone_appends_as_one_extra_clause() {
-        let out = system_prompt("Casual and friendly.");
+        let out = system_prompt("Casual and friendly.", "");
         assert_eq!(out, format!("{SYSTEM_PROMPT} Casual and friendly."));
+    }
+
+    #[test]
+    fn empty_vocabulary_leaves_system_prompt_unchanged() {
+        assert_eq!(system_prompt("", ""), SYSTEM_PROMPT);
+    }
+
+    #[test]
+    fn vocabulary_appends_after_tone() {
+        let out = system_prompt("Casual and friendly.", "Claude, Kai's Flow");
+        assert!(out.starts_with(&format!("{SYSTEM_PROMPT} Casual and friendly.")));
+        assert!(out.contains("Claude, Kai's Flow"));
+        assert!(out.ends_with('.'));
+    }
+
+    #[test]
+    fn vocabulary_alone_appends_without_a_tone_clause() {
+        let out = system_prompt("", "Claude (heard as clawed, code)");
+        assert_eq!(
+            out,
+            format!(
+                "{SYSTEM_PROMPT} The speaker often says one of these words, and the speech \
+                 recognizer sometimes mishears it as a similar-sounding word: Claude (heard as \
+                 clawed, code). If the transcript contains a mishearing of one of these, \
+                 correct it back to the exact word."
+            )
+        );
     }
 }

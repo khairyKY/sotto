@@ -24,7 +24,7 @@ mod startup;
 mod stats;
 mod tray;
 
-use config::{ActivationMode, AppTone, Config, DictEntry, EntryKind, InjectionMode, PolishMode};
+use config::{ActivationMode, AppTone, Config, DictEntry, EntryKind, InjectionMode, PolishMode, VocabEntry};
 use hotkey::DictationEvent;
 use single_instance::SingleInstanceGuard;
 use std::collections::HashMap;
@@ -84,6 +84,9 @@ pub struct Controls {
     /// Default tone instruction for AI polish; empty = off. Same live-editable
     /// shape as `dictionary` — settings writes it, the polisher reads it live.
     pub tone: Arc<Mutex<String>>,
+    /// Proper nouns/jargon hinted to the AI-tier system prompt — see
+    /// `config::PolishConfig::vocabulary`.
+    pub vocabulary: Arc<Mutex<Vec<VocabEntry>>>,
     /// Per-app tone overrides: (app name, tone instruction) pairs.
     pub app_tones: Arc<Mutex<Vec<(String, String)>>>,
     pub history: history::History,
@@ -152,6 +155,7 @@ impl Controls {
             formatting_commands: Arc::new(AtomicBool::new(cfg.formatting_commands)),
             quote_style: Arc::new(Mutex::new(cfg.quote_style.clone())),
             tone: Arc::new(Mutex::new(cfg.tone.clone())),
+            vocabulary: Arc::new(Mutex::new(cfg.polish.vocabulary.clone())),
             app_tones: Arc::new(Mutex::new(
                 cfg.app_tones.iter().map(|e| (e.app.clone(), e.tone.clone())).collect(),
             )),
