@@ -900,9 +900,17 @@ function renderHistoryPage(entries) {
   entries.forEach((e, i) => {
     const row = document.createElement("div");
     row.className = "hist-row";
-    row.innerHTML = `<span class="time">${e.time}</span><span class="txt">${escapeHtml(e.text)}</span><span class="copy" title="Copy">⧉</span><span class="retry" title="Re-polish &amp; copy">↻</span>`;
+    row.innerHTML = `<span class="time">${e.time}</span><span class="txt">${escapeHtml(e.text)}</span><span class="copy" title="Copy">⧉</span><span class="retry" title="Re-polish &amp; copy">↻</span><span class="flag" title="Flag as wrong / not working">⚑</span>`;
     row.querySelector(".copy").onclick = (ev) => { ev.stopPropagation(); copyText(e.text); };
     row.querySelector(".retry").onclick = (ev) => { ev.stopPropagation(); invoke("repolish_copy", { text: e.text }); };
+    const flagEl = row.querySelector(".flag");
+    flagEl.onclick = (ev) => {
+      ev.stopPropagation();
+      if (flagEl.classList.contains("flagged")) return;
+      invoke("flag_transcription", { text: e.text });
+      flagEl.classList.add("flagged");
+      flagEl.title = "Flagged";
+    };
     row.onclick = () => copyText(e.text);
     host.appendChild(row);
   });
@@ -910,14 +918,18 @@ function renderHistoryPage(entries) {
 function loadHistory() { renderHistoryPage(historyEntries); }
 
 // ── pronunciation trainer ──
-let pronVocabulary = []; // [{word, heardAs: [...]}] from settings, refreshed after every correction
-let pronListening = null; // the word currently armed via set_pronunciation_target, or null
+let pronVocabulary = []; // [{word, heardAs: [...], recent: [bool...]}] from settings
+let pronState = "idle"; // "idle" | "listening" | "resolving"
+let pronArmedWord = null; // the word the backend is currently armed for -- also what an incoming 'pronunciation-sample' must match
 
-// Strength is deliberately just "how many distinct mishearings have we
-// captured" -- capped at 5 for the fill bar. Kai's reference was a phone's
-// fingerprint-enrollment animation; this is the same idea at one line of
-// CSS transition, not a whole animation system for one gimmick.
-const PRON_STRENGTH_CAP = 5;
+// Strength is the fraction of the last few attempts that matched -- see
+// ADR 0001. `recent` is oldest-first booleans, already capped server-side
+// (config::PRON_RECENT_CAP), so its length alone tells the window size.
+function pronStrength(recent) {
+  const total = recent.length;
+  const hits = recent.filter(Boolean).length;
+  return { hits, total, pct: total ? Math.round((hits / total) * 100) : 0 };
+}
 
 function renderTrainedWords() {
   const host = $("pron-trained-list");
@@ -927,13 +939,13 @@ function renderTrainedWords() {
     return;
   }
   pronVocabulary.forEach(v => {
-    const pct = Math.min(100, (v.heardAs.length / PRON_STRENGTH_CAP) * 100);
+    const { hits, total, pct } = pronStrength(v.recent || []);
     const row = document.createElement("div");
     row.className = "pron-trained-row";
     row.innerHTML = `
       <span class="pron-trained-word">${escapeHtml(v.word)}</span>
-      <span class="pron-trained-heard">${v.heardAs.length ? "heard as: " + escapeHtml(v.heardAs.join(", ")) : "no corrections yet"}</span>
-      <span class="pron-strength"><span class="pron-strength-fill" style="width:${pct}%"></span></span>
+      <span class="pron-trained-heard">${v.heardAs.length ? "heard as: " + escapeHtml(v.heardAs.join(", ")) : ((v.recent || []).length ? "no corrections logged" : "no attempts yet")}</span>
+      <span class="pron-strength" style="--pct:${pct}"><span class="pron-strength-num">${total ? `${hits}/${total}` : "—"}</span></span>
     `;
     host.appendChild(row);
   });
@@ -943,25 +955,47 @@ function loadPronunciation() {
   renderTrainedWords();
 }
 
-function pronSetListening(word) {
-  pronListening = word;
+// Drives the whole listen/record/resolve flow. `word` only matters when
+// entering "listening" -- it's what arms the focus-word display and what
+// incoming 'pronunciation-sample' events are matched against.
+function pronSetState(state, word) {
+  pronState = state;
+  if (word !== undefined) pronArmedWord = word;
   const status = $("pron-status");
   const btn = $("pron-listen-btn");
-  if (word) {
-    status.textContent = `Listening — press your hotkey and say "${word}"`;
+  const focusEl = $("pron-focus-word");
+  const input = $("pron-word-input");
+  document.querySelector(".pron-listen-card")?.classList.toggle("is-listening", state === "listening");
+  focusEl.classList.remove("matched", "missed");
+
+  if (state === "listening") {
+    input.disabled = true;
+    btn.disabled = false;
+    btn.textContent = "Stop";
+    status.textContent = "Listening — say it now";
     status.classList.add("active");
-    btn.textContent = "Stop listening";
+    focusEl.textContent = pronArmedWord;
+    focusEl.style.setProperty("--amp", "0");
+    focusEl.hidden = false;
     $("pron-samples-list").innerHTML = "";
+  } else if (state === "resolving") {
+    btn.disabled = true;
+    btn.textContent = "Listen for it";
+    status.textContent = "Checking…";
+    focusEl.style.setProperty("--amp", "0");
   } else {
+    input.disabled = false;
+    btn.disabled = false;
+    btn.textContent = "Listen for it";
     status.textContent = "";
     status.classList.remove("active");
-    btn.textContent = "Listen for it";
+    focusEl.hidden = true;
   }
 }
 
 function pronAddSampleRow(word, heard, matched) {
   const row = document.createElement("div");
-  row.className = "pron-sample-row";
+  row.className = matched ? "pron-sample-row matched" : "pron-sample-row";
   if (matched) {
     row.innerHTML = `<span class="pron-sample-heard">Heard: <b>${escapeHtml(heard)}</b></span><span class="pron-sample-match" title="Matched">&#10003;</span>`;
   } else {
@@ -969,14 +1003,13 @@ function pronAddSampleRow(word, heard, matched) {
     row.querySelector("#pron-add-correction").onclick = async () => {
       await invoke("add_pronunciation_correction", { word, heard });
       const s = await getSettings();
-      pronVocabulary = (s.vocabulary || []).map(v => ({ word: v.word, heardAs: v.heardAs || [] }));
+      pronVocabulary = (s.vocabulary || []).map(v => ({ word: v.word, heardAs: v.heardAs || [], recent: v.recent || [] }));
       renderTrainedWords();
-      // Flash the strength bar for the word that just leveled up.
       document.querySelectorAll("#pron-trained-list .pron-trained-row").forEach(r => {
         if (r.querySelector(".pron-trained-word")?.textContent === word) {
-          const bar = r.querySelector(".pron-strength-fill");
-          bar?.classList.add("pron-level-up");
-          setTimeout(() => bar?.classList.remove("pron-level-up"), 500);
+          const ring = r.querySelector(".pron-strength");
+          ring?.classList.add("pron-level-up");
+          setTimeout(() => ring?.classList.remove("pron-level-up"), 500);
         }
       });
       row.querySelector("#pron-add-correction").replaceWith(document.createTextNode(" — added"));
@@ -987,15 +1020,16 @@ function pronAddSampleRow(word, heard, matched) {
 
 if ($("pron-listen-btn")) {
   $("pron-listen-btn").onclick = () => {
-    if (pronListening) {
-      invoke("set_pronunciation_target", { word: null });
-      pronSetListening(null);
+    if (pronState === "listening") {
+      invoke("stop_dictation");
+      pronSetState("resolving");
       return;
     }
     const word = $("pron-word-input").value.trim();
     if (!word) return;
     invoke("set_pronunciation_target", { word });
-    pronSetListening(word);
+    invoke("start_dictation");
+    pronSetState("listening", word);
   };
 }
 
@@ -1599,7 +1633,7 @@ async function boot() {
   loadHistory();
 
   // Pronunciation trainer data
-  pronVocabulary = (s.vocabulary || []).map(v => ({ word: v.word, heardAs: v.heardAs || [] }));
+  pronVocabulary = (s.vocabulary || []).map(v => ({ word: v.word, heardAs: v.heardAs || [], recent: v.recent || [] }));
   renderTrainedWords();
 
   // Live event listeners
@@ -1609,10 +1643,28 @@ async function boot() {
       renderHistoryPage(historyEntries);
       renderRecent(historyEntries);
     });
-    T.event.listen("pronunciation-sample", (e) => {
+    T.event.listen("pronunciation-sample", async (e) => {
       const { word, heard, matched } = e.payload || {};
-      if (!pronListening || word !== pronListening) return;
+      if (!pronArmedWord || word !== pronArmedWord) return;
+      const focusEl = $("pron-focus-word");
+      focusEl.classList.add(matched ? "matched" : "missed");
+      setTimeout(() => pronSetState("idle"), matched ? 700 : 500);
       pronAddSampleRow(word, heard, matched);
+      const s = await getSettings();
+      pronVocabulary = (s.vocabulary || []).map(v => ({ word: v.word, heardAs: v.heardAs || [], recent: v.recent || [] }));
+      renderTrainedWords();
+      document.querySelectorAll("#pron-trained-list .pron-trained-row").forEach(r => {
+        if (r.querySelector(".pron-trained-word")?.textContent === word) {
+          const ring = r.querySelector(".pron-strength");
+          ring?.classList.add("pron-level-up");
+          setTimeout(() => ring?.classList.remove("pron-level-up"), 500);
+        }
+      });
+    });
+    T.event.listen("overlay-level", (e) => {
+      if (pronState !== "listening") return;
+      const amp = Math.min(1, (e.payload || 0) * 8);
+      $("pron-focus-word")?.style.setProperty("--amp", amp.toFixed(3));
     });
     T.event.listen("navigate", (e) => {
       const page = e.payload;

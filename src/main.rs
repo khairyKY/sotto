@@ -10,6 +10,7 @@
 mod asr;
 mod assets;
 mod audio;
+mod bug_reports;
 mod config;
 mod history;
 mod hotkey;
@@ -235,6 +236,9 @@ struct PronunciationSampleDto {
 struct VocabEntryDto {
     word: String,
     heard_as: Vec<String>,
+    /// Pronunciation Trainer's rolling match history — see `VocabEntry::recent`.
+    #[serde(default)]
+    recent: Vec<bool>,
 }
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -393,7 +397,7 @@ fn get_settings(state: tauri::State<'_, AppState>) -> SettingsPayload {
             .lock()
             .unwrap()
             .iter()
-            .map(|e| VocabEntryDto { word: e.word.clone(), heard_as: e.heard_as.clone() })
+            .map(|e| VocabEntryDto { word: e.word.clone(), heard_as: e.heard_as.clone(), recent: e.recent.clone() })
             .collect(),
         tone: c.tone.lock().unwrap().clone(),
         app_tones: c.app_tones.lock().unwrap().iter().map(|(a, t)| AppToneDto { app: a.clone(), tone: t.clone() }).collect(),
@@ -593,7 +597,7 @@ fn add_pronunciation_correction(word: String, heard: String, state: tauri::State
                 entry.heard_as.push(heard.clone());
             }
         }
-        None => cfg.polish.vocabulary.push(VocabEntry { word: word.clone(), heard_as: vec![heard.clone()] }),
+        None => cfg.polish.vocabulary.push(VocabEntry { word: word.clone(), heard_as: vec![heard.clone()], recent: Vec::new() }),
     }
     *state.controls.vocabulary.lock().unwrap() = cfg.polish.vocabulary.clone();
 
@@ -741,6 +745,15 @@ fn start_dictation(state: tauri::State<'_, AppState>) {
     let _ = state.tx.send(DictationEvent::Start);
 }
 
+/// The Pronunciation Trainer's "Stop" click — same event a hotkey release/
+/// second toggle-press would send, just reachable by mouse since this flow
+/// bypasses the hotkey entirely (see `start_dictation` call in `index.js`'s
+/// listen button).
+#[tauri::command]
+fn stop_dictation(state: tauri::State<'_, AppState>) {
+    let _ = state.tx.send(DictationEvent::Stop);
+}
+
 /// The overlay reports back once its own countdown (done/error/cancelled/
 /// nomodel toast) times out to idle — those transitions are timed inside
 /// overlay.js, not driven by a DictationEvent, so nothing else updates
@@ -827,6 +840,29 @@ fn dismiss_take(state: tauri::State<'_, AppState>) {
 #[tauri::command]
 fn repolish_copy(text: String, state: tauri::State<'_, AppState>) {
     let _ = state.tx.send(DictationEvent::Repolish(text));
+}
+
+/// A history row's flag — "this came out wrong," logged locally to
+/// `bug_reports::record` with whatever config context was live at the
+/// moment, for Kai to review and file a real GitHub issue from by hand.
+/// Nothing is sent anywhere; see `bug_reports.rs`.
+#[tauri::command]
+fn flag_transcription(text: String, state: tauri::State<'_, AppState>) {
+    let text = text.trim().to_string();
+    if text.is_empty() {
+        return;
+    }
+    let cfg = state.cfg.lock().unwrap();
+    bug_reports::record(&bug_reports::BugReport {
+        t: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0),
+        text,
+        asr_engine: cfg.asr.model.clone(),
+        asr_language: cfg.asr.language.clone(),
+        polish_mode: format!("{:?}", cfg.polish.mode).to_lowercase(),
+        dictionary_count: cfg.dictionary.iter().filter(|e| e.enabled).count(),
+        vocabulary_count: cfg.polish.vocabulary.len(),
+        app_version: env!("CARGO_PKG_VERSION").to_string(),
+    });
 }
 
 /// Aggregated usage stats for the Insights dashboard. Cheap enough to compute
@@ -945,10 +981,10 @@ fn main() -> anyhow::Result<()> {
         .invoke_handler(tauri::generate_handler![
             get_settings, set_hotkey, set_activation, set_polish, set_threshold,
             set_dictionary, set_tone, set_app_tones, set_launch_login, set_start_hidden, set_theme, copy_text,
-            set_overlay_position, set_overlay_always_visible, get_overlay_settings, start_dictation, mark_overlay_idle,
+            set_overlay_position, set_overlay_always_visible, get_overlay_settings, start_dictation, stop_dictation, mark_overlay_idle,
             set_asr_model, set_asr_language,
             open_url, check_update, install_update, retry_last, cancel_dictation, dismiss_take,
-            repolish_copy,
+            repolish_copy, flag_transcription,
             get_stats, clear_stats, set_stats_enabled, set_retention_enabled, clear_recordings,
             set_microphone, set_sound_enabled, set_zoom,
             set_replacements_enabled,
@@ -961,13 +997,14 @@ fn main() -> anyhow::Result<()> {
             if let Some(w) = app.get_webview_window("overlay") {
                 let _ = w.set_ignore_cursor_events(true);
                 position_overlay(&w, &cfg.overlay.position);
-                harden_utility_window(&w);
+                harden_utility_window(&w, true);
                 if cfg.overlay.always_visible {
                     let _ = w.show();
+                    harden_utility_window(&w, true);
                 }
             }
             if let Some(w) = app.get_webview_window("menu") {
-                harden_utility_window(&w);
+                harden_utility_window(&w, false);
             }
             if let Some(w) = app.get_webview_window("settings") {
                 if (cfg.zoom - 1.0).abs() > f64::EPSILON {
@@ -1031,8 +1068,9 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
                         let x = (position.x - mw + 10.0) as i32;
                         let y = (position.y - mh - 5.0) as i32;
                         let _ = w.set_position(tauri::PhysicalPosition::new(x, y));
-                        harden_utility_window(&w);
+                        harden_utility_window(&w, false);
                         let _ = w.show();
+                        harden_utility_window(&w, false);
                         let _ = w.set_focus();
                     }
                 }
@@ -1901,6 +1939,19 @@ fn process_take(
     if let Some(target) = training_word.lock().unwrap().clone() {
         let heard = raw.trim().to_string();
         let matched = heard.eq_ignore_ascii_case(target.trim());
+        // Persist this attempt into the word's rolling success history —
+        // regardless of whether the user goes on to log a correction for a
+        // miss, "did this land" is its own signal. Mirrors
+        // `add_pronunciation_correction`'s save-then-refresh-the-live-mirror
+        // pattern, just reached via AppHandle since this runs on the worker
+        // thread rather than inside a #[tauri::command].
+        {
+            let app_state = app.state::<AppState>();
+            let mut cfg = app_state.cfg.lock().unwrap();
+            config::record_attempt(&mut cfg.polish.vocabulary, &target, matched);
+            *app_state.controls.vocabulary.lock().unwrap() = cfg.polish.vocabulary.clone();
+            let _ = cfg.save();
+        }
         let _ = app.emit("pronunciation-sample", PronunciationSampleDto { word: target, heard, matched });
         emit_state(app, "done");
         *stash = None;
@@ -2114,8 +2165,9 @@ fn show_overlay(app: &tauri::AppHandle) {
     if let Some(w) = app.get_webview_window("overlay") {
         let anchor = app.state::<AppState>().controls.overlay_position.lock().unwrap().clone();
         position_overlay(&w, &anchor);
-        harden_utility_window(&w);
+        harden_utility_window(&w, true);
         let _ = w.show();
+        harden_utility_window(&w, true);
     }
 }
 
@@ -2126,23 +2178,47 @@ fn show_overlay(app: &tauri::AppHandle) {
 /// `ITaskbarList::DeleteTab` under the hood and has no bearing on Alt-Tab
 /// eligibility at all. `WS_EX_TOOLWINDOW` is the actual Alt-Tab exclusion,
 /// and it's a create-time style: Windows decides Alt-Tab membership when a
-/// window is first shown, so this must run *before* `w.show()` at every show
-/// site, not after — reasserting it on an already-visible window doesn't
-/// reliably pull it back out.
-fn harden_utility_window(w: &tauri::WebviewWindow) {
+/// window is first shown, so this must run *before* `w.show()` too, not only
+/// after.
+///
+/// It must ALSO run again immediately *after* `w.show()` for the overlay
+/// (transparent + undecorated) — confirmed live via a debug readback:
+/// `show()` itself resets GWL_EXSTYLE back to Tao's default
+/// (TOPMOST|ACCEPTFILES|TRANSPARENT|WINDOWEDGE|APPWINDOW|LAYERED, no
+/// TOOLWINDOW/NOACTIVATE) as part of making a layered window visible, wiping
+/// out whatever this function set moments earlier. A single pre-show call
+/// alone silently does nothing by the time the user can interact with the
+/// window — this was the actual cause of the Win+Up-maximizes-the-pill bug,
+/// not `spawn_overlay_hittest`'s live cursor-event toggling (that was the
+/// first, wrong suspect — checked and ruled out via the same readback,
+/// before any hover ever occurred).
+///
+/// `no_activate` additionally sets `WS_EX_NOACTIVATE` — for the overlay
+/// only, never the tray menu (which calls `set_focus()` right after this to
+/// support click-outside-to-dismiss). Without it, clicking the always-visible
+/// idle pill's clickable region (N1) makes Windows treat the overlay as the
+/// active window; a subsequent Win+Up then hits it with the OS's native
+/// maximize-the-active-window shortcut, blowing a 280x120 borderless pill up
+/// to full screen. `WS_EX_NOACTIVATE` still lets clicks land on the webview —
+/// it only stops the window from ever becoming "active" — so N1 keeps
+/// working exactly as before.
+fn harden_utility_window(w: &tauri::WebviewWindow, no_activate: bool) {
     let _ = w.set_skip_taskbar(true);
     if let Ok(raw) = w.hwnd() {
         use windows::Win32::Foundation::HWND;
         use windows::Win32::UI::WindowsAndMessaging::{
-            GetWindowLongPtrW, SetWindowLongPtrW, GWL_EXSTYLE, WS_EX_APPWINDOW, WS_EX_TOOLWINDOW,
+            GetWindowLongPtrW, SetWindowLongPtrW, GWL_EXSTYLE, WS_EX_APPWINDOW, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
         };
         // Tauri's `hwnd()` returns its own `windows`-crate HWND, pinned to a
         // different version than the one we depend on directly — same Win32
         // handle, incompatible Rust type. Round-trip through the raw pointer.
         let hwnd = HWND(raw.0 as _);
         unsafe {
-            let style = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
-            let style = (style | WS_EX_TOOLWINDOW.0 as isize) & !(WS_EX_APPWINDOW.0 as isize);
+            let mut style = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+            style = (style | WS_EX_TOOLWINDOW.0 as isize) & !(WS_EX_APPWINDOW.0 as isize);
+            if no_activate {
+                style |= WS_EX_NOACTIVATE.0 as isize;
+            }
             SetWindowLongPtrW(hwnd, GWL_EXSTYLE, style);
         }
     }

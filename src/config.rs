@@ -195,6 +195,67 @@ pub struct VocabEntry {
     pub word: String,
     #[serde(default)]
     pub heard_as: Vec<String>,
+    /// Pronunciation Trainer: whether each of the last `PRON_RECENT_CAP`
+    /// attempts at this word matched (`true`) or missed (`false`), oldest
+    /// first. Drives the trainer's "strength" display — see
+    /// `record_attempt` — deliberately separate from `heard_as`, which is
+    /// the mishearing catalogue fed to the AI-polish prompt and doesn't move
+    /// when a word is heard *correctly*.
+    #[serde(default)]
+    pub recent: Vec<bool>,
+}
+
+/// Rolling-window size for `VocabEntry::recent`.
+pub const PRON_RECENT_CAP: usize = 5;
+
+/// Record one Pronunciation Trainer attempt against `word`'s rolling history,
+/// creating the entry if this is the first attempt ever made at it. Pure and
+/// unit-tested so the cap/creation logic doesn't need a live config to verify.
+pub fn record_attempt(vocabulary: &mut Vec<VocabEntry>, word: &str, matched: bool) {
+    let entry = match vocabulary.iter_mut().find(|e| e.word.eq_ignore_ascii_case(word)) {
+        Some(e) => e,
+        None => {
+            vocabulary.push(VocabEntry { word: word.to_string(), heard_as: Vec::new(), recent: Vec::new() });
+            vocabulary.last_mut().unwrap()
+        }
+    };
+    entry.recent.push(matched);
+    if entry.recent.len() > PRON_RECENT_CAP {
+        let overflow = entry.recent.len() - PRON_RECENT_CAP;
+        entry.recent.drain(0..overflow);
+    }
+}
+
+#[cfg(test)]
+mod pronunciation_tests {
+    use super::*;
+
+    #[test]
+    fn first_attempt_creates_the_entry() {
+        let mut vocab = Vec::new();
+        record_attempt(&mut vocab, "Claude", true);
+        assert_eq!(vocab.len(), 1);
+        assert_eq!(vocab[0].word, "Claude");
+        assert_eq!(vocab[0].recent, vec![true]);
+        assert!(vocab[0].heard_as.is_empty());
+    }
+
+    #[test]
+    fn matches_the_existing_entry_case_insensitively() {
+        let mut vocab = vec![VocabEntry { word: "Claude".into(), heard_as: vec!["clod".into()], recent: vec![false] }];
+        record_attempt(&mut vocab, "claude", true);
+        assert_eq!(vocab.len(), 1);
+        assert_eq!(vocab[0].recent, vec![false, true]);
+        assert_eq!(vocab[0].heard_as, vec!["clod".to_string()]); // untouched
+    }
+
+    #[test]
+    fn caps_the_window_dropping_the_oldest() {
+        let mut vocab = vec![VocabEntry { word: "Sotto".into(), heard_as: vec![], recent: vec![true, true, true, true, true] }];
+        record_attempt(&mut vocab, "Sotto", false);
+        assert_eq!(vocab[0].recent, vec![true, true, true, true, false]);
+        assert_eq!(vocab[0].recent.len(), PRON_RECENT_CAP);
+    }
 }
 
 /// Tunables for the Tier 1 llama.cpp sidecar. Model and executable *paths* are

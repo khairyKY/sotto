@@ -1213,15 +1213,15 @@ mod tests {
     #[test]
     fn vocabulary_clause_names_heard_as_variants() {
         let entries = vec![
-            VocabEntry { word: "Claude".into(), heard_as: vec!["clawed".into(), "code".into()] },
-            VocabEntry { word: "Sotto".into(), heard_as: vec![] },
+            VocabEntry { word: "Claude".into(), heard_as: vec!["clawed".into(), "code".into()], ..Default::default() },
+            VocabEntry { word: "Sotto".into(), heard_as: vec![], ..Default::default() },
         ];
         assert_eq!(vocabulary_clause(&entries), "Claude (heard as clawed, code), Sotto");
     }
 
     #[test]
     fn vocabulary_clause_skips_blank_entries_and_empty_list_is_empty_string() {
-        let entries = vec![VocabEntry { word: "  ".into(), heard_as: vec![] }];
+        let entries = vec![VocabEntry { word: "  ".into(), heard_as: vec![], ..Default::default() }];
         assert_eq!(vocabulary_clause(&entries), "");
         assert_eq!(vocabulary_clause(&[]), "");
     }

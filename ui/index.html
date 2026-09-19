@@ -51,7 +51,7 @@
             <span>History</span>
           </a>
           <a class="nav-item" data-page="pronunciation" href="#">
-            <svg viewBox="0 0 20 20" width="17" height="17"><path d="M6 15.5 V9.5 C6 6.5 8 4.5 10 4.5 C12 4.5 14 6.5 14 9.5 V15.5" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/><path d="M6 12 C4.5 12 3.5 10.8 3.5 9.5 M14 12 C15.5 12 16.5 10.8 16.5 9.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+            <svg viewBox="0 0 20 20" width="17" height="17"><path d="M4 11.5 V8.5 M7 14 V6 M10 16 V4 M13 14 V6 M16 11.5 V8.5" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>
             <span>Pronunciation</span>
           </a>
           <!-- Transforms and Scratchpad are phase-2 features: their pages were
@@ -282,7 +282,7 @@
 
           <div class="history-footnote">
             <svg viewBox="0 0 20 20" width="13" height="13"><rect x="4.5" y="8.5" width="11" height="7.5" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M7 8.5 V6.3 A3 3 0 0 1 13 6.3 V8.5" fill="none" stroke="currentColor" stroke-width="1.5"/></svg>
-            <span>History lives in memory and clears when Sotto quits. Nothing is written to disk.</span>
+            <span>History lives in memory and clears when Sotto quits. Nothing is written to disk — except flagging a line, which saves it locally to <code>bug-reports.jsonl</code> for you to review; still never sent anywhere.</span>
           </div>
         </section>
 
@@ -292,12 +292,13 @@
             <h1 class="page-title" style="margin:0">Pronunciation</h1>
             <span class="section-hint" style="color: var(--mm-muted-3); font-size: 11.5px;">Teach Sotto how you say a word</span>
           </div>
-          <p class="page-sub">Type a word Sotto keeps mishearing, press &ldquo;Listen for it,&rdquo; then dictate it normally with your hotkey.</p>
+          <p class="page-sub">Type a word Sotto keeps mishearing, press &ldquo;Listen for it,&rdquo; then say it — no hotkey needed here.</p>
 
           <div class="card-raised pron-listen-card">
             <div class="search-bar" style="margin-bottom:0">
-              <input type="text" class="search-input" id="pron-word-input" placeholder="e.g. Claude" />
+              <input type="text" class="search-input" id="pron-word-input" placeholder="e.g. Claude" autocomplete="off" />
             </div>
+            <div class="pron-focus-word" id="pron-focus-word" hidden></div>
             <div class="pron-listen-row">
               <button class="btn btn-primary" id="pron-listen-btn">Listen for it</button>
               <span class="pron-status" id="pron-status"></span>
