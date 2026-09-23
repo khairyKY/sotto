@@ -99,10 +99,9 @@ D:\Coding\Tools\Python\Lib\site-packages\clang\native
 D:\Coding\sotto-signing\sotto-updater.key
 ```
 
-> `docs/msvc-setup.md` still points at
-> `C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\...`. That copy
-> does also exist, but **D: is the one this project uses** — the toolchain was
-> moved off C: deliberately. Prefer the D: path everywhere.
+> Only the Windows SDK (~0.9 GB) is still on C:, because it cannot be relocated;
+> the MSVC toolset itself lives on D:. `docs/msvc-setup.md` was corrected to
+> match on 2026-09-23.
 
 ### The env block — paste at the top of any build shell (PowerShell)
 

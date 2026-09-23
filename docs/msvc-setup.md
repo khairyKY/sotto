@@ -10,10 +10,12 @@ earlier egui build used. This is a one-time setup, made careful because the
 | Piece | Size | Drive | Note |
 |---|---|---|---|
 | VS download cache | several GB | **D:** `D:\VS\cache` | redirected by the setup script; transient, safe to purge |
-| MSVC toolset + Windows SDK | ~4–5 GB | **C:** | the Windows SDK cannot be relocated off C: |
+| MSVC toolset | ~2.3 GB | **D:** `D:\VS\BuildTools` | relocated off C: on this machine |
+| Windows SDK | ~0.9 GB | **C:** | the Windows SDK cannot be relocated off C: |
 | Rust build output (`target\`) | grows | **D:** | the repo lives on D:, so this is already off C: |
 
-Net cost to C: is ~4–5 GB (leaves ~5 GB free), and the cleanup script keeps it lean.
+Net cost to C: is therefore only the SDK (~0.9 GB) — the toolset itself lives on D:.
+The cleanup script keeps both lean.
 
 ## 1. Install (once)
 
@@ -39,7 +41,7 @@ build from a **"x64 Native Tools Command Prompt for VS 2022"**, or import the
 environment into any shell first:
 
 ```powershell
-$vc = "C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat"
+$vc = "D:\VS\BuildTools\VC\Auxiliary\Build\vcvars64.bat"
 cmd /c "`"$vc`" && set" | % { if ($_ -match '^([^=]+)=(.*)$') { Set-Item "Env:\$($matches[1])" $matches[2] } }
 cargo build
 ```
