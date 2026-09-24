@@ -1534,6 +1534,14 @@ async function boot() {
     $("formatting-commands-toggle").setAttribute("aria-checked", String(s.formattingCommands !== false));
     initSwitch($("formatting-commands-toggle"), (on) => invoke("set_formatting_commands", { enabled: on }));
   }
+  if ($("number-formatting-toggle")) {
+    $("number-formatting-toggle").setAttribute("aria-checked", String(s.numberFormatting !== false));
+    initSwitch($("number-formatting-toggle"), (on) => invoke("set_number_formatting", { enabled: on }));
+  }
+  if ($("phonetic-correction-toggle")) {
+    $("phonetic-correction-toggle").setAttribute("aria-checked", String(s.phoneticCorrection !== false));
+    initSwitch($("phonetic-correction-toggle"), (on) => invoke("set_phonetic_correction", { enabled: on }));
+  }
   if ($("overlay-always-visible-toggle")) {
     $("overlay-always-visible-toggle").setAttribute("aria-checked", String(!!s.overlayAlwaysVisible));
     initSwitch($("overlay-always-visible-toggle"), (on) => {

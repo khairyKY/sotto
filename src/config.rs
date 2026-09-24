@@ -340,6 +340,19 @@ pub struct Config {
     /// `apply_formatting_commands` for why it applies even when polish is Off.
     #[serde(default = "default_true")]
     pub formatting_commands: bool,
+    /// Spoken numbers become digits ("twenty three" -> "23", "seven fifteen
+    /// a.m." -> "7:15 a.m."). Its own toggle, independent of `polish.mode`,
+    /// same reasoning as `formatting_commands`: a spoken number is meant as
+    /// the figure regardless of whether grammar polish runs, so it applies in
+    /// Off/Rules/Ai alike. See `polish.rs`'s `normalize_numbers`.
+    #[serde(default = "default_true")]
+    pub number_formatting: bool,
+    /// Pull tokens that *sound like* a trained vocabulary word back to that
+    /// word (Soundex match), before the LLM. Fixes new mishearings of words
+    /// you've trained without having to list each one. See `polish.rs`'s
+    /// `apply_phonetic_corrections`.
+    #[serde(default = "default_true")]
+    pub phonetic_correction: bool,
     /// Glyphs spoken quote commands ("open quote"/"quote ... unquote")
     /// produce: "straight" (default — safe in code editors and terminals)
     /// or "curly". Shares `formatting_commands`'s toggle, not its own.
@@ -435,6 +448,8 @@ impl Default for Config {
             dictionary: Vec::new(),
             replacements_enabled: true,
             formatting_commands: true,
+            number_formatting: true,
+            phonetic_correction: true,
             quote_style: default_quote_style(),
             chunked_transcription: true,
             tone: String::new(),

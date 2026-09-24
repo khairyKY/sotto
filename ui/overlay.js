@@ -125,6 +125,10 @@ const inst = { env: 0.4, sparkles: [], lastSpark: 0, dots: [] };
 // null when the current state has no button (idle / done).
 let activeBtn = null;
 
+// Payload of the last "overlay-flyout" event ({heard, corrected, more}),
+// rendered by the 'smart' state. See main.rs's FlyoutDto.
+let flyout = null;
+
 // Opt-in "keep the idle pill on screen, click it to start a dictation" mode
 // (N1). Off by default — matches config.rs's OverlayConfig default, so a
 // window that never hears otherwise keeps today's hide-when-idle behavior.
@@ -337,6 +341,12 @@ function drawState(x, y, w, h, now, radius, shadowScale, baseAlpha) {
   if (name === 'cancelled' || name === 'nomodel') {
     if (sincePhase > 5400) { const f = Math.min(1, (sincePhase - 5400) / 300); alpha *= 1 - f; dy += f * 4; }
     if (sincePhase >= 5700) { setState('idle'); return; }
+  }
+  if (name === 'smart') {
+    // A beat longer than 'done' (1s) so the correction is readable, but still
+    // a glance, not a nag.
+    if (sincePhase > 2600) { const f = Math.min(1, (sincePhase - 2600) / 400); alpha *= 1 - f; dy += f * 4; }
+    if (sincePhase >= 3000) { setState('idle'); return; }
   }
   y += dy;
 
@@ -563,6 +573,42 @@ function drawState(x, y, w, h, now, radius, shadowScale, baseAlpha) {
     retryBtn(xr, yc, btnR, alpha, dark);
     activeBtn = { x: xr, y: yc, r: btnR, action: 'retry' };
     countdownBar(x, y, w, h, Math.max(0, 1 - sincePhase / 6000), dark);
+  } else if (name === 'smart') {
+    // "Something smart just happened": a correction toward a trained word.
+    // Sparkle + "heard -> corrected", no button — a glance, then it fades.
+    const gx = contentL + 6, sx = gx + 8, sy = yc;
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    ctx.strokeStyle = accent;
+    ctx.lineWidth = 1.6;
+    ctx.lineCap = 'round';
+    ctx.beginPath();
+    ctx.moveTo(sx, sy - 6); ctx.lineTo(sx, sy + 6);
+    ctx.moveTo(sx - 6, sy); ctx.lineTo(sx + 6, sy);
+    ctx.moveTo(sx - 3.5, sy - 3.5); ctx.lineTo(sx + 3.5, sy + 3.5);
+    ctx.moveTo(sx + 3.5, sy - 3.5); ctx.lineTo(sx - 3.5, sy + 3.5);
+    ctx.stroke();
+    ctx.restore();
+
+    const f = flyout || { heard: '', corrected: '', more: 0 };
+    const maxX = x + w - padR;
+    let tx = gx + 22;
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle';
+    ctx.globalAlpha = alpha;
+    const seg = (s, color, weight) => {
+      ctx.font = `${weight} 12px "Hanken Grotesk", system-ui, sans-serif`;
+      ctx.fillStyle = color;
+      let str = s;
+      while (str.length > 1 && tx + ctx.measureText(str).width > maxX) str = str.slice(0, -1);
+      if (str !== s) str = str.replace(/.$/, '…');
+      ctx.fillText(str, tx, yc);
+      tx += ctx.measureText(str).width;
+    };
+    seg(f.heard, muted, '500');
+    seg('  →  ', muted, '500');
+    seg(f.corrected, txt, '700');
+    if (f.more > 0) seg('  +' + f.more, muted, '500');
   }
   ctx.globalAlpha = 1;
 }
@@ -573,6 +619,7 @@ function pillWidthFor(name) {
   if (name === 'error') return 236;
   if (name === 'cancelled') return 220;
   if (name === 'nomodel') return 248;
+  if (name === 'smart') return 264; // "heard -> corrected" flyout
   return PW;
 }
 
@@ -670,6 +717,7 @@ const tauri = window.__TAURI__;
 if (tauri && tauri.event) {
   tauri.event.listen('overlay-state', (e) => setState(e.payload));
   tauri.event.listen('overlay-level', (e) => { state.level = e.payload; });
+  tauri.event.listen('overlay-flyout', (e) => { flyout = e.payload; setState('smart'); });
   tauri.event.listen('overlay-always-visible-changed', (e) => { alwaysVisible = !!e.payload; });
   tauri.event.listen('theme-changed', (e) => {
     const theme = e.payload;

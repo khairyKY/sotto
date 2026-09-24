@@ -132,6 +132,17 @@ impl Polisher {
             raw
         };
 
+        // Spoken numbers -> digits, on the pre-mode text so the LLM receives
+        // figures it will keep rather than re-verbalize. Own toggle, applies
+        // in Off/Rules/Ai alike (same reasoning as formatting commands above).
+        let numbered;
+        let raw = if self.controls.number_formatting.load(Ordering::Relaxed) {
+            numbered = normalize_numbers(raw);
+            numbered.as_str()
+        } else {
+            raw
+        };
+
         // Dictionary / snippet replacements apply on top of every tier —
         // unless the master switch is off, in which case nothing fires and
         // the entries are left untouched on disk. Split by kind: `Word`
@@ -155,6 +166,34 @@ impl Polisher {
             (worded.as_str(), hits)
         };
 
+        // Phonetic correction: after the exact Word-dictionary pass (so it only
+        // handles mishearings the exact entries didn't already fix), before the
+        // mode branch (so the LLM sees the intended proper noun). Targets are
+        // the single-word trained-vocabulary entries — see
+        // `apply_phonetic_corrections`.
+        let phoneticized;
+        let mut notable: Vec<(String, String)> = Vec::new();
+        let raw = if self.controls.phonetic_correction.load(Ordering::Relaxed) {
+            let targets: Vec<String> = {
+                let vocab = self.controls.vocabulary.lock().unwrap();
+                vocab
+                    .iter()
+                    .map(|e| e.word.clone())
+                    .filter(|w| w.split_whitespace().count() == 1)
+                    .collect()
+            };
+            if targets.is_empty() {
+                raw
+            } else {
+                let (fixed, fired) = apply_phonetic_corrections(raw, &targets);
+                notable = fired;
+                phoneticized = fixed;
+                phoneticized.as_str()
+            }
+        } else {
+            raw
+        };
+
         let cleaned = match self.mode() {
             // Tone rewrites voice, which only the AI tier can do — Rules just
             // strips/fixes, it can't re-voice a sentence. `tone` is unused on
@@ -174,7 +213,7 @@ impl Polisher {
         } else {
             apply_dictionary(&cleaned, &dict, EntryKind::Snippet)
         };
-        PolishResult { text, corrected_words, dict_hits: word_hits + snippet_hits }
+        PolishResult { text, corrected_words, dict_hits: word_hits + snippet_hits, notable }
     }
 
     /// Pre-spawn the LLM sidecar so its load overlaps recording. Called when
@@ -314,6 +353,10 @@ pub struct PolishResult {
     pub corrected_words: usize,
     /// Dictionary / snippet replacements that fired.
     pub dict_hits: usize,
+    /// Notable substitutions worth surfacing to the user (currently the
+    /// phonetic corrector's `(heard, corrected)` pairs) — consumed by the
+    /// "something smart just happened" flyout, ignored elsewhere.
+    pub notable: Vec<(String, String)>,
 }
 
 fn word_count(s: &str) -> usize {
@@ -406,6 +449,269 @@ fn collapse_space_around_breaks(text: &str) -> String {
         }
     }
     out
+}
+
+// ── spoken-number normalization (inverse text normalization) ─────────────
+// Parakeet emits numbers as words ("twenty three", "seven fifteen a.m.") and
+// neither Harper nor the 1.5B LLM reliably turns them back into figures, so a
+// dictated "23" lands as "twenty three". This deterministic pass fixes that.
+//
+// The one real hazard: a naive left-fold turns "seven fifteen" into 22 (7+15).
+// It isn't — "seven fifteen" is not how anyone says 22. So the cardinal parser
+// only *combines* words that form a genuine cardinal (a ten may take a
+// following unit, a unit/teen/ten may precede a scale); anything else ends the
+// run. "seven fifteen" therefore parses as two numbers, 7 and 15, which the
+// clock rule below can then read as 7:15 when a meridiem follows.
+
+/// One number word's role in a cardinal.
+#[derive(Clone, Copy, PartialEq)]
+enum NumTok {
+    Unit(u64), // one..nine (1-9)
+    Teen(u64), // ten..nineteen (10-19)
+    Ten(u64),  // twenty..ninety (20,30,..,90)
+    Hundred,
+    Scale(u64),        // thousand/million/billion
+    And,               // connector, only valid mid-number
+    OrdUnit(u64),      // first..ninth — terminal, but may follow a ten (twenty third)
+    OrdTerm(u64),      // tenth/twelfth/twentieth/hundredth... — fully terminal
+}
+
+fn classify_number(word: &str) -> Option<NumTok> {
+    let w = word.to_ascii_lowercase();
+    use NumTok::*;
+    Some(match w.as_str() {
+        "one" => Unit(1), "two" => Unit(2), "three" => Unit(3), "four" => Unit(4),
+        "five" => Unit(5), "six" => Unit(6), "seven" => Unit(7), "eight" => Unit(8),
+        "nine" => Unit(9), "zero" => Unit(0),
+        "ten" => Teen(10), "eleven" => Teen(11), "twelve" => Teen(12), "thirteen" => Teen(13),
+        "fourteen" => Teen(14), "fifteen" => Teen(15), "sixteen" => Teen(16),
+        "seventeen" => Teen(17), "eighteen" => Teen(18), "nineteen" => Teen(19),
+        "twenty" => Ten(20), "thirty" => Ten(30), "forty" => Ten(40), "fifty" => Ten(50),
+        "sixty" => Ten(60), "seventy" => Ten(70), "eighty" => Ten(80), "ninety" => Ten(90),
+        "hundred" => Hundred,
+        "thousand" => Scale(1_000), "million" => Scale(1_000_000), "billion" => Scale(1_000_000_000),
+        "and" => And,
+        "first" => OrdUnit(1), "second" => OrdUnit(2), "third" => OrdUnit(3),
+        "fourth" => OrdUnit(4), "fifth" => OrdUnit(5), "sixth" => OrdUnit(6),
+        "seventh" => OrdUnit(7), "eighth" => OrdUnit(8), "ninth" => OrdUnit(9),
+        "tenth" => OrdTerm(10), "eleventh" => OrdTerm(11), "twelfth" => OrdTerm(12),
+        "thirteenth" => OrdTerm(13), "fourteenth" => OrdTerm(14), "fifteenth" => OrdTerm(15),
+        "sixteenth" => OrdTerm(16), "seventeenth" => OrdTerm(17), "eighteenth" => OrdTerm(18),
+        "nineteenth" => OrdTerm(19), "twentieth" => OrdTerm(20), "thirtieth" => OrdTerm(30),
+        "fortieth" => OrdTerm(40), "fiftieth" => OrdTerm(50), "sixtieth" => OrdTerm(60),
+        "seventieth" => OrdTerm(70), "eightieth" => OrdTerm(80), "ninetieth" => OrdTerm(90),
+        "hundredth" => OrdTerm(100), "thousandth" => OrdTerm(1_000),
+        _ => return None,
+    })
+}
+
+/// English ordinal suffix for `n` (1 -> "st", 2 -> "nd", 3 -> "rd", 11-13 -> "th").
+fn ordinal_suffix(n: u64) -> &'static str {
+    if (11..=13).contains(&(n % 100)) {
+        return "th";
+    }
+    match n % 10 {
+        1 => "st",
+        2 => "nd",
+        3 => "rd",
+        _ => "th",
+    }
+}
+
+/// A parsed number run: its value, whether it was ordinal, and how many
+/// whitespace tokens it consumed.
+struct NumberRun {
+    value: u64,
+    ordinal: bool,
+    consumed: usize,
+}
+
+/// Parse the longest genuine cardinal/ordinal number starting at `words[0]`.
+/// `words` are bare lowercased cores (punctuation already stripped). Returns
+/// `None` if the first word isn't a number word, or the run is only a lone
+/// "and". Only *valid* cardinal transitions extend the run — see the module
+/// note on why "seven fifteen" must parse as 7 then 15, not 22.
+fn parse_number_run(words: &[&str]) -> Option<NumberRun> {
+    use NumTok::*;
+    let mut total: u64 = 0; // accumulated across scale words (thousand+)
+    let mut group: u64 = 0; // current 0..999 group
+    let mut group_has_small = false; // a unit/teen/ten already placed in this group
+    let mut consumed = 0usize;
+    let mut ordinal = false;
+    let mut produced = false;
+    let mut trailing_and = false; // last consumed token was a bare "and"
+
+    for &word in words {
+        let Some(tok) = classify_number(word) else { break };
+        match tok {
+            Unit(n) => {
+                // A unit extends a group only right after a ten ("twenty three")
+                // or at the start of a fresh group; a unit after a unit/teen is
+                // a new number ("seven fifteen" -> stop).
+                if group_has_small && group % 10 != 0 {
+                    break;
+                }
+                if group_has_small && !(20..=99).contains(&group) {
+                    break;
+                }
+                group += n;
+                group_has_small = true;
+                produced = true;
+            }
+            Teen(n) | Ten(n) => {
+                if group_has_small {
+                    break; // "thirteen fifteen", "twenty thirty" — not one number
+                }
+                group += n;
+                group_has_small = true;
+                produced = true;
+            }
+            Hundred => {
+                if group == 0 || group > 9 {
+                    break; // "hundred" needs a preceding 1-9 ("two hundred")
+                }
+                group *= 100;
+                group_has_small = false;
+                produced = true;
+            }
+            Scale(mult) => {
+                let g = if group == 0 { 1 } else { group };
+                total += g * mult;
+                group = 0;
+                group_has_small = false;
+                produced = true;
+            }
+            And => {
+                // Only a connector *inside* a number ("one hundred and five").
+                if !produced {
+                    break;
+                }
+                // don't count "and" as producing; keep scanning
+            }
+            OrdUnit(n) => {
+                if group_has_small && !(20..=99).contains(&group) {
+                    break;
+                }
+                group += n;
+                ordinal = true;
+                produced = true;
+                consumed += 1;
+                break; // ordinal is terminal
+            }
+            OrdTerm(n) => {
+                if group_has_small || group != 0 {
+                    break;
+                }
+                group = n;
+                ordinal = true;
+                produced = true;
+                consumed += 1;
+                break;
+            }
+        }
+        // Only a token that actually made it into the run (didn't `break`
+        // above) reaches here — so this tracks the last *consumed* token, not
+        // the one that ended the run.
+        trailing_and = matches!(tok, And);
+        consumed += 1;
+    }
+
+    // A connector is never the last word of a number ("three and four" is a
+    // list, not 3-and-4) — back it off so it's re-emitted as the word "and".
+    if trailing_and && consumed > 0 {
+        consumed -= 1;
+    }
+
+    if !produced || consumed == 0 {
+        return None;
+    }
+    Some(NumberRun { value: total + group, ordinal, consumed })
+}
+
+/// Split a whitespace token into (leading, core, trailing) where core is the
+/// alphanumeric middle used for number matching and the affixes are punctuation
+/// to reattach.
+fn split_affixes(tok: &str) -> (&str, &str, &str) {
+    let start = tok.find(|c: char| c.is_alphanumeric()).unwrap_or(tok.len());
+    let end = tok.rfind(|c: char| c.is_alphanumeric()).map_or(start, |i| i + 1);
+    (&tok[..start], &tok[start..end], &tok[end..])
+}
+
+/// Is this token a meridiem marker (a.m./p.m./am/pm, any casing/punctuation)?
+/// Returns the normalized-lowercase core if so.
+fn meridiem(tok: &str) -> Option<String> {
+    let core: String = tok.chars().filter(|c| c.is_ascii_alphabetic()).collect();
+    match core.to_ascii_lowercase().as_str() {
+        "am" | "pm" => Some(core.to_ascii_lowercase()),
+        _ => None,
+    }
+}
+
+/// Turn spoken numbers into digits. Runs as its own pass (see the config
+/// `number_formatting` toggle), independent of polish mode.
+fn normalize_numbers(text: &str) -> String {
+    let toks: Vec<&str> = text.split_whitespace().collect();
+    // Bare lowercased cores, for the run parser.
+    let cores: Vec<String> = toks.iter().map(|t| split_affixes(t).1.to_ascii_lowercase()).collect();
+    let core_refs: Vec<&str> = cores.iter().map(|s| s.as_str()).collect();
+
+    let mut out: Vec<String> = Vec::with_capacity(toks.len());
+    let mut i = 0;
+    while i < toks.len() {
+        let Some(run) = parse_number_run(&core_refs[i..]) else {
+            out.push(toks[i].to_string());
+            i += 1;
+            continue;
+        };
+        let (lead, _, _) = split_affixes(toks[i]);
+        let (_, _, trail_last) = split_affixes(toks[i + run.consumed - 1]);
+
+        // Try a following cardinal run for the year-pair and clock-time rules.
+        let next = if i + run.consumed < toks.len() {
+            parse_number_run(&core_refs[i + run.consumed..])
+        } else {
+            None
+        };
+
+        // Clock time: hour(1-12) minute(0-59) <meridiem>. Anchored on the
+        // meridiem so a bare "seven fifteen" isn't forced into a time.
+        if !run.ordinal {
+            if let Some(min) = &next {
+                let after = i + run.consumed + min.consumed;
+                if !min.ordinal
+                    && (1..=12).contains(&run.value)
+                    && min.value <= 59
+                    && after < toks.len()
+                    && meridiem(toks[after]).is_some()
+                {
+                    out.push(format!("{lead}{}:{:02}", run.value, min.value));
+                    i += run.consumed + min.consumed;
+                    continue;
+                }
+            }
+        }
+
+        // Year pair: "nineteen ninety nine" / "twenty twenty six" -> 1999 / 2026.
+        // Constrained to 19xx/20xx so ordinary adjacent numbers aren't merged.
+        if !run.ordinal {
+            if let Some(yr2) = &next {
+                if !yr2.ordinal
+                    && (run.value == 19 || run.value == 20)
+                    && yr2.value <= 99
+                {
+                    let (_, _, y_trail) = split_affixes(toks[i + run.consumed + yr2.consumed - 1]);
+                    out.push(format!("{lead}{}{:02}{y_trail}", run.value, yr2.value));
+                    i += run.consumed + yr2.consumed;
+                    continue;
+                }
+            }
+        }
+
+        let suffix = if run.ordinal { ordinal_suffix(run.value) } else { "" };
+        out.push(format!("{lead}{}{suffix}{trail_last}", run.value));
+        i += run.consumed;
+    }
+    out.join(" ")
 }
 
 /// Which quote-mark glyphs spoken quote commands produce. Straight is the
@@ -704,10 +1010,123 @@ fn capitalize_first(s: &str) -> String {
 }
 
 /// Apply each `spoken → replacement` entry as a case-insensitive, whole-phrase
-/// substitution. ASCII-folded so byte indices stay aligned (dictionary terms
-/// are effectively ASCII), and word-boundary-checked so "arrow" doesn't hit
-/// inside "arrows". Returns the rewritten text plus how many replacements
-/// fired (the "dictionary fixes" stat).
+// ── phonetic correction ──────────────────────────────────────────────────
+// Exact dictionary/vocabulary entries fix mishearings the user has already
+// seen and listed. This catches the *unseen* ones: a token that sounds like a
+// trained proper noun but was misheard a new way ("clode"/"cloud"/"claud" for
+// "Claude"). Classic American Soundex keys both, then a 1-edit tolerance on
+// the 4-char code bridges near-misses like "claw" (C400) -> "Claude" (C430).
+// Deliberately fires ONLY toward words the user explicitly trained, so being
+// aggressive there is correct, not reckless — and it runs before the LLM, so
+// the model still sees the intended word.
+
+/// American Soundex code (first letter + up to three consonant digits, zero-
+/// padded to length 4) for the alphabetic part of `word`. "" for a wordless
+/// token.
+fn soundex(word: &str) -> String {
+    let letters: Vec<char> =
+        word.chars().filter(|c| c.is_ascii_alphabetic()).map(|c| c.to_ascii_uppercase()).collect();
+    if letters.is_empty() {
+        return String::new();
+    }
+    let code = |c: char| -> u8 {
+        match c {
+            'B' | 'F' | 'P' | 'V' => b'1',
+            'C' | 'G' | 'J' | 'K' | 'Q' | 'S' | 'X' | 'Z' => b'2',
+            'D' | 'T' => b'3',
+            'L' => b'4',
+            'M' | 'N' => b'5',
+            'R' => b'6',
+            _ => 0, // vowels + H, W, Y carry no digit
+        }
+    };
+    let mut out = String::with_capacity(4);
+    out.push(letters[0]);
+    let mut last = code(letters[0]);
+    for &c in &letters[1..] {
+        let d = code(c);
+        if d != 0 && d != last {
+            out.push(d as char);
+            if out.len() == 4 {
+                break;
+            }
+        }
+        // H and W are transparent (don't reset the "same code merges" run);
+        // a vowel does reset it, so a repeated code across a vowel is kept.
+        if c != 'H' && c != 'W' {
+            last = d;
+        }
+    }
+    while out.len() < 4 {
+        out.push('0');
+    }
+    out
+}
+
+/// Levenshtein edit distance — tiny, only ever called on 4-char Soundex codes.
+fn edit_distance(a: &str, b: &str) -> usize {
+    let a: Vec<char> = a.chars().collect();
+    let b: Vec<char> = b.chars().collect();
+    let mut prev: Vec<usize> = (0..=b.len()).collect();
+    for (i, &ca) in a.iter().enumerate() {
+        let mut cur = vec![i + 1];
+        for (j, &cb) in b.iter().enumerate() {
+            let cost = usize::from(ca != cb);
+            cur.push((prev[j + 1] + 1).min(cur[j] + 1).min(prev[j] + cost));
+        }
+        prev = cur;
+    }
+    prev[b.len()]
+}
+
+/// Pull tokens that *sound like* a trained target word back to that word.
+/// `targets` are single words (proper nouns/jargon) the user trained. Returns
+/// the corrected text plus the `(heard, corrected)` pairs that fired.
+fn apply_phonetic_corrections(text: &str, targets: &[String]) -> (String, Vec<(String, String)>) {
+    // Only targets of 4+ letters — short words are too collision-prone to
+    // phonetic-match safely, and exact dictionary entries cover those anyway.
+    let coded: Vec<(&str, String)> = targets
+        .iter()
+        .filter(|t| t.chars().filter(|c| c.is_ascii_alphabetic()).count() >= 4)
+        .map(|t| (t.as_str(), soundex(t)))
+        .filter(|(_, c)| !c.is_empty())
+        .collect();
+    if coded.is_empty() {
+        return (text.to_string(), Vec::new());
+    }
+
+    let mut fired = Vec::new();
+    let out = text
+        .split_whitespace()
+        .map(|tok| {
+            let (lead, core, trail) = split_affixes(tok);
+            if core.len() < 4 {
+                return tok.to_string();
+            }
+            // Already the intended word (any casing) — never touch it.
+            if coded.iter().any(|(t, _)| t.eq_ignore_ascii_case(core)) {
+                return tok.to_string();
+            }
+            let tc = soundex(core);
+            if tc.is_empty() {
+                return tok.to_string();
+            }
+            for (target, gc) in &coded {
+                // Same leading sound (Soundex keeps the real first letter) and
+                // within one edit on the code — tight enough to skip unrelated
+                // words, loose enough to bridge a dropped/added final sound.
+                if tc.chars().next() == gc.chars().next() && edit_distance(&tc, gc) <= 1 {
+                    fired.push((core.to_string(), (*target).to_string()));
+                    return format!("{lead}{target}{trail}");
+                }
+            }
+            tok.to_string()
+        })
+        .collect::<Vec<_>>()
+        .join(" ");
+    (out, fired)
+}
+
 /// Apply replacements. Each entry is `(phrases, replacement, kind)` where
 /// `phrases` is every way you say it (primary + aliases), already
 /// longest-first; disabled entries have been dropped before we get here.
@@ -1118,6 +1537,110 @@ mod tests {
         // applies on top of its output — the two tiers compose.
         let cleaned = tier0("um I went to the the store");
         assert_eq!(harper(&cleaned), "I went to the store");
+    }
+
+    #[test]
+    fn numbers_the_three_reported_examples() {
+        // Kai's exact live-tested cases.
+        assert_eq!(normalize_numbers("I am twenty three years old"), "I am 23 years old");
+        assert_eq!(normalize_numbers("seven fifteen a.m."), "7:15 a.m.");
+        assert_eq!(
+            normalize_numbers("the twenty third of September of twenty twenty six"),
+            "the 23rd of September of 2026"
+        );
+    }
+
+    #[test]
+    fn numbers_cardinals_and_scales() {
+        assert_eq!(normalize_numbers("twenty three"), "23");
+        assert_eq!(normalize_numbers("one hundred and five"), "105");
+        assert_eq!(normalize_numbers("two thousand twenty six"), "2026");
+        assert_eq!(normalize_numbers("three million"), "3000000");
+        assert_eq!(normalize_numbers("nine"), "9");
+    }
+
+    #[test]
+    fn numbers_ordinals_take_the_right_suffix() {
+        assert_eq!(normalize_numbers("first"), "1st");
+        assert_eq!(normalize_numbers("second"), "2nd");
+        assert_eq!(normalize_numbers("third"), "3rd");
+        assert_eq!(normalize_numbers("fourth"), "4th");
+        assert_eq!(normalize_numbers("eleventh"), "11th"); // 11-13 are always -th
+        assert_eq!(normalize_numbers("twenty first"), "21st");
+        assert_eq!(normalize_numbers("twentieth"), "20th");
+    }
+
+    #[test]
+    fn numbers_seven_fifteen_is_not_twenty_two() {
+        // The core hazard: a left-fold would make this 22. Without a meridiem
+        // it stays two separate figures, never a bogus sum.
+        assert_eq!(normalize_numbers("seven fifteen"), "7 15");
+        assert_eq!(normalize_numbers("seven fifteen p.m."), "7:15 p.m.");
+        // Zero-padded minutes.
+        assert_eq!(normalize_numbers("nine five a.m."), "9:05 a.m.");
+    }
+
+    #[test]
+    fn numbers_year_pairs_only_for_19xx_20xx() {
+        assert_eq!(normalize_numbers("nineteen ninety nine"), "1999");
+        assert_eq!(normalize_numbers("twenty twenty"), "2020");
+        // A non-year adjacent pair must NOT merge into a 4-digit run.
+        assert_eq!(normalize_numbers("thirty forty"), "30 40");
+    }
+
+    #[test]
+    fn numbers_preserve_surrounding_words_and_punctuation() {
+        assert_eq!(normalize_numbers("I need three, maybe four."), "I need 3, maybe 4.");
+        assert_eq!(normalize_numbers("no numbers here"), "no numbers here");
+        assert_eq!(normalize_numbers(""), "");
+    }
+
+    #[test]
+    fn soundex_codes_known_pairs() {
+        assert_eq!(soundex("Claude"), "C430");
+        assert_eq!(soundex("clod"), "C430"); // same code -> exact match
+        assert_eq!(soundex("clawed"), "C430");
+        assert_eq!(soundex("claw"), "C400"); // one edit from C430
+        assert_eq!(soundex("Sotto"), "S300");
+        assert_eq!(soundex(""), "");
+        assert_eq!(soundex("!!"), "");
+    }
+
+    #[test]
+    fn phonetic_pulls_mishearings_to_trained_words() {
+        let targets = vec!["Claude".to_string(), "Sotto".to_string()];
+        let (out, fired) = apply_phonetic_corrections("ask clod to help", &targets);
+        assert_eq!(out, "ask Claude to help");
+        assert_eq!(fired, vec![("clod".to_string(), "Claude".to_string())]);
+
+        // One-edit bridge, and punctuation preserved.
+        assert_eq!(apply_phonetic_corrections("thanks claw,", &targets).0, "thanks Claude,");
+        // "soto" -> Sotto.
+        assert_eq!(apply_phonetic_corrections("open soto now", &targets).0, "open Sotto now");
+    }
+
+    #[test]
+    fn phonetic_leaves_correct_and_unrelated_words_alone() {
+        let targets = vec!["Claude".to_string(), "Sotto".to_string()];
+        // Already correct — untouched, and not double-reported.
+        let (out, fired) = apply_phonetic_corrections("Claude is here", &targets);
+        assert_eq!(out, "Claude is here");
+        assert!(fired.is_empty());
+        // Unrelated words with different leading sounds stay put.
+        assert_eq!(apply_phonetic_corrections("the meeting ran long", &targets).0, "the meeting ran long");
+        // Too-short tokens are never phonetic-matched.
+        assert_eq!(apply_phonetic_corrections("go to lab", &targets).0, "go to lab");
+        // No targets -> no-op.
+        assert_eq!(apply_phonetic_corrections("anything at all", &[]).0, "anything at all");
+    }
+
+    #[test]
+    fn numbers_connector_and_is_not_swallowed() {
+        // "and" inside a number is consumed ("one hundred and five" -> 105),
+        // but a listing "and" between two numbers survives as the word.
+        assert_eq!(normalize_numbers("three and four"), "3 and 4");
+        assert_eq!(normalize_numbers("cats and dogs"), "cats and dogs");
+        assert_eq!(normalize_numbers("one hundred and five"), "105");
     }
 
     #[test]

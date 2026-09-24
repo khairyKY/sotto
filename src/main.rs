@@ -79,6 +79,12 @@ pub struct Controls {
     /// "New line"/"new paragraph" voice commands — live-toggled from Settings,
     /// read by the polisher on every dictation (see `polish.rs`).
     pub formatting_commands: Arc<AtomicBool>,
+    /// Spoken numbers -> digits — live-toggled from Settings, read by the
+    /// polisher on every dictation (see `polish.rs`'s `normalize_numbers`).
+    pub number_formatting: Arc<AtomicBool>,
+    /// Phonetic correction toward trained vocabulary — live-toggled from
+    /// Settings (see `polish.rs`'s `apply_phonetic_corrections`).
+    pub phonetic_correction: Arc<AtomicBool>,
     /// "straight" or "curly" — glyphs spoken quote commands produce. Shares
     /// `formatting_commands`'s toggle, not its own; see `polish.rs`.
     pub quote_style: Arc<Mutex<String>>,
@@ -161,6 +167,8 @@ impl Controls {
             dictionary: Arc::new(Mutex::new(live_dictionary(&cfg.dictionary))),
             replacements_enabled: Arc::new(AtomicBool::new(cfg.replacements_enabled)),
             formatting_commands: Arc::new(AtomicBool::new(cfg.formatting_commands)),
+            number_formatting: Arc::new(AtomicBool::new(cfg.number_formatting)),
+            phonetic_correction: Arc::new(AtomicBool::new(cfg.phonetic_correction)),
             quote_style: Arc::new(Mutex::new(cfg.quote_style.clone())),
             tone: Arc::new(Mutex::new(cfg.tone.clone())),
             vocabulary: Arc::new(Mutex::new(cfg.polish.vocabulary.clone())),
@@ -231,6 +239,16 @@ struct PronunciationSampleDto {
     heard: String,
     matched: bool,
 }
+/// "Something smart just happened" — a correction the overlay flyout shows in
+/// place of the plain done checkmark. `more` is how many further corrections
+/// fired in the same take beyond the one shown.
+#[derive(serde::Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct FlyoutDto {
+    heard: String,
+    corrected: String,
+    more: usize,
+}
 #[derive(serde::Serialize, serde::Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 struct VocabEntryDto {
@@ -275,6 +293,8 @@ struct SettingsPayload {
     dictionary: Vec<DictEntryDto>,
     replacements_enabled: bool,
     formatting_commands: bool,
+    number_formatting: bool,
+    phonetic_correction: bool,
     /// "straight" or "curly" — drives the quote-style segmented control.
     quote_style: String,
     /// AI-polish vocabulary hints — also the Pronunciation Trainer's list of
@@ -391,6 +411,8 @@ fn get_settings(state: tauri::State<'_, AppState>) -> SettingsPayload {
             .collect(),
         replacements_enabled: cfg.replacements_enabled,
         formatting_commands: cfg.formatting_commands,
+        number_formatting: cfg.number_formatting,
+        phonetic_correction: cfg.phonetic_correction,
         quote_style: c.quote_style.lock().unwrap().clone(),
         vocabulary: c
             .vocabulary
@@ -552,6 +574,24 @@ fn set_formatting_commands(enabled: bool, state: tauri::State<'_, AppState>) {
     state.controls.formatting_commands.store(enabled, Ordering::Relaxed);
     let mut cfg = state.cfg.lock().unwrap();
     cfg.formatting_commands = enabled;
+    let _ = cfg.save();
+}
+
+/// Switch for spoken-number -> digits normalization.
+#[tauri::command]
+fn set_number_formatting(enabled: bool, state: tauri::State<'_, AppState>) {
+    state.controls.number_formatting.store(enabled, Ordering::Relaxed);
+    let mut cfg = state.cfg.lock().unwrap();
+    cfg.number_formatting = enabled;
+    let _ = cfg.save();
+}
+
+/// Switch for phonetic correction toward trained vocabulary.
+#[tauri::command]
+fn set_phonetic_correction(enabled: bool, state: tauri::State<'_, AppState>) {
+    state.controls.phonetic_correction.store(enabled, Ordering::Relaxed);
+    let mut cfg = state.cfg.lock().unwrap();
+    cfg.phonetic_correction = enabled;
     let _ = cfg.save();
 }
 
@@ -988,7 +1028,7 @@ fn main() -> anyhow::Result<()> {
             get_stats, clear_stats, set_stats_enabled, set_retention_enabled, clear_recordings,
             set_microphone, set_sound_enabled, set_zoom,
             set_replacements_enabled,
-            set_formatting_commands, set_quote_style, set_pronunciation_target, add_pronunciation_correction,
+            set_formatting_commands, set_number_formatting, set_phonetic_correction, set_quote_style, set_pronunciation_target, add_pronunciation_correction,
             menu_action,
             assets::assets_status, assets::download_assets
         ])
@@ -1981,6 +2021,13 @@ fn process_take(
         return;
     }
 
+    // Always leave a heard-vs-typed trail in the log, independent of audio
+    // retention: this is the cheapest diagnostic surface for "the
+    // transcription was wrong" reports — the raw ASR output next to what
+    // polish produced — and it survives even when retention is off or the
+    // audio has since been evicted.
+    tracing::info!(raw = %raw, polished = %result.text, "transcript");
+
     // Stage 3 — inject into the original window.
     inject::restore_focus(take.focus_target);
     suppressed.store(true, Ordering::SeqCst);
@@ -1994,6 +2041,20 @@ fn process_take(
             }
             history.push(result.text.clone());
             emit_state(app, "done");
+            // "Something smart just happened": when a phonetic correction fired
+            // this take, the overlay swaps its plain done checkmark for a flyout
+            // showing "heard -> corrected". Emitted right after the "done" state
+            // (so the Rust-side overlay_state the hit-test reads stays "done" —
+            // non-clickable — while overlay.js shows the flyout visually), and
+            // gated on !listening for the same reason as emit_state: a
+            // background take finishing must not interrupt a live recording.
+            if !listening.load(Ordering::Relaxed) && !result.notable.is_empty() {
+                let (heard, corrected) = result.notable[0].clone();
+                let _ = app.emit(
+                    "overlay-flyout",
+                    FlyoutDto { heard, corrected, more: result.notable.len().saturating_sub(1) },
+                );
+            }
             emit_history(app, history);
             if retention_enabled.load(Ordering::Relaxed) {
                 // ponytail: synchronous write, right here on the worker
