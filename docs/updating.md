@@ -103,6 +103,38 @@ D:\Coding\sotto-signing\sotto-updater.key
 > the MSVC toolset itself lives on D:. `docs/msvc-setup.md` was corrected to
 > match on 2026-09-23.
 
+### The Rust toolchain lives on D: (reinstalled 2026-09-24)
+
+`rustup`/`cargo` are **not** in the default `%USERPROFILE%\.cargo` / `.rustup`.
+They were reinstalled to D: to keep C: clear, via persistent user env vars:
+
+```
+CARGO_HOME  = D:\Coding\.cargo   (cargo.exe, rustup.exe, all shims in \bin)
+RUSTUP_HOME = D:\Coding\.rustup  (toolchains: stable-x86_64-pc-windows-msvc)
+```
+
+If `cargo` is "not recognized", these are why — a shell that predates the env
+change won't have `D:\Coding\.cargo\bin` on PATH. Call cargo by full path
+(`D:\Coding\.cargo\bin\cargo.exe`) or open a fresh shell. Reinstall if ever
+lost: set both env vars first, then `winget install Rustlang.Rustup`.
+
+**Reliable build invocation** (MSYS/Git-Bash mangles inline `cmd` quoting — do
+not fight it). Drive builds through a PowerShell wrapper that imports the
+vcvars environment and calls cargo by full path:
+
+```powershell
+$env:CARGO_HOME='D:\Coding\.cargo'; $env:RUSTUP_HOME='D:\Coding\.rustup'
+$env:LIBCLANG_PATH='D:\Coding\Tools\Python\Lib\site-packages\clang\native'
+$env:VULKAN_SDK='D:\Coding\Tools\VulkanSDK'
+cmd /c '"D:\VS\BuildTools\VC\Auxiliary\Build\vcvars64.bat" >nul 2>&1 && set' |
+  ForEach-Object { if ($_ -match '^([^=]+)=(.*)$') { Set-Item "env:$($matches[1])" $matches[2] } }
+$env:PATH += ';D:\Coding\.cargo\bin;D:\Coding\Tools\cmake\bin;D:\Coding\Tools\ninja;D:\Coding\Tools\VulkanSDK\Bin'
+& 'D:\Coding\.cargo\bin\cargo.exe' <args>
+```
+
+A first clean build compiles whisper.cpp from source (~30 min); incremental
+builds are ~2–10 min.
+
 ### The env block — paste at the top of any build shell (PowerShell)
 
 ```powershell
