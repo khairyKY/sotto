@@ -788,7 +788,7 @@ mod entry_kind_tests {
         // ui/index.js's removed `isSnippet` used to run client-side; the
         // point of this test is that upgrading never reclassifies a
         // pre-existing entry, so it has to agree with that old logic exactly.
-        let mut dict = vec![entry("GPT"), entry("khairyshhn1@gmail.com"), entry("Hey there, great to meet you")];
+        let mut dict = vec![entry("GPT"), entry("someone@example.com"), entry("Hey there, great to meet you")];
         assert!(migrate_entry_kinds(&mut dict));
         assert_eq!(dict[0].kind, Some(EntryKind::Word)); // short, plain
         assert_eq!(dict[1].kind, Some(EntryKind::Snippet)); // has '@'

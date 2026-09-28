@@ -1663,7 +1663,7 @@ mod tests {
         // didn't, because only one spoken phrase could point at an address.
         let entry = crate::config::DictEntry {
             spoken: "my main email".into(),
-            replacement: "khairyshhn1@gmail.com".into(),
+            replacement: "someone@example.com".into(),
             aliases: vec!["my primary email".into(), "my personal email".into()],
             enabled: true,
             kind: Some(EntryKind::Snippet),
@@ -1675,7 +1675,7 @@ mod tests {
         )];
         for said in ["my main email", "My Primary Email", "my personal email"] {
             let (out, hits) = apply_dictionary(&format!("send it to {said} please"), &dict, EntryKind::Snippet);
-            assert_eq!(out, "send it to khairyshhn1@gmail.com please", "failed for {said:?}");
+            assert_eq!(out, "send it to someone@example.com please", "failed for {said:?}");
             assert_eq!(hits, 1);
         }
     }
