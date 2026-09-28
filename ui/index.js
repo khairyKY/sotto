@@ -966,7 +966,7 @@ function pronSetState(state, word) {
   const focusEl = $("pron-focus-word");
   const input = $("pron-word-input");
   document.querySelector(".pron-listen-card")?.classList.toggle("is-listening", state === "listening");
-  focusEl.classList.remove("matched", "missed");
+  focusEl.classList.remove("matched", "missed", "detected");
 
   if (state === "listening") {
     input.disabled = true;
@@ -1673,6 +1673,21 @@ async function boot() {
       if (pronState !== "listening") return;
       const amp = Math.min(1, (e.payload || 0) * 8);
       $("pron-focus-word")?.style.setProperty("--amp", amp.toFixed(3));
+    });
+    T.event.listen("word-detected", (e) => {
+      // Parakeet heard the trained word mid-take — ignite the glow for real
+      // (not just mic level), then auto-stop shortly after: say it, it lights
+      // up, done. The pronState guard makes this fire once per listen.
+      if (pronState !== "listening" || e.payload !== pronArmedWord) return;
+      $("pron-focus-word")?.classList.add("detected");
+      const status = $("pron-status");
+      if (status) status.textContent = "Got it ✓";
+      setTimeout(() => {
+        if (pronState === "listening") {
+          invoke("stop_dictation");
+          pronSetState("resolving");
+        }
+      }, 700);
     });
     T.event.listen("navigate", (e) => {
       const page = e.payload;

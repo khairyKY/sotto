@@ -432,6 +432,21 @@ body {
   transform: scale(calc(1 + var(--amp) * 0.05));
   transition: transform 0.06s linear, text-shadow 0.06s linear;
 }
+/* Real detection: the model heard the word mid-take. Overrides the flickery
+   mic-level glow with a decisive ignition burst that settles into a strong,
+   steady glow — "it recognized you". */
+.pron-focus-word.detected {
+  color: var(--mm-accent-ink);
+  text-shadow: 0 0 40px var(--mm-accent-glow, rgba(142,116,208,1));
+  transform: scale(1.06);
+  animation: pron-focus-ignite 0.5s ease-out;
+  transition: text-shadow 0.25s ease-out, transform 0.25s ease-out, color 0.2s;
+}
+@keyframes pron-focus-ignite {
+  0% { text-shadow: 0 0 6px var(--mm-accent-glow, rgba(142,116,208,0.5)); transform: scale(1); }
+  60% { text-shadow: 0 0 58px var(--mm-accent-glow, rgba(142,116,208,1)); transform: scale(1.12); }
+  100% { text-shadow: 0 0 40px var(--mm-accent-glow, rgba(142,116,208,1)); transform: scale(1.06); }
+}
 .pron-focus-word.matched { animation: pron-focus-hit 0.7s ease-out; }
 .pron-focus-word.missed { animation: pron-focus-miss 0.5s ease-out; }
 @keyframes pron-focus-hit {

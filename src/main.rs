@@ -1435,6 +1435,9 @@ fn spawn_pipeline(
     let polish_mode = controls.polish_mode.clone();
     let chunking = cfg.chunked_transcription;
     let (work_tx, work_rx) = crossbeam_channel::unbounded::<Work>();
+    // True while a Pronunciation-Trainer peek transcription is in flight, so
+    // the audio thread never piles a second one behind it — see Work::Peek.
+    let peek_busy = Arc::new(AtomicBool::new(false));
 
     // Transcribe thread.
     {
@@ -1444,6 +1447,7 @@ fn spawn_pipeline(
         let stats_enabled = stats_enabled.clone();
         let retention_enabled = retention_enabled.clone();
         let training_word = training_word.clone();
+        let peek_busy = peek_busy.clone();
         std::thread::spawn(move || {
             let mut asr = asr::Asr::new();
             // Warm the ASR model before serving work, so the first dictation
@@ -1535,6 +1539,18 @@ fn spawn_pipeline(
                     // is busy the sidecar can wait, and the user is still
                     // talking either way.
                     Work::Prewarm => polisher.prewarm(),
+                    Work::Peek { samples, target } => {
+                        // Transcribe the take-so-far; if the trained word is in
+                        // it, tell the UI to ignite the glow. Best-effort — a
+                        // failed/late peek just means the glow waits for the
+                        // final sample. `peek_busy` gates the next one.
+                        if let Ok(text) = asr.transcribe(&samples) {
+                            if heard_word(&text, &target) {
+                                let _ = app.emit("word-detected", target);
+                            }
+                        }
+                        peek_busy.store(false, Ordering::Relaxed);
+                    }
                     Work::Repolish(text) => {
                         let out = polisher.polish(&text);
                         if !out.text.is_empty() {
@@ -1564,6 +1580,8 @@ fn spawn_pipeline(
         let mut sent: usize = 0;
         let mut take_id: u64 = 0;
         let mut recording = false;
+        // Pronunciation-Trainer detection peeks — last one's time, for cadence.
+        let mut last_peek = std::time::Instant::now();
 
         loop {
             // Poll only while recording — an idle Sotto has no reason to wake
@@ -1612,6 +1630,20 @@ fn spawn_pipeline(
                         sent = end;
                     }
                 }
+                // Pronunciation Trainer: while a word is armed, peek-transcribe
+                // the take-so-far ~1x/sec so the glow ignites on real detection,
+                // not just mic level. peek_busy keeps peeks from piling up on
+                // the transcribe thread; a training take is short and otherwise
+                // leaves that thread idle, so one peek in flight is plenty.
+                if let Some(target) = training_word.lock().unwrap().clone() {
+                    if all.len() >= MIN_CLIP_SAMPLES
+                        && last_peek.elapsed() >= Duration::from_millis(900)
+                        && !peek_busy.swap(true, Ordering::Relaxed)
+                    {
+                        last_peek = std::time::Instant::now();
+                        let _ = work_tx.send(Work::Peek { samples: all.clone(), target });
+                    }
+                }
                 continue;
             };
 
@@ -1624,6 +1656,8 @@ fn spawn_pipeline(
                             all.clear();
                             sent = 0;
                             recording = true;
+                            last_peek = std::time::Instant::now();
+                            peek_busy.store(false, Ordering::Relaxed);
                             listening.store(true, Ordering::Relaxed);
                             if sound_enabled.load(Ordering::Relaxed) {
                                 sounds::tick();
@@ -1739,6 +1773,11 @@ enum Work {
     Repolish(String),
     /// Spin the LLM sidecar up while the user is still speaking.
     Prewarm,
+    /// Pronunciation Trainer: transcribe the take-so-far mid-recording and,
+    /// if `target` is in it, fire "word-detected" so the UI can ignite the
+    /// glow the instant the model hears the word — not just on mic level.
+    /// Non-destructive: it never touches the take or its chunk partials.
+    Peek { samples: Vec<f32>, target: String },
 }
 
 /// Chunk text accumulated for a take that's still being recorded.
@@ -1876,6 +1915,21 @@ fn mode_str(m: PolishMode) -> &'static str {
         PolishMode::Rules => "rules",
         PolishMode::Ai => "ai",
     }
+}
+
+/// True if `text` contains `target` — as a whole word (case-insensitive,
+/// punctuation-stripped) for a single-word target, or as a substring for a
+/// multi-word one. The trainer's peek detection.
+fn heard_word(text: &str, target: &str) -> bool {
+    let target = target.trim();
+    if target.is_empty() {
+        return false;
+    }
+    if target.split_whitespace().count() > 1 {
+        return text.to_lowercase().contains(&target.to_lowercase());
+    }
+    text.split_whitespace()
+        .any(|w| w.trim_matches(|c: char| !c.is_alphanumeric()).eq_ignore_ascii_case(target))
 }
 
 /// Record a non-delivered outcome (cancelled/error) — words=0, no fixes.
@@ -2369,6 +2423,19 @@ mod tests {
             prefix_text: String::new(),
             sent: 0,
         }
+    }
+
+    #[test]
+    fn heard_word_matches_whole_words_and_multiword_targets() {
+        // Single-word: whole-word, case-insensitive, punctuation-tolerant.
+        assert!(heard_word("I asked Claude, thanks", "claude"));
+        assert!(heard_word("CLAUDE is here", "Claude"));
+        // Not a substring of a bigger word.
+        assert!(!heard_word("the clauded output", "claude"));
+        assert!(!heard_word("nothing relevant here", "Claude"));
+        // Multi-word target falls back to substring.
+        assert!(heard_word("open kai's flow now", "Kai's Flow"));
+        assert!(!heard_word("", "Claude"));
     }
 
     #[test]
