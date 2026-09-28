@@ -26,7 +26,7 @@ environment — see `docs/updating.md` §2)
 
 Hold **Right Ctrl**, speak, release. You'll see the overlay pill go
 Listening → Transcribing → (Polishing) → Done, and the transcribed text is
-typed/pasted into whatever app has focus. The tray icon turns cyan while
+typed/pasted into whatever app has focus. The tray mark turns accent-lilac while
 listening; right-click it for Pause / Polish tier / Settings / Quit.
 
 Only one instance runs at a time — launching a second one while the first is
@@ -36,7 +36,7 @@ up just exits.
 
 ```
 node scripts/serve-ui.mjs
-# http://localhost:5173/settings.html   and   /preview.html
+# http://localhost:5173/index.html   and   /preview.html
 ```
 
 No Rust build needed — the pages have a browser-mock fallback for the Tauri
