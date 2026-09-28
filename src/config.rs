@@ -309,6 +309,10 @@ pub struct AsrConfig {
     /// before polish ever sees them. Parakeet can't take a prompt: no effect
     /// there. On by default; `false` is the off-switch.
     pub vocabulary_prompt: bool,
+    /// Drop the loaded speech model (freeing its RAM) after this much
+    /// inactivity; the next hotkey press loads it again while you speak.
+    /// 0 keeps it loaded for the whole session.
+    pub idle_unload_secs: u64,
 }
 
 impl Default for AsrConfig {
@@ -317,6 +321,7 @@ impl Default for AsrConfig {
             model: "parakeet-v3".to_string(),
             language: "auto".to_string(),
             vocabulary_prompt: true,
+            idle_unload_secs: 300,
         }
     }
 }
@@ -656,18 +661,18 @@ pub fn whisper_model_path(model: &str) -> PathBuf {
     find_asset(PathBuf::from("models").join(file))
 }
 
-/// Is the *configured* speech model actually on disk yet?
+/// Is this engine's speech model actually on disk yet?
 ///
 /// Lives here rather than at the call site because the answer differs per
 /// engine — Parakeet is a directory of ONNX parts, Whisper is one .bin — and a
 /// caller that hardcodes either one silently misreports the other. It drives
 /// the "still downloading" vs "real failure" split the overlay shows, so
 /// getting it wrong tells the user to wait for a download that already
-/// finished.
-pub fn asr_model_present() -> bool {
-    let model = asr_model();
-    if whisper_model_file(&model).is_some() {
-        whisper_model_path(&model).exists()
+/// finished. Ask about the engine that ran (`Asr::engine`), not the configured
+/// one: they differ while a newly picked engine is still downloading (#10).
+pub fn asr_model_present(model: &str) -> bool {
+    if whisper_model_file(model).is_some() {
+        whisper_model_path(model).exists()
     } else {
         model_dir().join("encoder-model.int8.onnx").exists()
     }

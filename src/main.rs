@@ -812,10 +812,11 @@ fn mark_overlay_idle(state: tauri::State<'_, AppState>) {
     *state.controls.overlay_state.lock().unwrap() = "idle".to_string();
 }
 
-/// Switch the configured ASR engine. Persisted only — `asr::Asr::new()` reads
-/// this once at startup and caches the loaded model, so (honestly) this takes
-/// effect on the *next* restart, not this session. No live `Controls` field to
-/// flip, unlike `set_theme`/`set_microphone`.
+/// Switch the configured ASR engine. Takes over on the next take, no restart
+/// (#10): the transcribe thread `sync`s from this config between takes, and
+/// the hotkey press that starts the next take loads the new model while the
+/// user speaks. A picked engine that's still downloading waits until its
+/// files land, and the old one keeps transcribing meanwhile.
 #[tauri::command]
 fn set_asr_model(model: String, state: tauri::State<'_, AppState>) {
     let valid = model == "parakeet-v3" || model == "whisper-turbo" || model == "egyptian-small";
@@ -825,8 +826,8 @@ fn set_asr_model(model: String, state: tauri::State<'_, AppState>) {
     let _ = cfg.save();
 }
 
-/// Set the expected dictation language ("auto" or a BCP-47 code). Same
-/// restart-required caveat as `set_asr_model` — and Parakeet ignores this
+/// Set the expected dictation language ("auto" or a BCP-47 code). Applies
+/// from the next take, same as `set_asr_model` — and Parakeet ignores this
 /// entirely, English-only regardless of what's stored here.
 #[tauri::command]
 fn set_asr_language(language: String, state: tauri::State<'_, AppState>) {
@@ -902,7 +903,10 @@ fn flag_transcription(text: String, state: tauri::State<'_, AppState>) {
     bug_reports::record(&bug_reports::BugReport {
         t: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0),
         text,
-        asr_engine: cfg.asr.model.clone(),
+        // The engine that ran last, not the configured one: right after a hot
+        // switch (#10) the latest rows still came from the old engine. Config
+        // only before this session's first transcript.
+        asr_engine: asr::last_engine().unwrap_or_else(|| cfg.asr.model.clone()),
         asr_language: cfg.asr.language.clone(),
         polish_mode: format!("{:?}", cfg.polish.mode).to_lowercase(),
         dictionary_count: cfg.dictionary.iter().filter(|e| e.enabled).count(),
@@ -1512,7 +1516,28 @@ fn spawn_pipeline(
             // earlier take can still be waiting while the next one records.
             let mut partials: HashMap<u64, Partial> = HashMap::new();
 
-            for work in work_rx {
+            loop {
+                let work = match work_rx.recv_timeout(asr.idle_wait()) {
+                    Ok(work) => work,
+                    // No work for `asr.idle_unload_secs`: give the model's RAM
+                    // back (#12); the next hotkey press reloads it. Not while
+                    // recording: a long take with chunking off sends nothing
+                    // between its Prewarm and its Finish.
+                    Err(crossbeam_channel::RecvTimeoutError::Timeout) => {
+                        if !listening.load(Ordering::Relaxed) {
+                            asr.unload();
+                        }
+                        continue;
+                    }
+                    Err(crossbeam_channel::RecvTimeoutError::Disconnected) => break,
+                };
+                // Between takes, pick up Settings changes: engine (#10),
+                // language, trained words for the prompt. "Between" = no take
+                // holds chunk text, so every chunk of a take and its tail go
+                // through one engine.
+                if partials.is_empty() {
+                    asr.sync(&app.state::<AppState>().cfg.lock().unwrap());
+                }
                 match work {
                     // An empty chunk is a silent one — register the take as
                     // chunked so Finish only transcribes the tail, but never
@@ -1585,8 +1610,14 @@ fn spawn_pipeline(
                     }
                     // Queued behind any in-flight work on purpose: if the model
                     // is busy the sidecar can wait, and the user is still
-                    // talking either way.
-                    Work::Prewarm => polisher.prewarm(),
+                    // talking either way. Same for the ASR model, if idle
+                    // unloaded it or the engine just switched (#10, #12): it
+                    // loads while the user speaks, and anything this take
+                    // sends meanwhile waits in the queue behind it.
+                    Work::Prewarm => {
+                        polisher.prewarm();
+                        asr.preload();
+                    }
                     Work::Peek { id, samples, target } => {
                         // Transcribe the take-so-far; if the trained word is in
                         // it, tell the UI to ignite the glow. Best-effort — a
@@ -2155,7 +2186,7 @@ fn process_take(
                 // Distinguish "the model isn't on disk yet" (first-run
                 // download still in flight) from a real failure — the take is
                 // stashed either way, so ↻ works once the download lands.
-                let model_missing = !config::asr_model_present();
+                let model_missing = !config::asr_model_present(asr.engine());
                 emit_state(app, if model_missing { "nomodel" } else { "error" });
                 record_outcome(&take, stats_enabled, "error");
                 take.reason = if model_missing { "Speech model still downloading" } else { "Couldn't transcribe it" };
@@ -2282,7 +2313,7 @@ fn process_take(
                     &raw,
                     &result.text,
                     &app_name,
-                    &config::asr_model(),
+                    asr.engine(),
                     &take.tier,
                     take.audio_ms,
                     max_mb,
