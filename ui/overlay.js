@@ -602,7 +602,12 @@ function drawState(x, y, w, h, now, radius, shadowScale, baseAlpha) {
       let str = s;
       while (str.length > 1 && tx + ctx.measureText(str).width > maxX) str = str.slice(0, -1);
       if (str !== s) str = str.replace(/.$/, '…');
+      // Each segment is its own bidi paragraph: an Arabic-first phrase
+      // ("الـ build") needs an RTL base or its words draw out of order.
+      // textAlign stays 'left', so the pill still lays out left to right.
+      ctx.direction = /^[^\p{L}]*\p{Script=Arabic}/u.test(str) ? 'rtl' : 'ltr';
       ctx.fillText(str, tx, yc);
+      ctx.direction = 'inherit';
       tx += ctx.measureText(str).width;
     };
     seg(f.heard, muted, '500');

@@ -14,12 +14,16 @@ const mock = {
     { spoken: "gee pee tee", replacement: "GPT", aliases: [], enabled: true, kind: "word" },
     { spoken: "my main email", replacement: "you@example.com", aliases: ["my primary email", "my email"], enabled: true, kind: "snippet" },
     { spoken: "arrow", replacement: "→", aliases: [], enabled: true, kind: "word" },
+    { spoken: "الـ build", replacement: "الـ build بتاع الـ release", aliases: [], enabled: true, kind: "snippet" },
   ],
   replacementsEnabled: true,
   formattingCommands: true,
   tone: "",
   appTones: [],
   history: [
+    // Arabic-first and code-switched samples keep bidi rendering (#42) checkable in the preview.
+    { time: "2:31 PM", text: "افتح الـ terminal وشغّل الـ build" },
+    { time: "2:20 PM", text: "الاجتماع الساعة اتناشر ونص" },
     { time: "2:14 PM", text: "Let's ship the overlay states first." },
     { time: "1:58 PM", text: "you@example.com" },
     { time: "11:02 AM", text: "Refactor the polish tier." },
@@ -187,7 +191,7 @@ function renderRecent(entries) {
     row.className = "recent-item";
     row.innerHTML = `
       <span class="recent-time">${e.time}</span>
-      <span class="recent-text">${escapeHtml(e.text)}</span>
+      <span class="recent-text" dir="auto">${escapeHtml(e.text)}</span>
       <span class="recent-copy" title="Copy">⧉</span>
       <span class="recent-retry" title="Re-polish &amp; copy">↻</span>`;
     row.querySelector(".recent-copy").onclick = (ev) => { ev.stopPropagation(); copyText(e.text); };
@@ -362,7 +366,7 @@ const isSnippet = (e) =>
 // are visible without opening edit mode — "+N more" once there's more than 2.
 function renderAliasChips(aliases) {
   if (!aliases || !aliases.length) return "";
-  const shown = aliases.slice(0, 2).map(a => `<span class="alias-chip">${escapeHtml(a)}</span>`).join("");
+  const shown = aliases.slice(0, 2).map(a => `<span class="alias-chip" dir="auto">${escapeHtml(a)}</span>`).join("");
   const rest = aliases.length - Math.min(2, aliases.length);
   const more = rest > 0 ? `<span class="alias-chip alias-chip-more">+${rest} more</span>` : "";
   return `<span class="alias-list">${shown}${more}</span>`;
@@ -413,7 +417,7 @@ function renderDictPage(entries) {
       if (!aliasHost) return;
       aliasHost.innerHTML = draftAliases.map((a) => `
         <div class="alias-edit-item">
-          <input class="dict-edit-input alias-input" value="${escapeHtml(a)}" placeholder="another way to say it" />
+          <input class="dict-edit-input alias-input" dir="auto" value="${escapeHtml(a)}" placeholder="another way to say it" />
           <span class="action-btn alias-remove-btn" title="Remove">
             <svg viewBox="0 0 20 20" width="13" height="13"><path d="M5 5 L15 15 M15 5 L5 15" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
           </span>
@@ -439,9 +443,9 @@ function renderDictPage(entries) {
         row.classList.remove("entry-off");
         row.innerHTML = `
           <div class="dict-edit-fields">
-            <input class="dict-edit-input spoken" value="${escapeHtml(e.spoken)}" placeholder="spoken" />
+            <input class="dict-edit-input spoken" dir="auto" value="${escapeHtml(e.spoken)}" placeholder="spoken" />
             <span class="dict-edit-arrow">&rarr;</span>
-            <input class="dict-edit-input replacement" value="${escapeHtml(e.replacement)}" placeholder="replacement" />
+            <input class="dict-edit-input replacement" dir="auto" value="${escapeHtml(e.replacement)}" placeholder="replacement" />
             <div class="dict-edit-actions">
               <span class="action-btn save-btn" title="Save">
                 <svg viewBox="0 0 20 20" width="15" height="15"><path d="M4 10.5 L8 14.5 L16 5.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
@@ -483,10 +487,10 @@ function renderDictPage(entries) {
         row.classList.toggle("entry-off", e.enabled === false);
         row.innerHTML = `
           <button class="switch entry-toggle" role="switch" aria-checked="${e.enabled !== false}"><span class="knob"></span></button>
-          <span class="term">${escapeHtml(e.spoken)}</span>
+          <span class="term" dir="auto">${escapeHtml(e.spoken)}</span>
           ${renderAliasChips(e.aliases)}
           <span class="arrow">&rarr;</span>
-          <span class="replace">${escapeHtml(e.replacement)}</span>
+          <span class="replace" dir="auto">${escapeHtml(e.replacement)}</span>
           <div class="actions">
             <span class="action-btn edit-btn" title="Edit">
               <svg viewBox="0 0 20 20" width="15" height="15"><path d="M13 4 L16 7 L7 16 H4 V13 Z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg>
@@ -591,7 +595,7 @@ function renderSnipPage(entries) {
       if (!aliasHost) return;
       aliasHost.innerHTML = draftAliases.map((a) => `
         <div class="alias-edit-item">
-          <input class="dict-edit-input alias-input" value="${escapeHtml(a)}" placeholder="another way to say it" />
+          <input class="dict-edit-input alias-input" dir="auto" value="${escapeHtml(a)}" placeholder="another way to say it" />
           <span class="action-btn alias-remove-btn" title="Remove">
             <svg viewBox="0 0 20 20" width="13" height="13"><path d="M5 5 L15 15 M15 5 L5 15" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
           </span>
@@ -617,9 +621,9 @@ function renderSnipPage(entries) {
         row.classList.remove("entry-off");
         row.innerHTML = `
           <div class="dict-edit-fields snip-edit-fields">
-            <input class="dict-edit-input spoken" value="${escapeHtml(e.spoken)}" placeholder="phrase" />
+            <input class="dict-edit-input spoken" dir="auto" value="${escapeHtml(e.spoken)}" placeholder="phrase" />
             <span class="dict-edit-arrow">&rarr;</span>
-            <input class="dict-edit-input replacement" value="${escapeHtml(e.replacement)}" placeholder="expansion" />
+            <input class="dict-edit-input replacement" dir="auto" value="${escapeHtml(e.replacement)}" placeholder="expansion" />
             <div class="dict-edit-actions">
               <span class="action-btn save-btn" title="Save">
                 <svg viewBox="0 0 20 20" width="15" height="15"><path d="M4 10.5 L8 14.5 L16 5.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
@@ -661,9 +665,9 @@ function renderSnipPage(entries) {
         row.classList.toggle("entry-off", e.enabled === false);
         row.innerHTML = `
           <button class="switch entry-toggle" role="switch" aria-checked="${e.enabled !== false}"><span class="knob"></span></button>
-          <span class="trigger">${escapeHtml(e.spoken)}</span>
+          <span class="trigger" dir="auto">${escapeHtml(e.spoken)}</span>
           ${renderAliasChips(e.aliases)}
-          <span class="preview">${escapeHtml(e.replacement)}</span>
+          <span class="preview" dir="auto">${escapeHtml(e.replacement)}</span>
           <div class="actions">
             <span class="action-btn edit-btn" title="Edit">
               <svg viewBox="0 0 20 20" width="15" height="15"><path d="M13 4 L16 7 L7 16 H4 V13 Z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg>
@@ -902,7 +906,7 @@ function renderHistoryPage(entries) {
   entries.forEach((e, i) => {
     const row = document.createElement("div");
     row.className = "hist-row";
-    row.innerHTML = `<span class="time">${e.time}</span><span class="txt">${escapeHtml(e.text)}</span><span class="copy" title="Copy">⧉</span><span class="retry" title="Re-polish &amp; copy">↻</span><span class="flag" title="Flag as wrong / not working">⚑</span>`;
+    row.innerHTML = `<span class="time">${e.time}</span><span class="txt" dir="auto">${escapeHtml(e.text)}</span><span class="copy" title="Copy">⧉</span><span class="retry" title="Re-polish &amp; copy">↻</span><span class="flag" title="Flag as wrong / not working">⚑</span>`;
     row.querySelector(".copy").onclick = (ev) => { ev.stopPropagation(); copyText(e.text); };
     row.querySelector(".retry").onclick = (ev) => { ev.stopPropagation(); invoke("repolish_copy", { text: e.text }); };
     const flagEl = row.querySelector(".flag");
@@ -945,8 +949,8 @@ function renderTrainedWords() {
     const row = document.createElement("div");
     row.className = "pron-trained-row";
     row.innerHTML = `
-      <span class="pron-trained-word">${escapeHtml(v.word)}</span>
-      <span class="pron-trained-heard">${v.heardAs.length ? "heard as: " + escapeHtml(v.heardAs.join(", ")) : ((v.recent || []).length ? "no corrections logged" : "no attempts yet")}</span>
+      <span class="pron-trained-word" dir="auto">${escapeHtml(v.word)}</span>
+      <span class="pron-trained-heard">${v.heardAs.length ? "heard as: " + v.heardAs.map(h => `<bdi>${escapeHtml(h)}</bdi>`).join(", ") : ((v.recent || []).length ? "no corrections logged" : "no attempts yet")}</span>
       <span class="pron-strength" style="--pct:${pct}"><span class="pron-strength-num">${total ? `${hits}/${total}` : "—"}</span></span>
     `;
     host.appendChild(row);
@@ -999,9 +1003,9 @@ function pronAddSampleRow(word, heard, matched) {
   const row = document.createElement("div");
   row.className = matched ? "pron-sample-row matched" : "pron-sample-row";
   if (matched) {
-    row.innerHTML = `<span class="pron-sample-heard">Heard: <b>${escapeHtml(heard)}</b></span><span class="pron-sample-match" title="Matched">&#10003;</span>`;
+    row.innerHTML = `<span class="pron-sample-heard">Heard: <b dir="auto">${escapeHtml(heard)}</b></span><span class="pron-sample-match" title="Matched">&#10003;</span>`;
   } else {
-    row.innerHTML = `<span class="pron-sample-heard">Heard: <b>${escapeHtml(heard || "(nothing)")}</b></span><button class="btn btn-ghost" id="pron-add-correction">Add correction</button>`;
+    row.innerHTML = `<span class="pron-sample-heard">Heard: <b dir="auto">${escapeHtml(heard || "(nothing)")}</b></span><button class="btn btn-ghost" id="pron-add-correction">Add correction</button>`;
     row.querySelector("#pron-add-correction").onclick = async () => {
       await invoke("add_pronunciation_correction", { word, heard });
       const s = await getSettings();
@@ -1482,7 +1486,7 @@ async function boot() {
   if (hasTauri && T.event) T.event.emit("theme-changed", initTheme);
   window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => {
     const t = $("theme")?.dataset.value || "system";
-    if (t === "system") { applyTheme("system"); T.event.emit("theme-changed", "system"); }
+    if (t === "system") { applyTheme("system"); if (hasTauri && T.event) T.event.emit("theme-changed", "system"); }
   });
 
   // Warning cards dismiss wiring
