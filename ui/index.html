@@ -73,7 +73,7 @@
         <!-- ===================== HOME ===================== -->
         <section class="page active" id="page-home">
           <h1 class="page-title" id="greeting">Good morning.</h1>
-          <p class="page-sub" id="hotkey-hint">Hold <span class="keycap-mini" id="keycap-display">Right Ctrl</span> and speak.</p>
+          <p class="page-sub" id="hotkey-hint"><span id="hint-verb">Hold</span> <span class="keycap-mini" id="keycap-display">Right Ctrl</span> <span id="hint-tail">and speak.</span></p>
 
           <div class="stat-row" id="stat-row">
             <div class="card-raised stat-card">
@@ -146,7 +146,7 @@
             <div class="card-raised insight-card">
               <div class="insight-card-label">Total words</div>
               <div class="insight-big" id="total-words-val">0</div>
-              <div class="insight-detail-row" id="total-period-row"><span class="bold" id="total-period-val">0</span> this week</div>
+              <div class="insight-detail-row" id="total-period-row"><span class="bold" id="total-period-val">0</span> <span id="total-period-label">this week</span></div>
               <div class="insight-detail-row" id="total-saved-row">&asymp; <span class="bold" id="total-saved-val">0</span> min saved vs. typing</div>
             </div>
           </div>
@@ -352,7 +352,7 @@
                 <div class="settings-row bare">
                   <div class="row-label">
                     <div class="label">Dictation key</div>
-                    <div class="sub">Hold to talk &mdash; release to transcribe</div>
+                    <div class="sub" id="activation-sub">Hold to talk &mdash; release to transcribe</div>
                   </div>
                   <div class="row-control" id="hotkey-control">
                     <span class="keycap" id="hotkey-keycap">Right Ctrl</span>
