@@ -22,6 +22,7 @@ use harper_core::linting::{Lint, LintGroup, LintKind, Linter};
 use harper_core::spell::{Dictionary, FstDictionary};
 use harper_core::{Dialect, Document, remove_overlaps};
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::sync::atomic::Ordering;
 
 /// Unambiguous spoken disfluencies. Kept intentionally short: every entry here
@@ -188,14 +189,25 @@ impl Polisher {
             raw
         };
 
-        let cleaned = match self.mode() {
+        let (cleaned, tier, fallback) = match self.mode() {
             // Tone rewrites voice, which only the AI tier can do — Rules just
             // strips/fixes, it can't re-voice a sentence. `tone` is unused on
             // these two branches on purpose, so Off/Rules stay byte-identical
             // to before tones existed.
-            PolishMode::Off => raw.trim().to_string(),
-            PolishMode::Rules => self.apply_harper(&tier0(raw)),
-            PolishMode::Ai => self.polish_ai(raw, tone),
+            PolishMode::Off => (raw.trim().to_string(), "off", ""),
+            PolishMode::Rules => (self.apply_harper(&tier0(raw)), "rules", ""),
+            PolishMode::Ai => {
+                let rules = tier0(raw);
+                match self.polish_ai(raw, &rules, tone) {
+                    // No Harper on the model's output: the model already makes
+                    // the mechanical fixes Harper targets, with the whole
+                    // sentence in view, and on invented model outputs Harper's
+                    // only change was a wrong one ("Hi Sam," -> "Hi SAM,").
+                    Ok(text) => (text, "ai", ""),
+                    // Every fallback gets exactly what Rules mode gives (#55).
+                    Err(reason) => (self.apply_harper(&rules), "rules", reason),
+                }
+            }
         };
         // Diff against the word-dictionary-corrected raw, not the ASR-
         // original one, so a Word-entry substitution is never miscounted as
@@ -207,7 +219,7 @@ impl Polisher {
         } else {
             apply_dictionary(&cleaned, &dict, EntryKind::Snippet)
         };
-        PolishResult { text, corrected_words, dict_hits: word_hits + snippet_hits, notable }
+        PolishResult { text, corrected_words, dict_hits: word_hits + snippet_hits, notable, tier, fallback }
     }
 
     /// Pre-spawn the LLM sidecar so its load overlaps recording. Called when
@@ -227,9 +239,9 @@ impl Polisher {
     /// Called once at worker startup, where it hides behind the ASR model load
     /// we already pay for and the user feels nothing. Doing it lazily instead
     /// costs that 640 ms at the worst possible moment: on `Start` it delays the
-    /// listening pill past the hotkey press, and in the AI tier — which still
-    /// routes short clips through these rules — it lands *after* the user has
-    /// already spoken.
+    /// listening pill past the hotkey press, and in the AI tier — whose rules
+    /// fallback (short clips, tidy ones, LLM failures) runs these too — it
+    /// lands *after* the user has already spoken.
     ///
     /// Warmed regardless of the current mode: `polish.mode` is live-switchable
     /// from the tray, so "Off at launch" doesn't mean off at dictation time.
@@ -248,13 +260,13 @@ impl Polisher {
             && word_count(raw) >= self.ai_min_words()
     }
 
-    /// Tier 1: route long-enough dictations through the LLM, falling back to
-    /// Tier 0 rules for short clips, a missing sidecar, or any LLM error.
-    fn polish_ai(&self, raw: &str, tone: &str) -> String {
-        let rules = tier0(raw);
-
+    /// Tier 1: route long-enough dictations through the LLM. `Err` names why
+    /// the caller keeps the `rules` result instead: a short clip, an already
+    /// tidy one, a missing sidecar, an LLM error, or an output
+    /// `rewrite_guard` rejects.
+    fn polish_ai(&self, raw: &str, rules: &str, tone: &str) -> Result<String, &'static str> {
         if word_count(raw) < self.ai_min_words() {
-            return rules; // too short to be worth the round-trip
+            return Err("short"); // too short to be worth the round-trip
         }
         // Quality gate: if the rules pass didn't change anything (no fillers
         // to remove, spacing already clean), the transcript is already tidy —
@@ -265,26 +277,29 @@ impl Polisher {
             == raw.trim().trim_end_matches(|c: char| c.is_ascii_punctuation() || c.is_whitespace())
         {
             tracing::debug!("polish: skipped AI — rules pass was a no-op");
-            return rules;
+            return Err("no-op");
         }
-        let Some(llm) = &self.llm else { return rules };
+        let llm = self.llm.as_ref().ok_or("unavailable")?;
 
-        let vocabulary = vocabulary_clause(&self.controls.vocabulary.lock().unwrap());
+        let vocabulary = self.controls.vocabulary.lock().unwrap().clone();
         let t = std::time::Instant::now();
-        match llm.polish(&rules, tone, &vocabulary) {
-            Ok(text) if !text.trim().is_empty() => {
-                tracing::info!(llm_ms = t.elapsed().as_millis(), "AI polish applied");
-                text
-            }
+        let text = match llm.polish(rules, tone, &vocabulary_clause(&vocabulary)) {
+            Ok(text) if !text.trim().is_empty() => text,
             Ok(_) => {
                 tracing::warn!("AI polish returned empty text — using rules");
-                rules
+                return Err("empty");
             }
             Err(err) => {
                 tracing::warn!(error = %err, "AI polish failed — using rules");
-                rules
+                return Err("llm-error");
             }
+        };
+        if let Some(reason) = rewrite_guard(rules, &text, &vocabulary) {
+            return Err(reason);
         }
+        let text = if rules.contains('\n') { restore_breaks(rules, &text).ok_or("line-breaks")? } else { text };
+        tracing::info!(llm_ms = t.elapsed().as_millis(), "AI polish applied");
+        Ok(text)
     }
 
     /// Run Harper over `text` on the cached, lazily-built `LintGroup`.
@@ -351,10 +366,95 @@ pub struct PolishResult {
     /// phonetic corrector's `(heard, corrected)` pairs) — consumed by the
     /// "something smart just happened" flyout, ignored elsewhere.
     pub notable: Vec<(String, String)>,
+    /// The tier that actually produced `text` ("off" | "rules" | "ai") —
+    /// not the configured one — and, when AI mode kept the rules result,
+    /// why ("short", "no-op", "unavailable", "empty", "llm-error",
+    /// "line-breaks", or a `rewrite_guard` reason); "" otherwise (#67).
+    pub tier: &'static str,
+    pub fallback: &'static str,
 }
 
 fn word_count(s: &str) -> usize {
     s.split_whitespace().count()
+}
+
+/// An AI rewrite must keep at least this share of its input's content words
+/// (#65). Measured on the recordings review (#5): every clean AI take lost
+/// at most one content word (97%+ kept); the three that dropped clauses kept
+/// 72%, 84% and 95%.
+const MIN_KEPT_PCT: usize = 96;
+/// ...and may bring in at most this many content words its input never had
+/// (vocabulary words aside). Clean takes added at most one (a respelling).
+const MAX_NEW_WORDS: usize = 2;
+
+/// The words a rewrite has to keep, lowercased. Skips what cleanup may
+/// legitimately change: function words, fillers (the prompt's own "like" /
+/// "يعني" too), numbers in digits or words (the model may reformat them),
+/// contractions, and one-letter ASR fragments.
+fn content_words(s: &str) -> Vec<String> {
+    s.split(|c: char| !(c.is_alphanumeric() || matches!(c, '\'' | '’')))
+        .filter(|w| w.chars().count() > 1 && !w.contains(['\'', '’']) && !w.contains(|c: char| c.is_ascii_digit()))
+        .map(str::to_lowercase)
+        .filter(|w| {
+            !FUNCTION_WORDS.contains(&w.as_str())
+                && !FILLERS.contains(&w.as_str())
+                && !["like", "يعني"].contains(&w.as_str())
+                && classify_number(w).is_none()
+        })
+        .collect()
+}
+
+/// Why an AI rewrite can't be trusted over the rules result, or `None` if it
+/// can (#65): it dropped words the speaker said, brought in words they
+/// didn't, or answered with the worked example's words (`llm::VOCAB_EXAMPLE`).
+/// Casing, punctuation, line breaks, fillers and number formatting never
+/// count (see `content_words`). A trained word may appear from nowhere and
+/// its known mishearings may vanish — that swap is the model's job. Logs
+/// counts only, never text (#48).
+///
+/// ponytail: a bag of words — it catches dropped clauses and invented text,
+/// not a self-correction flipped using the same words. Upgrade path: an
+/// order-aware diff (`changed_words`' LCS) if that shows up again.
+fn rewrite_guard(input: &str, output: &str, vocabulary: &[VocabEntry]) -> Option<&'static str> {
+    let trained: Vec<String> = vocabulary.iter().flat_map(|e| content_words(&e.word)).collect();
+    let misheard: Vec<String> = vocabulary.iter().flat_map(|e| e.heard_as.iter().flat_map(|h| content_words(h))).collect();
+    let mut have: HashMap<String, usize> = HashMap::new();
+    for w in content_words(input).into_iter().filter(|w| !misheard.contains(w)) {
+        *have.entry(w).or_default() += 1;
+    }
+    let total: usize = have.values().sum();
+    // The example only goes out with a vocabulary (see `llm::Llm::polish`).
+    let example: Vec<String> = if vocabulary.is_empty() {
+        Vec::new()
+    } else {
+        crate::llm::VOCAB_EXAMPLE.iter().flat_map(|(_, a)| content_words(a)).collect()
+    };
+    let (mut kept, mut new, mut leak) = (0, 0, false);
+    for w in content_words(output) {
+        match have.get_mut(&w) {
+            Some(n) if *n > 0 => {
+                *n -= 1;
+                kept += 1;
+            }
+            Some(_) => {} // said again: a repeat, not a new word
+            None if trained.contains(&w) || misheard.contains(&w) => {}
+            None => {
+                new += 1;
+                leak |= example.contains(&w);
+            }
+        }
+    }
+    let reason = if leak {
+        "example-leak"
+    } else if total - kept >= 2 && kept * 100 < total * MIN_KEPT_PCT {
+        "dropped-words"
+    } else if new > MAX_NEW_WORDS {
+        "new-words"
+    } else {
+        return None;
+    };
+    tracing::warn!(reason, kept, total, new, "AI polish rewrote the take — using rules");
+    Some(reason)
 }
 
 /// Build the LLM vocabulary clause: "Word (heard as a, b, c), Word2, ..."
@@ -421,6 +521,67 @@ fn apply_formatting_commands(raw: &str) -> String {
         text = replace_whole_ci(&text, phrase, brk).0;
     }
     collapse_space_around_breaks(&text)
+}
+
+/// Rewrite `text` word by word without losing its line breaks. `pass` gets
+/// one line's whitespace tokens and returns the words to put back; they're
+/// rejoined with single spaces and the lines with the exact breaks between
+/// them. Every word-level pass (tier0, numbers, phonetic) goes through here:
+/// each used to split and rejoin the whole text itself, flattening the
+/// breaks "new line"/"new paragraph" had just made (#85). Per line, a number
+/// run, a stutter or a phonetic match also never reaches across a break.
+fn rewrite_words<'a, S: std::borrow::Borrow<str>>(text: &'a str, mut pass: impl FnMut(&[&'a str]) -> Vec<S>) -> String {
+    text.split('\n')
+        .map(|line| pass(&line.split_whitespace().collect::<Vec<_>>()).join(" "))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Put `input`'s line breaks back into the model's rewrite of it. The model
+/// joins lines whatever the prompt says (measured: 0 of 5 multi-line takes
+/// kept a single break, with or without a stronger instruction or a marker
+/// glyph), so each break goes back between the same two words — the last of
+/// one line, the first of the next — found in order. `None` if a pair didn't
+/// survive the rewrite; the caller then keeps the rules result (#85).
+///
+/// ponytail: exact word pairs, so a boundary the model reworded ("I will" ->
+/// "I'll") falls back to rules. Upgrade path: fuzzy-match the pair.
+fn restore_breaks(input: &str, output: &str) -> Option<String> {
+    let norm = |t: &str| split_affixes(t).1.to_lowercase();
+    let toks: Vec<(usize, &str)> =
+        output.split_whitespace().map(|t| (t.as_ptr() as usize - output.as_ptr() as usize, t)).collect();
+    let mut breaks = vec![0; toks.len()]; // '\n's after each output token
+    let (mut lead, mut pending, mut pos) = (0, 0, 0);
+    let mut last: Option<&str> = None; // last word of the previous non-empty line
+    for (i, line) in input.split('\n').enumerate() {
+        pending += usize::from(i > 0);
+        let Some(first) = line.split_whitespace().next() else { continue };
+        match last {
+            None => lead = pending,
+            Some(before) => {
+                let (b, f) = (norm(before), norm(first));
+                let k = (pos..toks.len().saturating_sub(1))
+                    .find(|&k| norm(toks[k].1) == b && norm(toks[k + 1].1) == f)?;
+                breaks[k] = pending;
+                pos = k + 1;
+            }
+        }
+        pending = 0;
+        last = line.split_whitespace().last();
+    }
+    let mut out = "\n".repeat(lead);
+    for (k, &(start, tok)) in toks.iter().enumerate() {
+        if k > 0 {
+            let (prev_start, prev) = toks[k - 1];
+            match breaks[k - 1] {
+                0 => out.push_str(&output[prev_start + prev.len()..start]),
+                n => out.push_str(&"\n".repeat(n)),
+            }
+        }
+        out.push_str(tok);
+    }
+    out.push_str(&"\n".repeat(pending));
+    Some(out)
 }
 
 /// Drop spaces/tabs immediately touching a `\n` just inserted above. Raw
@@ -646,7 +807,11 @@ fn meridiem(tok: &str) -> Option<String> {
 /// Turn spoken numbers into digits. Runs as its own pass (see the config
 /// `number_formatting` toggle), independent of polish mode.
 fn normalize_numbers(text: &str) -> String {
-    let toks: Vec<&str> = text.split_whitespace().collect();
+    rewrite_words(text, number_words)
+}
+
+/// `normalize_numbers` over one line's tokens.
+fn number_words(toks: &[&str]) -> Vec<String> {
     // Bare lowercased cores, for the run parser.
     let cores: Vec<String> = toks.iter().map(|t| split_affixes(t).1.to_ascii_lowercase()).collect();
     let core_refs: Vec<&str> = cores.iter().map(|s| s.as_str()).collect();
@@ -703,11 +868,38 @@ fn normalize_numbers(text: &str) -> String {
             }
         }
 
+        // "the next one", "that one", "a new one": the pronoun, not a count (#66).
+        if run.consumed == 1 && core_refs[i] == "one" && pronoun_one(&core_refs[..i]) {
+            out.push(toks[i].to_string());
+            i += 1;
+            continue;
+        }
+
         let suffix = if run.ordinal { ordinal_suffix(run.value) } else { "" };
         out.push(format!("{lead}{}{suffix}{trail_last}", run.value));
         i += run.consumed;
     }
-    out.join(" ")
+    out
+}
+
+/// Words right after which a lone "one" is the pronoun, never a count.
+const ONE_PRONOUN_AFTER: &[&str] =
+    &["the", "that", "this", "which", "next", "last", "other", "another", "each", "every", "no", "any"];
+
+/// Is a lone "one" after `prev` (the lowercased words before it) the
+/// pronoun? After a determiner ("that one", "no one") or an ordinal ("the
+/// third one"), or after an article and one plain word ("a new one", "the
+/// big one"). Everything else stays a count: "one of three", "I have one".
+fn pronoun_one(prev: &[&str]) -> bool {
+    match prev {
+        [.., p] if ONE_PRONOUN_AFTER.contains(p) || matches!(classify_number(p), Some(NumTok::OrdUnit(_) | NumTok::OrdTerm(_))) => {
+            true
+        }
+        [.., a, p] => {
+            matches!(*a, "the" | "a" | "an") && !p.is_empty() && !FUNCTION_WORDS.contains(p) && classify_number(p).is_none()
+        }
+        _ => false,
+    }
 }
 
 /// Which quote-mark glyphs spoken quote commands produce. Straight is the
@@ -924,15 +1116,17 @@ fn apply_paired_quote(text: &str, open_glyph: &str, close_glyph: &str) -> String
     out
 }
 
-/// Tier 0 rules cleanup. `split_whitespace` also collapses runs of spaces and
-/// trims, so filtering + rejoining handles whitespace normalization for free.
+/// Tier 0 rules cleanup. `rewrite_words` also collapses runs of spaces and
+/// trims each line, so filtering + rejoining handles whitespace
+/// normalization for free.
 fn tier0(raw: &str) -> String {
-    let kept: Vec<&str> = raw.split_whitespace().filter(|t| !is_filler(t)).collect();
-    // Stutter collapse runs AFTER filler stripping: by now "uh uh uh" is
-    // already gone, so any run of identical tokens left is genuine word
-    // repetition ("the the store", "I I I think"), not disfluency.
-    let deduped = collapse_stutters(&kept);
-    capitalize_first(&deduped.join(" "))
+    capitalize_first(&rewrite_words(raw, |toks| {
+        let kept: Vec<&str> = toks.iter().copied().filter(|t| !is_filler(t)).collect();
+        // Stutter collapse runs AFTER filler stripping: by now "uh uh uh" is
+        // already gone, so any run of identical tokens left is genuine word
+        // repetition ("the the store", "I I I think"), not disfluency.
+        collapse_stutters(&kept)
+    }))
 }
 
 /// Collapse a run of the same token repeated back-to-back to one occurrence,
@@ -997,11 +1191,14 @@ fn is_filler(token: &str) -> bool {
     FILLERS.contains(&lower.as_str())
 }
 
+/// Capitalize the first letter — after any leading break, so a take that
+/// opens with "new paragraph" still starts with a capital.
 fn capitalize_first(s: &str) -> String {
-    let mut chars = s.chars();
+    let body = s.trim_start();
+    let mut chars = body.chars();
     match chars.next() {
-        Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
-        None => String::new(),
+        Some(first) => format!("{}{}{}", &s[..s.len() - body.len()], first.to_uppercase(), chars.as_str()),
+        None => s.to_string(),
     }
 }
 
@@ -1089,9 +1286,8 @@ fn apply_phonetic_corrections(text: &str, targets: &[String]) -> (String, Vec<(S
     // tokens are real English words.
     let english = FstDictionary::curated();
 
-    let out = text
-        .split_whitespace()
-        .map(|tok| {
+    let out = rewrite_words(&text, |toks| {
+        toks.iter().map(|&tok| {
             let (lead, core, trail) = split_affixes(tok);
             // Plain letters only: skips code ("std::io"), contractions and
             // possessives ("they're", "Claude's") and non-English words.
@@ -1119,8 +1315,8 @@ fn apply_phonetic_corrections(text: &str, targets: &[String]) -> (String, Vec<(S
             }
             tok.to_string()
         })
-        .collect::<Vec<_>>()
-        .join(" ");
+        .collect()
+    });
     (out, fired)
 }
 
@@ -1861,6 +2057,31 @@ mod tests {
     }
 
     #[test]
+    fn numbers_leave_the_pronoun_one_alone() {
+        for s in [
+            "I prefer the next one",
+            "that one, not this one",
+            "which one do you want",
+            "no one replied",
+            "every one of them agreed",
+            "we need a new one",
+            "the big one is broken",
+        ] {
+            assert_eq!(normalize_numbers(s), s);
+        }
+        assert_eq!(normalize_numbers("pick the third one"), "pick the 3rd one");
+    }
+
+    #[test]
+    fn numbers_still_count_with_one() {
+        assert_eq!(normalize_numbers("one hundred"), "100");
+        assert_eq!(normalize_numbers("one of three"), "1 of 3");
+        assert_eq!(normalize_numbers("I have one"), "I have 1");
+        assert_eq!(normalize_numbers("the one hundred days"), "the 100 days");
+        assert_eq!(normalize_numbers("one more time"), "1 more time");
+    }
+
+    #[test]
     fn numbers_connector_and_is_not_swallowed() {
         // "and" inside a number is consumed ("one hundred and five" -> 105),
         // but a listing "and" between two numbers survives as the word.
@@ -1993,6 +2214,138 @@ mod tests {
         // Off by default, no app entries — matches today's behavior exactly.
         let p = test_polisher("", &[]);
         assert_eq!(p.resolve_tone("anything"), "");
+    }
+
+    // ── #85: word passes keep line breaks ────────────────────────────
+    #[test]
+    fn rewrite_words_keeps_every_line_break() {
+        let same = |s: &str| rewrite_words(s, |t| t.to_vec());
+        assert_eq!(same("one  two\nthree"), "one two\nthree");
+        assert_eq!(same("a\n\nb\n"), "a\n\nb\n");
+        assert_eq!(same("\n\n  hi  "), "\n\nhi");
+    }
+
+    #[test]
+    fn word_passes_keep_line_breaks() {
+        assert_eq!(tier0("um first line\nsecond uh line"), "First line\nsecond line");
+        assert_eq!(tier0("first\n\nsecond"), "First\n\nsecond");
+        assert_eq!(tier0("\n\nuh hello there\n"), "\n\nHello there\n");
+        assert_eq!(tier0("the\nthe end"), "The\nthe end"); // a break is not a stutter
+        assert_eq!(normalize_numbers("I have twenty three\n\nboxes"), "I have 23\n\nboxes");
+        assert_eq!(normalize_numbers("twenty\nthree"), "20\n3"); // a run never spans a break
+        let targets = vec!["Claude".to_string(), "Sotto".to_string()];
+        assert_eq!(apply_phonetic_corrections("ask clode\nthen soto", &targets).0, "ask Claude\nthen Sotto");
+    }
+
+    #[test]
+    fn restore_breaks_puts_the_ai_output_back_on_its_lines() {
+        let input = "the meeting went well and we agreed on the plan\nnext steps are simple";
+        let output = "The meeting went well, and we agreed on the plan. Next steps are simple.";
+        assert_eq!(
+            restore_breaks(input, output).as_deref(),
+            Some("The meeting went well, and we agreed on the plan.\nNext steps are simple.")
+        );
+        // A paragraph break the model kept, a line break it didn't.
+        let input = "Dear team\n\nthe launch moves to friday\n23 people are coming";
+        let output = "Dear team,\n\nThe launch moves to Friday. 23 people are coming.";
+        assert_eq!(
+            restore_breaks(input, output).as_deref(),
+            Some("Dear team,\n\nThe launch moves to Friday.\n23 people are coming.")
+        );
+        // Breaks at either edge.
+        assert_eq!(restore_breaks("\n\nhello there\n", "Hello there.").as_deref(), Some("\n\nHello there.\n"));
+        // A boundary word the model dropped: no guess.
+        assert_eq!(restore_breaks("call sam\nthen email jo", "Call Sam and email Jo."), None);
+    }
+
+    #[test]
+    fn new_line_command_survives_the_rules_pipeline() {
+        // Every word pass on: numbers, phonetic (with trained words), rules.
+        let cfg = crate::config::Config::default();
+        let controls = crate::Controls::from_config(&cfg);
+        controls.polish_mode.store(PolishMode::Rules.as_u8(), Ordering::Relaxed);
+        *controls.vocabulary.lock().unwrap() = vec![vocab("Sotto", &[])];
+        let p = Polisher::new(controls, cfg.llm.clone());
+        assert_eq!(p.polish("dear team new line see you soon").text, "Dear team\nsee you soon");
+        assert_eq!(p.polish("um intro new paragraph ask soto for two things").text, "Intro\n\nask Sotto for 2 things");
+    }
+
+    // ── #65: AI rewrite guard ────────────────────────────────────────
+    fn vocab(word: &str, heard_as: &[&str]) -> VocabEntry {
+        VocabEntry { word: word.into(), heard_as: heard_as.iter().map(|h| h.to_string()).collect(), ..Default::default() }
+    }
+
+    #[test]
+    fn rewrite_guard_accepts_a_cleanup() {
+        let input = "so we should move the launch to friday and um tell the design team twenty three\nthanks";
+        // Casing, punctuation, fillers, numbers and line breaks never count.
+        let output = "So we should move the launch to Friday and tell the design team 23.\n\nThanks!";
+        assert_eq!(rewrite_guard(input, output, &[]), None);
+        // One word dropped is a resolved self-correction, not a rewrite.
+        assert_eq!(rewrite_guard("meet me on tuesday, no, wednesday at noon", "Meet me on Wednesday at noon.", &[]), None);
+        // A trained word may replace its mishearing.
+        let v = [vocab("Sotto", &["soda"])];
+        assert_eq!(rewrite_guard("open soda and start the recording", "Open Sotto and start the recording.", &v), None);
+    }
+
+    #[test]
+    fn rewrite_guard_rejects_a_dropped_clause() {
+        let input = "we need to finish the quarterly report by friday and then send the budget numbers to finance \
+                     before the planning meeting";
+        assert_eq!(rewrite_guard(input, "We need to finish the quarterly report by Friday.", &[]), Some("dropped-words"));
+    }
+
+    #[test]
+    fn rewrite_guard_rejects_invented_words() {
+        let input = "the garden needs water and the fence needs paint";
+        let output = "The garden desperately needs fresh water, and the fence needs paint.";
+        assert_eq!(rewrite_guard(input, output, &[]), None); // two new words: a respelling's worth
+        let output = "The garden desperately needs fresh cold water, and the fence needs paint.";
+        assert_eq!(rewrite_guard(input, output, &[]), Some("new-words"));
+    }
+
+    #[test]
+    fn rewrite_guard_catches_the_worked_example_leaking() {
+        let input = "please book the train tickets for the conference";
+        let leaked = "Please book the train tickets for the conference. Can you ask Claude to fix this for me?";
+        // Only when the example was actually sent, i.e. with a vocabulary.
+        assert_eq!(rewrite_guard(input, leaked, &[vocab("Sotto", &[])]), Some("example-leak"));
+        assert_eq!(rewrite_guard(input, leaked, &[vocab("Claude", &[])]), Some("example-leak"));
+        // A trained "Claude" on its own is a correction, not a leak.
+        assert_eq!(rewrite_guard("ask clawed about the tickets", "Ask Claude about the tickets.", &[vocab("Claude", &["clawed"])]), None);
+    }
+
+    #[test]
+    fn polish_result_reports_the_tier_that_ran() {
+        let cfg = crate::config::Config::default();
+        let controls = crate::Controls::from_config(&cfg);
+        let p = Polisher::new(controls.clone(), cfg.llm.clone());
+        controls.polish_mode.store(PolishMode::Off.as_u8(), Ordering::Relaxed);
+        let out = p.polish("um hello there");
+        assert_eq!((out.tier, out.fallback), ("off", ""));
+        controls.polish_mode.store(PolishMode::Rules.as_u8(), Ordering::Relaxed);
+        let out = p.polish("um hello there");
+        assert_eq!((out.tier, out.fallback), ("rules", ""));
+        // AI mode, under the word threshold: never reaches the sidecar.
+        controls.polish_mode.store(PolishMode::Ai.as_u8(), Ordering::Relaxed);
+        controls.ai_min_words.store(50, Ordering::Relaxed);
+        let out = p.polish("um hello there");
+        assert_eq!((out.tier, out.fallback), ("rules", "short"));
+    }
+
+    #[test]
+    fn ai_mode_fallback_gets_the_same_harper_fixes_as_rules() {
+        let cfg = crate::config::Config::default();
+        let controls = crate::Controls::from_config(&cfg);
+        let p = Polisher::new(controls.clone(), cfg.llm.clone());
+        let clip = "we shipped it , i think";
+        controls.polish_mode.store(PolishMode::Rules.as_u8(), Ordering::Relaxed);
+        let rules = p.polish(clip).text;
+        assert_eq!(rules, "We shipped it, I think"); // Harper's fixes, not just tier0's
+        controls.polish_mode.store(PolishMode::Ai.as_u8(), Ordering::Relaxed);
+        controls.ai_min_words.store(50, Ordering::Relaxed); // short: never reaches the sidecar
+        let ai = p.polish(clip);
+        assert_eq!((ai.text.as_str(), ai.fallback), (rules.as_str(), "short"));
     }
 
     #[test]

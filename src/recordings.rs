@@ -27,10 +27,16 @@ pub struct RecordingEntry {
     pub wav: String,
     pub app: String,
     pub engine: String,
+    /// The polish tier that actually ran, not the configured one (#67).
     pub tier: String,
     pub audio_ms: u64,
     pub raw: String,
     pub polished: String,
+    /// Why AI mode kept the rules result ("short", "llm-error",
+    /// "dropped-words", ... — see `polish::PolishResult::fallback`); "" when
+    /// it didn't. Missing on lines written before #67.
+    #[serde(default)]
+    pub fallback: String,
 }
 
 pub fn recordings_dir() -> PathBuf {
@@ -53,9 +59,10 @@ pub fn record(
     tier: &str,
     audio_ms: u64,
     max_mb: u64,
+    fallback: &str,
 ) {
     let dir = recordings_dir();
-    if let Err(err) = record_in(&dir, samples, raw, polished, app, engine, tier, audio_ms) {
+    if let Err(err) = record_in(&dir, samples, raw, polished, app, engine, tier, audio_ms, fallback) {
         tracing::warn!(?err, "failed to save recording");
         return;
     }
@@ -71,6 +78,7 @@ fn record_in(
     engine: &str,
     tier: &str,
     audio_ms: u64,
+    fallback: &str,
 ) -> anyhow::Result<()> {
     std::fs::create_dir_all(dir)?;
     let t = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
@@ -85,6 +93,7 @@ fn record_in(
         audio_ms,
         raw: raw.to_string(),
         polished: polished.to_string(),
+        fallback: fallback.to_string(),
     };
     let mut f = std::fs::OpenOptions::new().create(true).append(true).open(index_path(dir))?;
     writeln!(f, "{}", serde_json::to_string(&entry)?)?;
@@ -259,6 +268,18 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    #[test]
+    fn index_lines_carry_the_fallback_reason_and_old_lines_still_load() {
+        let old = r#"{"t":1,"wav":"1.wav","app":"a","engine":"e","tier":"ai","audio_ms":5,"raw":"x","polished":"y"}"#;
+        assert_eq!(serde_json::from_str::<RecordingEntry>(old).unwrap().fallback, "");
+        let dir = std::env::temp_dir().join(format!("sotto-fallback-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        record_in(&dir, &[0.0; 160], "raw", "raw", "app", "engine", "rules", 10, "dropped-words").unwrap();
+        let e = &load_index_in(&dir)[0];
+        assert_eq!((e.tier.as_str(), e.fallback.as_str()), ("rules", "dropped-words"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// Exercises `record_in`/`enforce_cap` against a private temp directory
     /// -- never `recordings_dir()`/`assets_dir()`, which read process-global
     /// config/env state and would race with other tests running in
@@ -269,11 +290,11 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("sotto-cap-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let samples = vec![0.0f32; 800]; // ~858 bytes on disk (58-byte header + 800-byte mu-law body) each
-        record_in(&dir, &samples, "one", "one", "app", "engine", "off", 50).unwrap();
+        record_in(&dir, &samples, "one", "one", "app", "engine", "off", 50, "").unwrap();
         std::thread::sleep(std::time::Duration::from_millis(1100)); // `t` is whole seconds — must differ to sort
-        record_in(&dir, &samples, "two", "two", "app", "engine", "off", 50).unwrap();
+        record_in(&dir, &samples, "two", "two", "app", "engine", "off", 50, "").unwrap();
         std::thread::sleep(std::time::Duration::from_millis(1100));
-        record_in(&dir, &samples, "three", "three", "app", "engine", "off", 50).unwrap();
+        record_in(&dir, &samples, "three", "three", "app", "engine", "off", 50, "").unwrap();
         let before = load_index_in(&dir);
         let oldest_wav = dir.join(&before.iter().find(|e| e.raw == "one").unwrap().wav);
         assert!(oldest_wav.exists(), "setup sanity check");
