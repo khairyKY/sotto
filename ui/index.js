@@ -70,6 +70,7 @@ const settingsOpen = () => !$("settings-scrim").hidden;
 // ── page routing ──
 function navigate(page) {
   if (page === 'settings') { openSettings(); return; }
+  closeSettings(); // tray → Insights etc. while the modal is up should land on that page
   document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
   document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
   const pg = $(`page-${page}`);
@@ -152,12 +153,22 @@ periodToggle.querySelectorAll("button").forEach(b => {
   };
 });
 
+// Home's hint and the Settings key row describe the current mode (#58).
+function setActivationCopy(mode) {
+  const toggle = mode === "toggle";
+  $("hint-verb").textContent = toggle ? "Tap" : "Hold";
+  $("hint-tail").textContent = toggle ? "to start, tap again to stop." : "and speak.";
+  $("activation-sub").textContent = toggle ? "Tap to start — tap again to transcribe" : "Hold to talk — release to transcribe";
+}
+
 // ── home stats ──
 async function loadHome() {
   try {
     const stats = hasTauri ? await invoke("get_stats") : null;
     if (stats) {
-      $("stat-words").textContent = stats.wordsThisWeek?.toLocaleString() || "0";
+      // "words today" means today (#58): the backend's day buckets use the same local day numbers.
+      const today = (stats.daily || []).find(d => d.day === localDayNum());
+      $("stat-words").textContent = (today?.words || 0).toLocaleString();
       $("stat-wpm").textContent = stats.avgWpm30d || "0";
       $("stat-streak").innerHTML = (stats.currentStreak || 0) + '<span class="stat-suffix">d</span>';
     }
@@ -171,6 +182,10 @@ async function loadHome() {
 }
 function updateStatusBar(s) {
   const parts = [];
+  // Paused (tray) stops the hotkey and pill from starting takes, same chip
+  // as "polish off" for the same reason: nothing else here would show it (#60).
+  if (s?.paused) parts.push('<span class="status-warn">paused</span>');
+  document.querySelector("#status-bar .status-dot").style.background = s?.paused ? "var(--mm-muted-2)" : "";
   if (s?.models?.length) {
     const sel = s.models.find(m => m.selected);
     if (sel) parts.push(escapeHtml(sel.name));
@@ -210,6 +225,7 @@ function renderRecent(entries) {
 
 // ── insights ──
 async function loadInsights() {
+  $("total-period-label").textContent = $("insights-period").dataset.value === "month" ? "this month" : "this week";
   try {
     const stats = hasTauri ? await invoke("get_stats") : null;
     if (!stats) { renderMockInsights(); return; }
@@ -229,8 +245,8 @@ async function loadInsights() {
     $("total-words-val").textContent = (stats.totalWords || 0).toLocaleString();
     const periodWords = period === "week" ? (stats.wordsThisWeek || 0) : (stats.wordsThisMonth || 0);
     if ($("total-period-val")) $("total-period-val").textContent = periodWords.toLocaleString();
-    const minSaved = Math.round((stats.totalWords || 0) * 0.02);
-    if ($("total-saved-val")) $("total-saved-val").textContent = minSaved.toLocaleString();
+    // Backend figure: typing time at 40 wpm minus the time spent speaking.
+    if ($("total-saved-val")) $("total-saved-val").textContent = (stats.timeSavedMin || 0).toLocaleString();
 
     renderAppBreakdown(stats.topApps || []);
     renderStreakCalendar(stats.daily || [], stats.currentStreak || 0, stats.longestStreak || 0);
@@ -414,7 +430,7 @@ function renderDictPage(entries) {
 
     // `_draft` marks a row prefilled from an example chip: it opens in edit
     // state even though it has content, because nothing is saved until the
-    // user confirms. Stripped by saveDict/SnipPage, so it never reaches Rust.
+    // user confirms. buildCombinedEntries skips it, so it never reaches Rust.
     let isEditing = (e.spoken === "" || e._draft === true);
     let draftAliases = (e.aliases || []).slice(); // working copy; only committed to e on Save
 
@@ -536,10 +552,13 @@ function renderDictPage(entries) {
 // 5 fields: dropping any of them here silently wipes it server-side. `kind`
 // falls back by which array the entry is sitting in, purely as a last-resort
 // safety net — every entry should already carry its own kind from creation.
+// Unconfirmed example-chip drafts and blank new rows stay client-side: a save
+// from the other page (or a toggle on this one) must not commit them (#57).
 function buildCombinedEntries() {
+  const saved = (e) => !e._draft && e.spoken.trim() !== "";
   return [
-    ...dictEntries.map(e => ({ spoken: e.spoken, replacement: e.replacement, aliases: e.aliases || [], enabled: e.enabled !== false, kind: e.kind || "word" })),
-    ...snipEntries.map(e => ({ spoken: e.spoken, replacement: e.replacement, aliases: e.aliases || [], enabled: e.enabled !== false, kind: e.kind || "snippet" })),
+    ...dictEntries.filter(saved).map(e => ({ spoken: e.spoken, replacement: e.replacement, aliases: e.aliases || [], enabled: e.enabled !== false, kind: e.kind || "word" })),
+    ...snipEntries.filter(saved).map(e => ({ spoken: e.spoken, replacement: e.replacement, aliases: e.aliases || [], enabled: e.enabled !== false, kind: e.kind || "snippet" })),
   ];
 }
 
@@ -594,7 +613,7 @@ function renderSnipPage(entries) {
 
     // `_draft` marks a row prefilled from an example chip: it opens in edit
     // state even though it has content, because nothing is saved until the
-    // user confirms. Stripped by saveDict/SnipPage, so it never reaches Rust.
+    // user confirms. buildCombinedEntries skips it, so it never reaches Rust.
     let isEditing = (e.spoken === "" || e._draft === true);
     let draftAliases = (e.aliases || []).slice(); // working copy; only committed to e on Save
 
@@ -1043,7 +1062,12 @@ if ($("pron-listen-btn")) {
     if (!word) return;
     // Armed before Start is sent: Start consumes the arm, so it must land first.
     await invoke("set_pronunciation_target", { word });
-    invoke("start_dictation");
+    if (await invoke("start_dictation") === false) {
+      // Paused from the tray: no take will come, so don't sit on "Listening".
+      invoke("set_pronunciation_target", { word: null });
+      $("pron-status").textContent = "Dictation is paused. Resume it from the tray menu.";
+      return;
+    }
     pronSetState("listening", word);
   };
 }
@@ -1557,6 +1581,7 @@ async function boot() {
 
   // Settings: segmented controls & fields
   selectSegment($("activation"), s.activation);
+  setActivationCopy(s.activation);
   selectSegment($("polish"), s.polish);
   if ($("quote-style")) selectSegment($("quote-style"), s.quoteStyle || "straight");
   // The theme picker has no UI (theme follows the OS per the design doc), but
@@ -1686,7 +1711,7 @@ async function boot() {
     };
   }
 
-  initSegmented($("activation"), (v) => invoke("set_activation", { mode: v }));
+  initSegmented($("activation"), (v) => { invoke("set_activation", { mode: v }); setActivationCopy(v); });
   if ($("quote-style")) initSegmented($("quote-style"), (v) => invoke("set_quote_style", { style: v }));
   initSegmented($("polish"), (v) => { invoke("set_polish", { mode: v }); updateToneDisabled(v); });
   if ($("theme")) initSegmented($("theme"), (v) => {
@@ -1777,6 +1802,7 @@ async function boot() {
         pronSetState("idle");
       }
     });
+    T.event.listen("paused-changed", () => loadHome());
     T.event.listen("navigate", (e) => {
       const page = e.payload;
       if (page && document.querySelector(`.nav-item[data-page="${page}"]`)) navigate(page);

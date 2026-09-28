@@ -797,10 +797,15 @@ fn get_overlay_settings(state: tauri::State<'_, AppState>) -> OverlaySettingsDto
 
 /// The overlay's idle-pill body click when always-visible is on (N1) — same
 /// event as the hotkey, just reachable by mouse. Mirrors cancel_dictation /
-/// retry_last: push the event, let the worker do the rest.
+/// retry_last: push the event, let the worker do the rest. Pause blocks it
+/// like it blocks the hotkey (#60); `false` tells the trainer why nothing began.
 #[tauri::command]
-fn start_dictation(state: tauri::State<'_, AppState>) {
+fn start_dictation(state: tauri::State<'_, AppState>) -> bool {
+    if state.controls.paused.load(Ordering::Relaxed) {
+        return false;
+    }
     let _ = state.tx.send(DictationEvent::Start);
+    true
 }
 
 /// The Pronunciation Trainer's "Stop" click — same event a hotkey release/
@@ -1042,7 +1047,8 @@ fn main() -> anyhow::Result<()> {
     }
 
     let Some(_guard) = SingleInstanceGuard::acquire()? else {
-        tracing::warn!("another Sotto instance is already running — exiting");
+        tracing::info!("another Sotto instance is already running — bringing it forward");
+        single_instance::wake_running();
         return Ok(());
     };
 
@@ -1082,6 +1088,15 @@ fn main() -> anyhow::Result<()> {
         ])
         .setup(move |app| {
             build_tray(app)?;
+            // A second launch (Start menu, shortcut) lands here (#61).
+            let handle = app.handle().clone();
+            single_instance::on_wake(move || {
+                if let Some(w) = handle.get_webview_window("settings") {
+                    let _ = w.unminimize();
+                    let _ = w.show();
+                    let _ = w.set_focus();
+                }
+            });
             if let Some(w) = app.get_webview_window("overlay") {
                 let _ = w.set_ignore_cursor_events(true);
                 position_overlay(&w, &cfg.overlay.position);
@@ -1123,8 +1138,9 @@ fn main() -> anyhow::Result<()> {
 fn build_tray(app: &tauri::App) -> tauri::Result<()> {
     use tauri::tray::TrayIconBuilder;
 
+    let dark = tray::dark_for(&app.state::<AppState>().cfg.lock().unwrap().theme);
     TrayIconBuilder::with_id("main")
-        .icon(tray::idle_icon())
+        .icon(tray::icon(false, dark))
         .tooltip("Sotto")
         .show_menu_on_left_click(false)
         .on_tray_icon_event(|tray, event| {
@@ -1180,13 +1196,16 @@ fn menu_action(app: tauri::AppHandle, action: String) {
         let paused = !c.paused.load(Ordering::Relaxed);
         c.paused.store(paused, Ordering::Relaxed);
         tracing::info!(paused, "pause toggled from tray");
+        if let Some(tray) = app.tray_by_id("main") {
+            let _ = tray.set_tooltip(Some(if paused { "Sotto (paused)" } else { "Sotto" }));
+        }
+        let _ = app.emit("paused-changed", paused);
     } else {
         if let Some(w) = app.get_webview_window("settings") {
             let _ = w.show();
             let _ = w.set_focus();
-            if action != "settings" {
-                let _ = w.emit("navigate", action);
-            }
+            // "settings" too: it's a modal now, and navigate() is what opens it.
+            let _ = w.emit("navigate", action);
         }
     }
 }
@@ -2419,14 +2438,8 @@ fn emit_state(app: &tauri::AppHandle, s: &str) {
     let _ = app.emit("overlay-state", s);
     *app.state::<AppState>().controls.overlay_state.lock().unwrap() = s.to_string();
     if let Some(tray) = app.tray_by_id("main") {
-        let theme = app.state::<AppState>().cfg.lock().unwrap().theme.clone();
-        let dark = theme == "dark";
-        let icon = if s == "listening" {
-            if dark { tray::active_icon_dark() } else { tray::active_icon() }
-        } else {
-            if dark { tray::idle_icon_dark() } else { tray::idle_icon() }
-        };
-        let _ = tray.set_icon(Some(icon));
+        let dark = tray::dark_for(&app.state::<AppState>().cfg.lock().unwrap().theme);
+        let _ = tray.set_icon(Some(tray::icon(s == "listening", dark)));
     }
     let always_visible = app.state::<AppState>().controls.overlay_always_visible.load(Ordering::Relaxed);
     if s != "idle" || always_visible {

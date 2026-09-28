@@ -14,17 +14,57 @@ const ACTIVE_MARK_DARK: (u8, u8, u8) = (201, 184, 238); // #C9B8EE
 
 const SIZE: u32 = 32;
 
-pub fn idle_icon() -> Image<'static> {
-    Image::new_owned(render_tile(SIZE, IDLE_MARK, TILE_LIGHT), SIZE, SIZE)
+/// The tray tile: lilac while listening, muted otherwise; plum when `dark`.
+pub fn icon(active: bool, dark: bool) -> Image<'static> {
+    let (mark, tile) = match (active, dark) {
+        (false, false) => (IDLE_MARK, TILE_LIGHT),
+        (true, false) => (ACTIVE_MARK, TILE_ACTIVE),
+        (false, true) => (IDLE_MARK_DARK, TILE_DARK),
+        (true, true) => (ACTIVE_MARK_DARK, TILE_DARK),
+    };
+    Image::new_owned(render_tile(SIZE, mark, tile), SIZE, SIZE)
 }
-pub fn active_icon() -> Image<'static> {
-    Image::new_owned(render_tile(SIZE, ACTIVE_MARK, TILE_ACTIVE), SIZE, SIZE)
+
+/// Whether the tray tile should be the dark one for the app's `theme`
+/// setting. "system" follows the taskbar the icon actually sits on (#60).
+pub fn dark_for(theme: &str) -> bool {
+    match theme {
+        "dark" => true,
+        "light" => false,
+        _ => taskbar_dark(),
+    }
 }
-pub fn idle_icon_dark() -> Image<'static> {
-    Image::new_owned(render_tile(SIZE, IDLE_MARK_DARK, TILE_DARK), SIZE, SIZE)
-}
-pub fn active_icon_dark() -> Image<'static> {
-    Image::new_owned(render_tile(SIZE, ACTIVE_MARK_DARK, TILE_DARK), SIZE, SIZE)
+
+/// Windows' "default Windows mode" (taskbar, Start), which can differ from
+/// the apps' mode: Windows 10's default is a dark taskbar with light apps.
+/// A missing value (older builds) reads as light.
+fn taskbar_dark() -> bool {
+    // ponytail: advapi32 is already linked by std; saves enabling the windows
+    // crate's Win32_System_Registry feature (a rebuild) for one DWORD.
+    #[link(name = "advapi32")]
+    unsafe extern "system" {
+        fn RegGetValueW(
+            hkey: isize,
+            subkey: *const u16,
+            value: *const u16,
+            flags: u32,
+            kind: *mut u32,
+            data: *mut u32,
+            len: *mut u32,
+        ) -> i32;
+    }
+    const HKEY_CURRENT_USER: isize = 0x8000_0001u32 as i32 as isize;
+    const RRF_RT_REG_DWORD: u32 = 0x10;
+    let wide = |s: &str| s.encode_utf16().chain([0]).collect::<Vec<u16>>();
+    let key = wide(r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize");
+    let value = wide("SystemUsesLightTheme");
+    let (mut light, mut len) = (1u32, 4u32);
+    // SAFETY: both strings are NUL-terminated and outlive the call; `light`
+    // is a 4-byte buffer and `len` says so.
+    let rc = unsafe {
+        RegGetValueW(HKEY_CURRENT_USER, key.as_ptr(), value.as_ptr(), RRF_RT_REG_DWORD, std::ptr::null_mut(), &mut light, &mut len)
+    };
+    rc == 0 && light == 0
 }
 
 /// Rasterize the tile + wave mark into a straight-alpha RGBA buffer.
@@ -124,5 +164,18 @@ mod tests {
         assert_eq!(at(0, 0).3, 0, "corner should be transparent");
         assert_eq!(at(16, 16).3, 255, "tile body should be opaque");
         assert!(px.chunks(4).any(|p| p[3] == 255 && (p[0] > 180 || p[2] > 180)), "wave mark should be visible");
+    }
+
+    #[test]
+    fn theme_picks_tile_and_system_reads_the_taskbar() {
+        assert!(dark_for("dark"));
+        assert!(!dark_for("light"));
+        // `reg query` is the ground truth for the hand-rolled RegGetValueW call.
+        let out = std::process::Command::new("reg")
+            .args(["query", r"HKCU\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize", "/v", "SystemUsesLightTheme"])
+            .output()
+            .unwrap();
+        let dark = out.status.success() && String::from_utf8_lossy(&out.stdout).contains("0x0");
+        assert_eq!(dark_for("system"), dark);
     }
 }
