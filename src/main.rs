@@ -31,7 +31,7 @@ use hotkey::DictationEvent;
 use single_instance::SingleInstanceGuard;
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicU32, AtomicU8, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicU32, AtomicU64, AtomicU8, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tauri::{Emitter, Manager};
@@ -1460,6 +1460,9 @@ fn spawn_pipeline(
     // True while a Pronunciation-Trainer peek transcription is in flight, so
     // the audio thread never piles a second one behind it — see Work::Peek.
     let peek_busy = Arc::new(AtomicBool::new(false));
+    // The take being recorded (or last recorded), so a peek that finishes
+    // after the next take has started can tell it's stale (#39).
+    let live_take = Arc::new(AtomicU64::new(0));
 
     // N4: a take that was in flight (or sitting undelivered in the stash)
     // when Sotto last died comes back as the stash. Runs before the audio
@@ -1484,6 +1487,7 @@ fn spawn_pipeline(
         let retention_enabled = retention_enabled.clone();
         let training_word = training_word.clone();
         let peek_busy = peek_busy.clone();
+        let live_take = live_take.clone();
         std::thread::spawn(move || {
             let mut asr = asr::Asr::new();
             // Warm the ASR model before serving work, so the first dictation
@@ -1575,13 +1579,14 @@ fn spawn_pipeline(
                     // is busy the sidecar can wait, and the user is still
                     // talking either way.
                     Work::Prewarm => polisher.prewarm(),
-                    Work::Peek { samples, target } => {
+                    Work::Peek { id, samples, target } => {
                         // Transcribe the take-so-far; if the trained word is in
                         // it, tell the UI to ignite the glow. Best-effort — a
                         // failed/late peek just means the glow waits for the
-                        // final sample. `peek_busy` gates the next one.
+                        // final sample. `peek_busy` gates the next one, and a
+                        // stale peek still clears it: it was the one in flight.
                         if let Ok(text) = asr.transcribe(&samples) {
-                            if heard_word(&text, &target) {
+                            if peek_fires(&text, &target, id, live_take.load(Ordering::Relaxed)) {
                                 let _ = app.emit("word-detected", target);
                             }
                         }
@@ -1616,6 +1621,8 @@ fn spawn_pipeline(
         let mut sent: usize = 0;
         let mut take_id: u64 = 0;
         let mut recording = false;
+        // Whether this take's audio goes to the crash journal (#44).
+        let mut journaled = true;
         // Pronunciation-Trainer detection peeks — last one's time, for cadence.
         let mut last_peek = std::time::Instant::now();
 
@@ -1639,7 +1646,9 @@ fn spawn_pipeline(
             // over a chunk if enough has piled up behind a pause.
             let Some(event) = event else {
                 let fresh = recorder.drain();
-                journal::append(take_id, &fresh);
+                if journaled {
+                    journal::append(take_id, &fresh);
+                }
                 all.extend(fresh);
                 if chunking {
                     if let Some(cut) = chunk_cut(&all[sent..]) {
@@ -1679,7 +1688,7 @@ fn spawn_pipeline(
                         && !peek_busy.swap(true, Ordering::Relaxed)
                     {
                         last_peek = std::time::Instant::now();
-                        let _ = work_tx.send(Work::Peek { samples: all.clone(), target });
+                        let _ = work_tx.send(Work::Peek { id: take_id, samples: all.clone(), target });
                     }
                 }
                 continue;
@@ -1704,7 +1713,12 @@ fn spawn_pipeline(
                             sent = 0;
                             recording = true;
                             last_peek = std::time::Instant::now();
-                            peek_busy.store(false, Ordering::Relaxed);
+                            // peek_busy is NOT reset here: a peek from the last
+                            // take may still be transcribing, and it clears the
+                            // flag itself when it lands (dropped as stale).
+                            // Resetting it let a second peek queue behind it.
+                            live_take.store(take_id, Ordering::Relaxed);
+                            journaled = journals_take(training_word.lock().unwrap().is_some());
                             listening.store(true, Ordering::Relaxed);
                             if sound_enabled.load(Ordering::Relaxed) {
                                 sounds::tick();
@@ -1734,7 +1748,9 @@ fn spawn_pipeline(
                             sounds::tock();
                         }
                         let rest = recorder.stop().unwrap_or_default();
-                        journal::append(take_id, &rest);
+                        if journaled {
+                            journal::append(take_id, &rest);
+                        }
                         all.extend(rest);
                         cancelled.store(false, Ordering::SeqCst); // consumed here
                         let take = Take::new(
@@ -1767,7 +1783,9 @@ fn spawn_pipeline(
                     recording = false;
                     match recorder.stop() {
                         Ok(s) => {
-                            journal::append(take_id, &s);
+                            if journaled {
+                                journal::append(take_id, &s);
+                            }
                             all.extend(s)
                         }
                         Err(err) => {
@@ -1842,7 +1860,8 @@ enum Work {
     /// if `target` is in it, fire "word-detected" so the UI can ignite the
     /// glow the instant the model hears the word — not just on mic level.
     /// Non-destructive: it never touches the take or its chunk partials.
-    Peek { samples: Vec<f32>, target: String },
+    /// `id` is the take it peeked at: only the live take's peek may fire.
+    Peek { id: u64, samples: Vec<f32>, target: String },
 }
 
 /// Chunk text accumulated for a take that's still being recorded.
@@ -2011,6 +2030,23 @@ fn heard_word(text: &str, target: &str) -> bool {
     }
     text.split_whitespace()
         .any(|w| w.trim_matches(|c: char| !c.is_alphanumeric()).eq_ignore_ascii_case(target))
+}
+
+/// Whether a peek's transcript should ignite the glow: the word was heard
+/// AND the peek belongs to the take being recorded now. A peek still in
+/// flight when the next take starts would otherwise glow and auto-stop the
+/// new take before its word is said (#39).
+fn peek_fires(text: &str, target: &str, peek_take: u64, live_take: u64) -> bool {
+    peek_take == live_take && heard_word(text, target)
+}
+
+/// Whether a take's audio is crash-journaled (#44). Not while a
+/// Pronunciation-Trainer word is armed: a recovered trainer take would come
+/// back as a normal dictation, and Retry would inject the training word into
+/// whatever app has focus. A practice sample has nothing worth recovering.
+/// Decided once at Start so a take is journaled whole or not at all.
+fn journals_take(training_armed: bool) -> bool {
+    !training_armed
 }
 
 /// Record a non-delivered outcome (cancelled/error) — words=0, no fixes.
@@ -2510,6 +2546,23 @@ mod tests {
             sent: 0,
             journal: vec![],
         }
+    }
+
+    #[test]
+    fn stale_peek_never_fires() {
+        // Live take's peek that heard the word: glow.
+        assert!(peek_fires("say sotto now", "Sotto", 4, 4));
+        // Last take's peek landing during the next take: dropped, even
+        // though it heard the word.
+        assert!(!peek_fires("say sotto now", "Sotto", 3, 4));
+        // Live take, word not heard: nothing.
+        assert!(!peek_fires("say nothing", "Sotto", 4, 4));
+    }
+
+    #[test]
+    fn trainer_takes_are_not_journaled() {
+        assert!(journals_take(false), "a normal take is crash-journaled");
+        assert!(!journals_take(true), "a trainer take must never come back as a dictation");
     }
 
     #[test]
