@@ -333,6 +333,20 @@ same file. Whichever hypothesis closes the gap, apply the fix in `asr.rs`; if
 none of them do, the gap may live inside transcribe-rs's own call path and is
 worth a GitHub issue upstream rather than a local patch.
 
+**Resolved 2026-09-28 (#14): there was no like-for-like gap.** Measured with
+`scripts/whisper-bench.ps1` (7.7s TTS clip, turbo q5_0, medians): the probe
+ran on whisper-rs's default device 0, the AMD iGPU, while the app's
+`GPU_DEVICE_AUTO` picks the RTX 3050 (~4x faster). The app's numbers also
+carried one-time costs: `--transcribe`'s printed total includes model load, and
+the first inference with a cold GPU-driver pipeline cache took 44-80s. On the
+same device the app matches the probe (741 vs 739 ms warm). Threads (4 vs 8)
+and `no_speech_thold`/`suppress_nst` measured as noise;
+`language = "auto"` costs ~+0.2s. Fix: `Asr` now warms Whisper with 2s of
+silence right after loading, so neither the pipeline compile nor the ~0.2s
+first-call cost lands on a dictation. Open follow-ups: flash_attn measured
+~1.6x *faster* on the RTX 3050 (the 6.5x penalty is the iGPU's), and greedy
+decoding ~1.3x faster than transcribe-rs's hardcoded beam 3.
+
 ### 3. Download indicator on model switch *(MEDIUM)*
 
 Picking an undownloaded engine in Settings currently gives no visible
