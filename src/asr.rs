@@ -62,7 +62,8 @@ impl Asr {
             // Every whisper-family engine (turbo, egyptian-small, …) loads the
             // same way and differs only in which .bin — so branch on "is this a
             // whisper model" rather than on a specific id.
-            let model: Box<dyn SpeechModel> = if config::whisper_model_file(&self.engine).is_some() {
+            let whisper = config::whisper_model_file(&self.engine).is_some();
+            let mut model: Box<dyn SpeechModel> = if whisper {
                 let path = config::whisper_model_path(&self.engine);
                 anyhow::ensure!(
                     path.exists(),
@@ -70,12 +71,16 @@ impl Asr {
                     path.display()
                 );
                 // NOT `WhisperEngine::load()` — that defaults flash_attn to
-                // true, and on this Vulkan backend flash attention has no fast
-                // kernel and silently falls back to a slow path: measured 6.5x
-                // slower on identical audio (23.1s vs 3.5s for 7.5s of speech).
-                // It is not a correctness issue — the transcript is identical —
-                // which is exactly why it would never have been noticed except
-                // by timing it.
+                // true, and on the AMD iGPU (Vulkan0) flash attention has no
+                // fast kernel and silently falls back to a slow path: measured
+                // 6.5x slower on identical audio (23.1s vs 3.5s for 7.5s of
+                // speech). It is not a correctness issue — the transcript is
+                // identical — which is exactly why it would never have been
+                // noticed except by timing it. Caveat (#14): that was measured
+                // on the iGPU, but the auto-selected device below is the RTX
+                // 3050, where flash_attn measured ~1.6x *faster* (445 vs 711 ms
+                // warm on 7.7s). Turning it on needs a per-device rule, not a
+                // flip.
                 //
                 // use_gpu stays true: when no Vulkan device is usable,
                 // whisper.cpp reports "no devices found" and falls back to CPU
@@ -83,7 +88,9 @@ impl Asr {
                 let params = WhisperLoadParams {
                     use_gpu: true,
                     flash_attn: false,
-                    // -1 = let whisper.cpp pick the device (GPU_DEVICE_AUTO).
+                    // -1 = GPU_DEVICE_AUTO: transcribe-rs picks a dedicated GPU
+                    // first, then most VRAM (the RTX 3050 here, not whisper.cpp's
+                    // own default of device 0, the iGPU).
                     gpu_device: -1,
                 };
                 Box::new(
@@ -108,6 +115,20 @@ impl Asr {
                 engine = %self.engine,
                 "ASR model loaded"
             );
+            // Pay Whisper's first-inference cost here, not on the first
+            // dictation. ggml-vulkan compiles its GPU pipelines lazily on first
+            // use; the GPU driver caches them on disk, but when that cache is
+            // cold (e.g. the first run under a new exe name) the first
+            // transcription took 44-80 s on the RTX 3050. With it warm, the
+            // first call in a process is still ~0.2 s slower than the rest
+            // (#14). 2 s of silence runs the same encoder + decoder kernels
+            // (whisper.cpp skips input under 1 s); the text is discarded,
+            // never delivered.
+            if whisper {
+                let t = std::time::Instant::now();
+                let _ = model.transcribe(&vec![0.0; 32_000], &self.options());
+                tracing::info!(warmup_ms = t.elapsed().as_millis() as u64, "ASR warmed up");
+            }
             self.model = Some(model);
         }
         Ok(self.model.as_deref_mut().unwrap())
@@ -124,12 +145,16 @@ impl Asr {
         }
     }
 
-    /// Transcribe 16 kHz mono f32 samples into trimmed text.
-    pub fn transcribe(&mut self, samples: &[f32]) -> anyhow::Result<String> {
-        let options = TranscribeOptions {
+    fn options(&self) -> TranscribeOptions {
+        TranscribeOptions {
             language: self.language.clone(),
             ..Default::default()
-        };
+        }
+    }
+
+    /// Transcribe 16 kHz mono f32 samples into trimmed text.
+    pub fn transcribe(&mut self, samples: &[f32]) -> anyhow::Result<String> {
+        let options = self.options();
         let model = self.ensure_loaded()?;
         // `SpeechModel::transcribe` (not `transcribe_raw`) so Parakeet still
         // gets its 250 ms leading-silence padding via `default_leading_silence_ms`;
