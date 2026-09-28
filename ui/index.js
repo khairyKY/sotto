@@ -74,6 +74,9 @@ function navigate(page) {
   if (page === 'history') loadHistory();
   if (page === 'home') loadHome();
   if (page === 'pronunciation') loadPronunciation();
+  // The trainer is only armed while its page is open (ADR 0001). The backend
+  // also drops the arm at the next Start, so this is the belt to its braces.
+  else invoke("set_pronunciation_target", { word: null });
 }
 document.querySelectorAll('.nav-item').forEach(item => {
   item.onclick = (e) => { e.preventDefault(); navigate(item.dataset.page); };
@@ -92,7 +95,10 @@ if (hasTauri && T.window) {
   const w = T.window.getCurrentWindow();
   $("win-min").onclick = () => w.minimize();
   $("win-max").onclick = () => w.toggleMaximize();
-  $("win-close").onclick = () => w.hide();
+  $("win-close").onclick = () => {
+    invoke("set_pronunciation_target", { word: null });
+    w.hide();
+  };
 } else {
   $("win-close").onclick = () => window.close();
 }
@@ -1021,7 +1027,7 @@ function pronAddSampleRow(word, heard, matched) {
 }
 
 if ($("pron-listen-btn")) {
-  $("pron-listen-btn").onclick = () => {
+  $("pron-listen-btn").onclick = async () => {
     if (pronState === "listening") {
       invoke("stop_dictation");
       pronSetState("resolving");
@@ -1029,7 +1035,8 @@ if ($("pron-listen-btn")) {
     }
     const word = $("pron-word-input").value.trim();
     if (!word) return;
-    invoke("set_pronunciation_target", { word });
+    // Armed before Start is sent: Start consumes the arm, so it must land first.
+    await invoke("set_pronunciation_target", { word });
     invoke("start_dictation");
     pronSetState("listening", word);
   };
@@ -1713,6 +1720,15 @@ async function boot() {
           pronSetState("resolving");
         }
       }, 700);
+    });
+    // A trainer take that ends without a sample (too short, no speech,
+    // cancelled, failed) sends no 'pronunciation-sample', so without this the
+    // page would sit on "Checking…" with Listen disabled. "done" is left to
+    // the sample handler, which plays the matched/missed flash first.
+    T.event.listen("overlay-state", (e) => {
+      if (pronState === "resolving" && ["idle", "error", "cancelled", "nomodel"].includes(e.payload)) {
+        pronSetState("idle");
+      }
     });
     T.event.listen("navigate", (e) => {
       const page = e.payload;
