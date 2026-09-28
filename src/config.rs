@@ -304,6 +304,11 @@ pub struct AsrConfig {
     /// BCP-47 code (e.g. "en", "ar"), or "auto" to let the engine detect it.
     /// Parakeet is English-only and ignores this either way.
     pub language: String,
+    /// Hand the trained vocabulary (`polish.vocabulary` words) to Whisper
+    /// engines as a decode-time prompt, so product names are spelled right
+    /// before polish ever sees them. Parakeet can't take a prompt: no effect
+    /// there. On by default; `false` is the off-switch.
+    pub vocabulary_prompt: bool,
 }
 
 impl Default for AsrConfig {
@@ -311,6 +316,7 @@ impl Default for AsrConfig {
         Self {
             model: "parakeet-v3".to_string(),
             language: "auto".to_string(),
+            vocabulary_prompt: true,
         }
     }
 }
@@ -771,6 +777,15 @@ max_mb = 250
         let reloaded: Config = toml::from_str(&saved).unwrap();
         assert!(reloaded.retention.enabled);
         assert_eq!(reloaded.retention.max_mb, 250);
+    }
+
+    #[test]
+    fn vocabulary_prompt_defaults_on_in_an_older_asr_section_and_can_be_switched_off() {
+        let base = "hotkey = \"ControlRight\"\nactivation_mode = \"toggle\"\ninjection_mode = \"paste\"\n";
+        let old: Config = toml::from_str(&format!("{base}[asr]\nmodel = \"whisper-turbo\"\n")).unwrap();
+        assert!(old.asr.vocabulary_prompt);
+        let off: Config = toml::from_str(&format!("{base}[asr]\nvocabulary_prompt = false\n")).unwrap();
+        assert!(!off.asr.vocabulary_prompt);
     }
 }
 

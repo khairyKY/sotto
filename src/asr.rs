@@ -7,12 +7,14 @@
 //! by Parakeet) is loaded dynamically at runtime from `onnxruntime.dll` (see
 //! `main::init_ort`).
 
-use crate::config;
+use crate::config::{self, VocabEntry};
 use anyhow::Context;
 use transcribe_rs::onnx::parakeet::ParakeetModel;
 use transcribe_rs::onnx::Quantization;
-use transcribe_rs::whisper_cpp::{WhisperEngine, WhisperLoadParams};
-use transcribe_rs::{SpeechModel, TranscribeOptions};
+use transcribe_rs::whisper_cpp::{WhisperEngine, WhisperInferenceParams, WhisperLoadParams};
+use transcribe_rs::{
+    ModelCapabilities, SpeechModel, TranscribeError, TranscribeOptions, TranscriptionResult,
+};
 
 pub struct Asr {
     model: Option<Box<dyn SpeechModel>>,
@@ -22,6 +24,11 @@ pub struct Asr {
     engine: String,
     /// `None` = auto-detect (config `language = "auto"`).
     language: Option<String>,
+    /// Whisper's `initial_prompt`, built once from the trained vocabulary.
+    /// ponytail: read at construction like `engine`, so a word trained after
+    /// startup joins the prompt on the next restart. Pass the live
+    /// `Controls::vocabulary` in if that lag ever matters.
+    prompt: Option<String>,
 }
 
 /// Maps the config's language string to what `TranscribeOptions` expects.
@@ -30,6 +37,63 @@ fn to_language_option(lang: &str) -> Option<String> {
         None
     } else {
         Some(lang.to_string())
+    }
+}
+
+/// Byte cap for the vocabulary prompt. Whisper's decoder keeps only the last
+/// ~223 prompt tokens and drops the FRONT of anything longer, which is where
+/// the most relevant words sit. 200 bytes stays well under that, even for
+/// Arabic (2 bytes a letter, more tokens per word), and a short prompt is
+/// less likely to be echoed back as text.
+const PROMPT_MAX_BYTES: usize = 200;
+
+/// The trained vocabulary as a Whisper prompt: "Zorvex, Sotto, Claude."
+/// Most relevant first: the words the engine has been caught mishearing
+/// (`heard_as` entries plus missed trainer attempts), list order breaking
+/// ties. A word that would overflow the cap is skipped, not cut.
+fn vocab_prompt(vocab: &[VocabEntry]) -> Option<String> {
+    let misses = |e: &VocabEntry| e.heard_as.len() + e.recent.iter().filter(|ok| !**ok).count();
+    let mut ranked: Vec<&VocabEntry> = vocab.iter().filter(|e| !e.word.trim().is_empty()).collect();
+    ranked.sort_by_key(|e| std::cmp::Reverse(misses(e))); // stable: ties keep list order
+    let mut out = String::new();
+    for word in ranked.iter().map(|e| e.word.trim()) {
+        // ", " before it, "." after the last.
+        if out.len() + 2 + word.len() + 1 > PROMPT_MAX_BYTES {
+            continue;
+        }
+        if !out.is_empty() {
+            out.push_str(", ");
+        }
+        out.push_str(word);
+    }
+    (!out.is_empty()).then(|| out + ".")
+}
+
+/// transcribe-rs's `SpeechModel` impl for Whisper has no prompt, so wrap the
+/// engine and go through `transcribe_with`, which has one. Everything else
+/// is `WhisperInferenceParams::default()`, i.e. what the plain impl sends.
+struct PromptedWhisper {
+    engine: WhisperEngine,
+    prompt: Option<String>,
+}
+
+impl SpeechModel for PromptedWhisper {
+    fn capabilities(&self) -> ModelCapabilities {
+        self.engine.capabilities()
+    }
+
+    fn transcribe_raw(
+        &mut self,
+        samples: &[f32],
+        options: &TranscribeOptions,
+    ) -> Result<TranscriptionResult, TranscribeError> {
+        let params = WhisperInferenceParams {
+            language: options.language.clone(),
+            translate: options.translate,
+            initial_prompt: self.prompt.clone(),
+            ..Default::default()
+        };
+        self.engine.transcribe_with(samples, &params)
     }
 }
 
@@ -51,6 +115,7 @@ impl Asr {
         }
         Self {
             model: None,
+            prompt: cfg.asr.vocabulary_prompt.then(|| vocab_prompt(&cfg.polish.vocabulary)).flatten(),
             engine: cfg.asr.model,
             language: to_language_option(&cfg.asr.language),
         }
@@ -93,10 +158,11 @@ impl Asr {
                     // own default of device 0, the iGPU).
                     gpu_device: -1,
                 };
-                Box::new(
-                    WhisperEngine::load_with_params(&path, params)
+                Box::new(PromptedWhisper {
+                    engine: WhisperEngine::load_with_params(&path, params)
                         .context("loading Whisper model")?,
-                )
+                    prompt: self.prompt.clone(),
+                })
             } else {
                 let dir = config::model_dir();
                 let encoder = dir.join("encoder-model.int8.onnx");
@@ -127,7 +193,12 @@ impl Asr {
             if whisper {
                 let t = std::time::Instant::now();
                 let _ = model.transcribe(&vec![0.0; 32_000], &self.options());
-                tracing::info!(warmup_ms = t.elapsed().as_millis() as u64, "ASR warmed up");
+                tracing::info!(
+                    warmup_ms = t.elapsed().as_millis() as u64,
+                    // Length only: the words are the user's.
+                    prompt_bytes = self.prompt.as_ref().map_or(0, |p| p.len()),
+                    "ASR warmed up"
+                );
             }
             self.model = Some(model);
         }
@@ -193,5 +264,45 @@ mod tests {
     fn explicit_language_passes_through() {
         assert_eq!(to_language_option("en"), Some("en".to_string()));
         assert_eq!(to_language_option("ar"), Some("ar".to_string()));
+    }
+
+    fn entry(word: &str, heard_as: usize, misses: usize) -> VocabEntry {
+        VocabEntry {
+            word: word.into(),
+            heard_as: vec!["x".into(); heard_as],
+            recent: vec![false; misses],
+        }
+    }
+
+    #[test]
+    fn no_words_means_no_prompt() {
+        assert_eq!(vocab_prompt(&[]), None);
+        assert_eq!(vocab_prompt(&[entry("  ", 3, 0)]), None);
+    }
+
+    #[test]
+    fn misheard_words_lead_and_ties_keep_list_order() {
+        let vocab = [entry("Sotto", 0, 0), entry("Zorvex", 1, 2), entry("Kestrel", 0, 0), entry("Qwen", 2, 0)];
+        assert_eq!(vocab_prompt(&vocab).unwrap(), "Zorvex, Qwen, Sotto, Kestrel.");
+    }
+
+    #[test]
+    fn caps_the_prompt_keeping_the_most_relevant_words() {
+        // 60 filler words of 9 bytes each, far over the cap, with the one
+        // misheard word last in the list.
+        let mut vocab: Vec<VocabEntry> = (0..60).map(|i| entry(&format!("Filler{i:03}"), 0, 0)).collect();
+        vocab.push(entry("Zorvex", 0, 1));
+        let prompt = vocab_prompt(&vocab).unwrap();
+        assert!(prompt.len() <= PROMPT_MAX_BYTES, "{} bytes", prompt.len());
+        assert!(prompt.starts_with("Zorvex, Filler000, "));
+        assert!(prompt.ends_with('.'));
+        assert!(!prompt.contains("Filler059")); // the least relevant fell off
+    }
+
+    #[test]
+    fn an_overlong_word_is_skipped_not_cut() {
+        let long = "L".repeat(PROMPT_MAX_BYTES);
+        let vocab = [entry(&long, 5, 0), entry("Zorvex", 0, 0)];
+        assert_eq!(vocab_prompt(&vocab).unwrap(), "Zorvex.");
     }
 }
