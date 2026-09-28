@@ -898,10 +898,13 @@ fn flag_transcription(text: String, state: tauri::State<'_, AppState>) {
     if text.is_empty() {
         return;
     }
+    // The row's raw transcript, for `--replay-flags` (#8).
+    let raw = state.controls.history.raw_for(&text);
     let cfg = state.cfg.lock().unwrap();
     bug_reports::record(&bug_reports::BugReport {
         t: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0),
         text,
+        raw,
         asr_engine: cfg.asr.model.clone(),
         asr_language: cfg.asr.language.clone(),
         polish_mode: format!("{:?}", cfg.polish.mode).to_lowercase(),
@@ -1021,6 +1024,9 @@ fn main() -> anyhow::Result<()> {
     }
     if let Some(text) = arg_value("--polish") {
         return run_polish_once(&text);
+    }
+    if std::env::args().any(|a| a == "--replay-flags") {
+        return run_replay_flags(arg_value("--replay-flags"));
     }
 
     let Some(_guard) = SingleInstanceGuard::acquire()? else {
@@ -2252,7 +2258,7 @@ fn process_take(
             if let Ok(mut cb) = arboard::Clipboard::new() {
                 let _ = cb.set_text(result.text.clone());
             }
-            history.push(result.text.clone());
+            history.push(raw.clone(), result.text.clone());
             emit_state(app, "done");
             // "Something smart just happened": when a phonetic correction fired
             // this take, the overlay swaps its plain done checkmark for a flyout
@@ -2548,6 +2554,24 @@ fn run_polish_once(raw: &str) -> anyhow::Result<()> {
         "polished => {:?}  ({} ms, {} words corrected, {} dict fixes)",
         out.text, t.elapsed().as_millis(), out.corrected_words, out.dict_hits
     );
+    Ok(())
+}
+
+/// `--replay-flags [path]` (#8): every ⚑ flag's raw transcript through the
+/// current polish chain and config, diffed against the last run; see
+/// `bug_reports::replay`. Rules tier, or AI for a flag taken in AI mode.
+/// Exits non-zero when any output changed, so it works as a regression check.
+fn run_replay_flags(path: Option<String>) -> anyhow::Result<()> {
+    let cfg = Config::load_or_init().unwrap_or_default();
+    let controls = Controls::from_config(&cfg);
+    let polisher = polish::Polisher::new(controls.clone(), cfg.llm.clone());
+    let path = path.map(PathBuf::from).unwrap_or_else(bug_reports::path);
+    let changed = bug_reports::replay(&path, |f| {
+        let mode = if f.polish_mode == "ai" { PolishMode::Ai } else { PolishMode::Rules };
+        controls.polish_mode.store(mode.as_u8(), Ordering::Relaxed);
+        polisher.polish(&f.raw).text
+    })?;
+    anyhow::ensure!(changed == 0, "{changed} flag(s) changed since the last replay");
     Ok(())
 }
 

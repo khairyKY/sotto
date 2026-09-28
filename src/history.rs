@@ -36,6 +36,11 @@ pub struct HistoryEntry {
     /// its date instead of a bare clock time.
     #[serde(rename = "d", default)]
     pub date: String,
+    /// The ASR transcript `text` was polished from, so a ⚑ flag can store it
+    /// for `--replay-flags` (#8). In memory only: history.jsonl keeps its
+    /// format, and a row reloaded after a restart has none.
+    #[serde(skip)]
+    pub raw: String,
 }
 
 /// Shared handle; cheap to clone. Newest entries first.
@@ -57,11 +62,11 @@ impl History {
         Self { entries: Arc::new(Mutex::new(entries)), persist: Arc::new(AtomicBool::new(persist)), path }
     }
 
-    pub fn push(&self, text: String) {
+    pub fn push(&self, raw: String, text: String) {
         let (time, date) = now_labels();
         let persist = self.persist.load(Ordering::Relaxed);
         let mut g = self.entries.lock().unwrap();
-        g.push_front(HistoryEntry { time, text, date });
+        g.push_front(HistoryEntry { time, text, date, raw });
         g.truncate(if persist { PERSIST_CAP } else { CAP });
         if persist {
             save(&self.path, &g);
@@ -82,6 +87,13 @@ impl History {
                 e
             })
             .collect()
+    }
+
+    /// Raw transcript behind the newest row whose text is `text` — what a
+    /// flag on that row stores. Empty when no row matches or it has none.
+    pub fn raw_for(&self, text: &str) -> String {
+        let g = self.entries.lock().unwrap();
+        g.iter().find(|e| e.text.trim() == text.trim()).map(|e| e.raw.clone()).unwrap_or_default()
     }
 
     /// Turning it on writes what's in memory now; off deletes the file —
@@ -178,7 +190,7 @@ mod tests {
     fn newest_first_and_capped() {
         let h = History::at(temp_path("mem"), false);
         for i in 0..CAP + 5 {
-            h.push(format!("entry {i}"));
+            h.push(String::new(), format!("entry {i}"));
         }
         let snap = h.snapshot();
         assert_eq!(snap.len(), CAP, "should truncate to the cap");
@@ -190,8 +202,8 @@ mod tests {
     fn persisted_history_survives_a_reload() {
         let path = temp_path("roundtrip");
         let h = History::at(path.clone(), true);
-        h.push("first".into());
-        h.push("ثاني second — code-switched".into());
+        h.push(String::new(), "first".into());
+        h.push(String::new(), "ثاني second — code-switched".into());
         let reloaded = History::at(path.clone(), true).snapshot();
         let texts: Vec<_> = reloaded.iter().map(|e| e.text.as_str()).collect();
         assert_eq!(texts, ["ثاني second — code-switched", "first"], "newest first, text intact");
@@ -205,7 +217,7 @@ mod tests {
         let path = temp_path("cap");
         let h = History::at(path.clone(), true);
         for i in 0..PERSIST_CAP + 5 {
-            h.push(format!("entry {i}"));
+            h.push(String::new(), format!("entry {i}"));
         }
         let reloaded = History::at(path.clone(), true).snapshot();
         assert_eq!(reloaded.len(), PERSIST_CAP);
@@ -220,7 +232,7 @@ mod tests {
         let h = History::at(path.clone(), true);
         let essay = "word ".repeat(40_000); // ~200 KB a line
         for i in 0..8 {
-            h.push(format!("{i} {essay}"));
+            h.push(String::new(), format!("{i} {essay}"));
         }
         assert!(std::fs::metadata(&path).unwrap().len() as usize <= PERSIST_MAX_BYTES);
         let reloaded = History::at(path.clone(), true).snapshot();
@@ -233,7 +245,7 @@ mod tests {
     fn turning_persist_off_deletes_the_file_and_on_saves_the_session() {
         let path = temp_path("toggle");
         let h = History::at(path.clone(), false);
-        h.push("said before opting in".into());
+        h.push(String::new(), "said before opting in".into());
         h.set_persist(true);
         assert_eq!(History::at(path.clone(), true).snapshot()[0].text, "said before opting in");
         h.set_persist(false);
@@ -242,6 +254,19 @@ mod tests {
         h.set_persist(true);
         h.clear();
         assert!(h.snapshot().is_empty() && !path.exists());
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn raw_is_found_by_row_text_but_never_written_to_disk() {
+        let path = temp_path("raw");
+        let h = History::at(path.clone(), true);
+        h.push("um the the plan".into(), "The plan.".into());
+        h.push("uh hello".into(), "Hello.".into());
+        assert_eq!(h.raw_for(" The plan. "), "um the the plan", "matched on trimmed text");
+        assert_eq!(h.raw_for("never said"), "");
+        assert!(!std::fs::read_to_string(&path).unwrap().contains("um the the plan"), "raw stays in memory");
+        assert_eq!(History::at(path.clone(), true).raw_for("The plan."), "", "a reloaded row has no raw");
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 
