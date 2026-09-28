@@ -730,6 +730,9 @@ if (tauri && tauri.event) {
   tauri.event.listen('overlay-level', (e) => { state.level = e.payload; });
   tauri.event.listen('overlay-flyout', (e) => { flyout = e.payload; setState('smart'); });
   tauri.event.listen('overlay-always-visible-changed', (e) => { alwaysVisible = !!e.payload; });
+  // set_overlay_position moves the window and the Rust hit-test re-anchors at
+  // once; pillOrigin reads this every frame, so the pill follows on the next one.
+  tauri.event.listen('overlay-position', (e) => { if (e.payload) overlayPosition = e.payload; });
   tauri.event.listen('theme-changed', (e) => {
     const theme = e.payload;
     if (theme === "system") {
