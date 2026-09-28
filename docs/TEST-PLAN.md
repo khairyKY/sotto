@@ -23,6 +23,13 @@ Row format: **steps · expected result · covering test · state · last verifie
   `D:\Coding\_claude-cloud\sotto-log\2026-09-28-1704-phase-a-audit.md` and gets a GitHub
   issue number via a dated note.
 
+**Snapshot.** The first version of these rows describes master `ab09d50`; file:line
+references are at that commit. Merged after it, and not yet covered by rows:
+- `39ff7eb`, the v0.6.1 version bump;
+- `10e1251`, #9 persistent history + crash-safe takes (see the note under History).
+
+Add their rows with dated notes.
+
 Test data is always invented. Never use real snippets, contacts or dictated text here.
 Real-voice runs are manual rows for Kai.
 
@@ -239,6 +246,11 @@ State changes:
 | HI3 | ⚑ Flag a row. | The icon shows flagged. One line appended to `%APPDATA%\sotto\bug-reports.jsonl` with engine, language, polish mode, counts and version. Nothing sent anywhere. | `bug_reports::tests::record_writes_a_readable_jsonl_line`, `bug_reports::tests::multiple_flags_append_rather_than_overwrite` + manual | installed | 2026-09-28 auto |
 | HI4 | Quit and relaunch. | History is empty (in memory only, as the footnote says). #9 changes this. | manual | published | — |
 | HI5 | A code-switched Arabic take in History and Home Recent. | The right reading order. **❌ gap A-6** (measured: LTR order). | manual | installed | 2026-09-28 mock |
+
+State changes:
+- 2026-09-28 · HI4 · master `10e1251` (#9) adds an opt-in "Keep history" (off by default). HI4
+  still holds with it off. Rows for Keep history, Clear history and "Recovered after a
+  restart" takes are still to be added.
 
 ### Pronunciation
 | ID | Steps | Expected | Covered by | State | Last verified |
