@@ -598,6 +598,70 @@ about is a feature that doesn't exist.
 maps spoken→text for anything else; revisit only if Kai wants multi-line
 snippets, which is a Dictionary feature, not this one.
 
+## M-track — Android (planned 2026-08-30)
+
+Kai wants Sotto on his phone, standalone (no PC relay — considered and
+dropped). The insight that makes it cheap: an Android IME replaces three
+Windows subsystems at once — the hotkey (`rdev`), injection (`inject.rs`),
+and per-app focus tracking for tones (`EditorInfo` hands the IME the target
+package name).
+
+**Architecture:** Kotlin `InputMethodService` shell (keyboard view, mic via
+`AudioRecord`, `commitText()` delivery) + the existing Rust core
+(`polish.rs`, dictionary, tones, config) compiled for `aarch64-linux-android`
+over JNI. Panel UI in Jetpack Compose, themed from the literal token
+extraction in `marshmallow-spec-extracted.md` (hexes, shadows, motion) —
+Newsreader + Hanken Grotesk bundle as font resources.
+
+**Known constraint:** Gboard's mic button is hardwired to Google voice typing
+and will never hand off. v1 pairs with **HeliBoard** (or FlorisBoard/
+OpenBoard), which expose a third-party voice-provider setting — the Futo
+Voice Input model. Owning our own mic button is one of the two reasons M2
+exists.
+
+**Models:** zero in the APK; on-demand download exactly like desktop
+(`assets.rs` pattern). First model: **`egyptian-small` q5_0 (~170 MB)** —
+Egyptian + code-switching + decent English in one file. This makes backlog
+items #4 (quantize) and #6 (publish) load-bearing for mobile. Parakeet int8
+via sherpa-onnx (~460 MB) is the later add if English speed itches;
+`whisper-turbo` q5_0 (~570 MB) possible but unlikely to be worth it. Engine
+switcher ports from desktop Settings.
+
+**Polish:** rules tier only (portable Rust — Harper, stutter collapse,
+dictionary, all ship unchanged). Phone dictation is short-form, which is the
+regime the word-count gate routes to rules anyway. On-device Qwen via
+llama.cpp is possible but ~1 GB + battery cost in a keyboard context — parked
+as a maybe-later opt-in download (E3b logic applied to mobile).
+
+### M1 — voice input IME (Option B) — ~1.5–2 weeks focused
+
+The keyboard slot becomes a full-width Marshmallow surface when invoked:
+dancing bars (big, not pill-sized), ✕ cancel, self-drawing checkmark, blush
+error + ↻. Same states as the desktop pill, bigger stage.
+- Rust core cross-compile + whisper.cpp Android build (2–3 d, well-trodden)
+- Voice-IME subtype + HeliBoard integration (2–3 d)
+- Compose Marshmallow panel, all states, light/dark (2–3 d)
+- Model download flow + onboarding (1–2 d)
+- Sideloaded APK; Play Store is a separate later question.
+
+### M2 — own keyboard (Option A basic) — +1–2 weeks
+
+Typeable QWERTY in Marshmallow style around the same panel components: key
+layout, touch, shift/symbols, long-press, haptics. **No swipe, no
+autocorrect, no prediction** — competitive-keyboard territory is months and
+is why HeliBoard exists. Basic A is enough for M3, which learns from
+corrections, not swipe quality.
+
+### M3 — adaptive learning layer (the Gemini "Shadow keyboard" idea)
+
+Learns abbreviations, spelling habits, formal/informal tone from how Kai
+types, feeding Dictionary + Tones (both already exist — this grows them, not
+replaces them). The far-out half of the original idea — on-device LoRA
+adapters feeding typing corrections back into STT phonetic matching — stays
+explicitly shelved until the cheap layer measurably falls short.
+
+---
+
 ### Egyptian A/B data point (2026-07-28 trial, logged in the vault note)
 
 Real dictation through `egyptian-small`: code-switching held (English stayed
