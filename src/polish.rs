@@ -292,6 +292,7 @@ impl Polisher {
         if let Some(reason) = rewrite_guard(rules, &text, &vocabulary) {
             return Err(reason);
         }
+        let text = if rules.contains('\n') { restore_breaks(rules, &text).ok_or("line-breaks")? } else { text };
         tracing::info!(llm_ms = t.elapsed().as_millis(), "AI polish applied");
         Ok(text)
     }
@@ -362,8 +363,8 @@ pub struct PolishResult {
     pub notable: Vec<(String, String)>,
     /// The tier that actually produced `text` ("off" | "rules" | "ai") —
     /// not the configured one — and, when AI mode kept the rules result,
-    /// why ("short", "no-op", "unavailable", "empty", "llm-error", or a
-    /// `rewrite_guard` reason); "" otherwise (#67).
+    /// why ("short", "no-op", "unavailable", "empty", "llm-error",
+    /// "line-breaks", or a `rewrite_guard` reason); "" otherwise (#67).
     pub tier: &'static str,
     pub fallback: &'static str,
 }
@@ -515,6 +516,67 @@ fn apply_formatting_commands(raw: &str) -> String {
         text = replace_whole_ci(&text, phrase, brk).0;
     }
     collapse_space_around_breaks(&text)
+}
+
+/// Rewrite `text` word by word without losing its line breaks. `pass` gets
+/// one line's whitespace tokens and returns the words to put back; they're
+/// rejoined with single spaces and the lines with the exact breaks between
+/// them. Every word-level pass (tier0, numbers, phonetic) goes through here:
+/// each used to split and rejoin the whole text itself, flattening the
+/// breaks "new line"/"new paragraph" had just made (#85). Per line, a number
+/// run, a stutter or a phonetic match also never reaches across a break.
+fn rewrite_words<'a, S: std::borrow::Borrow<str>>(text: &'a str, mut pass: impl FnMut(&[&'a str]) -> Vec<S>) -> String {
+    text.split('\n')
+        .map(|line| pass(&line.split_whitespace().collect::<Vec<_>>()).join(" "))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Put `input`'s line breaks back into the model's rewrite of it. The model
+/// joins lines whatever the prompt says (measured: 0 of 5 multi-line takes
+/// kept a single break, with or without a stronger instruction or a marker
+/// glyph), so each break goes back between the same two words — the last of
+/// one line, the first of the next — found in order. `None` if a pair didn't
+/// survive the rewrite; the caller then keeps the rules result (#85).
+///
+/// ponytail: exact word pairs, so a boundary the model reworded ("I will" ->
+/// "I'll") falls back to rules. Upgrade path: fuzzy-match the pair.
+fn restore_breaks(input: &str, output: &str) -> Option<String> {
+    let norm = |t: &str| split_affixes(t).1.to_lowercase();
+    let toks: Vec<(usize, &str)> =
+        output.split_whitespace().map(|t| (t.as_ptr() as usize - output.as_ptr() as usize, t)).collect();
+    let mut breaks = vec![0; toks.len()]; // '\n's after each output token
+    let (mut lead, mut pending, mut pos) = (0, 0, 0);
+    let mut last: Option<&str> = None; // last word of the previous non-empty line
+    for (i, line) in input.split('\n').enumerate() {
+        pending += usize::from(i > 0);
+        let Some(first) = line.split_whitespace().next() else { continue };
+        match last {
+            None => lead = pending,
+            Some(before) => {
+                let (b, f) = (norm(before), norm(first));
+                let k = (pos..toks.len().saturating_sub(1))
+                    .find(|&k| norm(toks[k].1) == b && norm(toks[k + 1].1) == f)?;
+                breaks[k] = pending;
+                pos = k + 1;
+            }
+        }
+        pending = 0;
+        last = line.split_whitespace().last();
+    }
+    let mut out = "\n".repeat(lead);
+    for (k, &(start, tok)) in toks.iter().enumerate() {
+        if k > 0 {
+            let (prev_start, prev) = toks[k - 1];
+            match breaks[k - 1] {
+                0 => out.push_str(&output[prev_start + prev.len()..start]),
+                n => out.push_str(&"\n".repeat(n)),
+            }
+        }
+        out.push_str(tok);
+    }
+    out.push_str(&"\n".repeat(pending));
+    Some(out)
 }
 
 /// Drop spaces/tabs immediately touching a `\n` just inserted above. Raw
@@ -740,7 +802,11 @@ fn meridiem(tok: &str) -> Option<String> {
 /// Turn spoken numbers into digits. Runs as its own pass (see the config
 /// `number_formatting` toggle), independent of polish mode.
 fn normalize_numbers(text: &str) -> String {
-    let toks: Vec<&str> = text.split_whitespace().collect();
+    rewrite_words(text, number_words)
+}
+
+/// `normalize_numbers` over one line's tokens.
+fn number_words(toks: &[&str]) -> Vec<String> {
     // Bare lowercased cores, for the run parser.
     let cores: Vec<String> = toks.iter().map(|t| split_affixes(t).1.to_ascii_lowercase()).collect();
     let core_refs: Vec<&str> = cores.iter().map(|s| s.as_str()).collect();
@@ -801,7 +867,7 @@ fn normalize_numbers(text: &str) -> String {
         out.push(format!("{lead}{}{suffix}{trail_last}", run.value));
         i += run.consumed;
     }
-    out.join(" ")
+    out
 }
 
 /// Which quote-mark glyphs spoken quote commands produce. Straight is the
@@ -1018,15 +1084,17 @@ fn apply_paired_quote(text: &str, open_glyph: &str, close_glyph: &str) -> String
     out
 }
 
-/// Tier 0 rules cleanup. `split_whitespace` also collapses runs of spaces and
-/// trims, so filtering + rejoining handles whitespace normalization for free.
+/// Tier 0 rules cleanup. `rewrite_words` also collapses runs of spaces and
+/// trims each line, so filtering + rejoining handles whitespace
+/// normalization for free.
 fn tier0(raw: &str) -> String {
-    let kept: Vec<&str> = raw.split_whitespace().filter(|t| !is_filler(t)).collect();
-    // Stutter collapse runs AFTER filler stripping: by now "uh uh uh" is
-    // already gone, so any run of identical tokens left is genuine word
-    // repetition ("the the store", "I I I think"), not disfluency.
-    let deduped = collapse_stutters(&kept);
-    capitalize_first(&deduped.join(" "))
+    capitalize_first(&rewrite_words(raw, |toks| {
+        let kept: Vec<&str> = toks.iter().copied().filter(|t| !is_filler(t)).collect();
+        // Stutter collapse runs AFTER filler stripping: by now "uh uh uh" is
+        // already gone, so any run of identical tokens left is genuine word
+        // repetition ("the the store", "I I I think"), not disfluency.
+        collapse_stutters(&kept)
+    }))
 }
 
 /// Collapse a run of the same token repeated back-to-back to one occurrence,
@@ -1091,11 +1159,14 @@ fn is_filler(token: &str) -> bool {
     FILLERS.contains(&lower.as_str())
 }
 
+/// Capitalize the first letter — after any leading break, so a take that
+/// opens with "new paragraph" still starts with a capital.
 fn capitalize_first(s: &str) -> String {
-    let mut chars = s.chars();
+    let body = s.trim_start();
+    let mut chars = body.chars();
     match chars.next() {
-        Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
-        None => String::new(),
+        Some(first) => format!("{}{}{}", &s[..s.len() - body.len()], first.to_uppercase(), chars.as_str()),
+        None => s.to_string(),
     }
 }
 
@@ -1183,9 +1254,8 @@ fn apply_phonetic_corrections(text: &str, targets: &[String]) -> (String, Vec<(S
     // tokens are real English words.
     let english = FstDictionary::curated();
 
-    let out = text
-        .split_whitespace()
-        .map(|tok| {
+    let out = rewrite_words(&text, |toks| {
+        toks.iter().map(|&tok| {
             let (lead, core, trail) = split_affixes(tok);
             // Plain letters only: skips code ("std::io"), contractions and
             // possessives ("they're", "Claude's") and non-English words.
@@ -1213,8 +1283,8 @@ fn apply_phonetic_corrections(text: &str, targets: &[String]) -> (String, Vec<(S
             }
             tok.to_string()
         })
-        .collect::<Vec<_>>()
-        .join(" ");
+        .collect()
+    });
     (out, fired)
 }
 
@@ -2087,6 +2157,60 @@ mod tests {
         // Off by default, no app entries — matches today's behavior exactly.
         let p = test_polisher("", &[]);
         assert_eq!(p.resolve_tone("anything"), "");
+    }
+
+    // ── #85: word passes keep line breaks ────────────────────────────
+    #[test]
+    fn rewrite_words_keeps_every_line_break() {
+        let same = |s: &str| rewrite_words(s, |t| t.to_vec());
+        assert_eq!(same("one  two\nthree"), "one two\nthree");
+        assert_eq!(same("a\n\nb\n"), "a\n\nb\n");
+        assert_eq!(same("\n\n  hi  "), "\n\nhi");
+    }
+
+    #[test]
+    fn word_passes_keep_line_breaks() {
+        assert_eq!(tier0("um first line\nsecond uh line"), "First line\nsecond line");
+        assert_eq!(tier0("first\n\nsecond"), "First\n\nsecond");
+        assert_eq!(tier0("\n\nuh hello there\n"), "\n\nHello there\n");
+        assert_eq!(tier0("the\nthe end"), "The\nthe end"); // a break is not a stutter
+        assert_eq!(normalize_numbers("I have twenty three\n\nboxes"), "I have 23\n\nboxes");
+        assert_eq!(normalize_numbers("twenty\nthree"), "20\n3"); // a run never spans a break
+        let targets = vec!["Claude".to_string(), "Sotto".to_string()];
+        assert_eq!(apply_phonetic_corrections("ask clode\nthen soto", &targets).0, "ask Claude\nthen Sotto");
+    }
+
+    #[test]
+    fn restore_breaks_puts_the_ai_output_back_on_its_lines() {
+        let input = "the meeting went well and we agreed on the plan\nnext steps are simple";
+        let output = "The meeting went well, and we agreed on the plan. Next steps are simple.";
+        assert_eq!(
+            restore_breaks(input, output).as_deref(),
+            Some("The meeting went well, and we agreed on the plan.\nNext steps are simple.")
+        );
+        // A paragraph break the model kept, a line break it didn't.
+        let input = "Dear team\n\nthe launch moves to friday\n23 people are coming";
+        let output = "Dear team,\n\nThe launch moves to Friday. 23 people are coming.";
+        assert_eq!(
+            restore_breaks(input, output).as_deref(),
+            Some("Dear team,\n\nThe launch moves to Friday.\n23 people are coming.")
+        );
+        // Breaks at either edge.
+        assert_eq!(restore_breaks("\n\nhello there\n", "Hello there.").as_deref(), Some("\n\nHello there.\n"));
+        // A boundary word the model dropped: no guess.
+        assert_eq!(restore_breaks("call sam\nthen email jo", "Call Sam and email Jo."), None);
+    }
+
+    #[test]
+    fn new_line_command_survives_the_rules_pipeline() {
+        // Every word pass on: numbers, phonetic (with trained words), rules.
+        let cfg = crate::config::Config::default();
+        let controls = crate::Controls::from_config(&cfg);
+        controls.polish_mode.store(PolishMode::Rules.as_u8(), Ordering::Relaxed);
+        *controls.vocabulary.lock().unwrap() = vec![vocab("Sotto", &[])];
+        let p = Polisher::new(controls, cfg.llm.clone());
+        assert_eq!(p.polish("dear team new line see you soon").text, "Dear team\nsee you soon");
+        assert_eq!(p.polish("um intro new paragraph ask soto for two things").text, "Intro\n\nask Sotto for 2 things");
     }
 
     // ── #65: AI rewrite guard ────────────────────────────────────────
