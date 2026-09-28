@@ -1029,6 +1029,9 @@ fn main() -> anyhow::Result<()> {
     };
 
     let cfg = Config::load_or_init()?;
+    // Hands the uninstaller a relocated assets_dir it can't get from TOML
+    // parsing — see config::write_assets_dir_marker and nsis/hooks.nsi (#53).
+    config::write_assets_dir_marker(&cfg);
     tracing::info!(
         cfg = ?config_for_log(&cfg),
         dictionary = cfg.dictionary.len(),
