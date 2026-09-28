@@ -863,11 +863,38 @@ fn number_words(toks: &[&str]) -> Vec<String> {
             }
         }
 
+        // "the next one", "that one", "a new one": the pronoun, not a count (#66).
+        if run.consumed == 1 && core_refs[i] == "one" && pronoun_one(&core_refs[..i]) {
+            out.push(toks[i].to_string());
+            i += 1;
+            continue;
+        }
+
         let suffix = if run.ordinal { ordinal_suffix(run.value) } else { "" };
         out.push(format!("{lead}{}{suffix}{trail_last}", run.value));
         i += run.consumed;
     }
     out
+}
+
+/// Words right after which a lone "one" is the pronoun, never a count.
+const ONE_PRONOUN_AFTER: &[&str] =
+    &["the", "that", "this", "which", "next", "last", "other", "another", "each", "every", "no", "any"];
+
+/// Is a lone "one" after `prev` (the lowercased words before it) the
+/// pronoun? After a determiner ("that one", "no one") or an ordinal ("the
+/// third one"), or after an article and one plain word ("a new one", "the
+/// big one"). Everything else stays a count: "one of three", "I have one".
+fn pronoun_one(prev: &[&str]) -> bool {
+    match prev {
+        [.., p] if ONE_PRONOUN_AFTER.contains(p) || matches!(classify_number(p), Some(NumTok::OrdUnit(_) | NumTok::OrdTerm(_))) => {
+            true
+        }
+        [.., a, p] => {
+            matches!(*a, "the" | "a" | "an") && !p.is_empty() && !FUNCTION_WORDS.contains(p) && classify_number(p).is_none()
+        }
+        _ => false,
+    }
 }
 
 /// Which quote-mark glyphs spoken quote commands produce. Straight is the
@@ -2022,6 +2049,31 @@ mod tests {
             assert_eq!(out, s);
             assert!(fired.is_empty(), "{s}: {fired:?}");
         }
+    }
+
+    #[test]
+    fn numbers_leave_the_pronoun_one_alone() {
+        for s in [
+            "I prefer the next one",
+            "that one, not this one",
+            "which one do you want",
+            "no one replied",
+            "every one of them agreed",
+            "we need a new one",
+            "the big one is broken",
+        ] {
+            assert_eq!(normalize_numbers(s), s);
+        }
+        assert_eq!(normalize_numbers("pick the third one"), "pick the 3rd one");
+    }
+
+    #[test]
+    fn numbers_still_count_with_one() {
+        assert_eq!(normalize_numbers("one hundred"), "100");
+        assert_eq!(normalize_numbers("one of three"), "1 of 3");
+        assert_eq!(normalize_numbers("I have one"), "I have 1");
+        assert_eq!(normalize_numbers("the one hundred days"), "the 100 days");
+        assert_eq!(normalize_numbers("one more time"), "1 more time");
     }
 
     #[test]
