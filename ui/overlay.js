@@ -342,9 +342,9 @@ function drawState(x, y, w, h, now, radius, shadowScale, baseAlpha) {
     if (sincePhase > 5400) { const f = Math.min(1, (sincePhase - 5400) / 300); alpha *= 1 - f; dy += f * 4; }
     if (sincePhase >= 5700) { setState('idle'); return; }
   }
-  if (name === 'smart') {
+  if (name === 'smart' || name === 'kept' || name === 'noselection') {
     // A beat longer than 'done' (1s) so the correction is readable, but still
-    // a glance, not a nag.
+    // a glance, not a nag. The Transform notes (#18) share it: no button.
     if (sincePhase > 2600) { const f = Math.min(1, (sincePhase - 2600) / 400); alpha *= 1 - f; dy += f * 4; }
     if (sincePhase >= 3000) { setState('idle'); return; }
   }
@@ -573,6 +573,29 @@ function drawState(x, y, w, h, now, radius, shadowScale, baseAlpha) {
     retryBtn(xr, yc, btnR, alpha, dark);
     activeBtn = { x: xr, y: yc, r: btnR, action: 'retry' };
     countdownBar(x, y, w, h, Math.max(0, 1 - sincePhase / 6000), dark);
+  } else if (name === 'kept' || name === 'noselection') {
+    // Transforms (#18). 'kept': the rewrite was refused or failed and the
+    // selection stays as it was (restrained blush, like 'error'). 'noselection':
+    // the chord found nothing selected (neutral, like 'cancelled'). No button:
+    // the chord itself is the retry.
+    const gx = contentL + 8, kept = name === 'kept';
+    ctx.save();
+    ctx.globalAlpha = alpha * (kept ? 0.2 : 1);
+    ctx.fillStyle = kept ? blush : (dark ? '#3A3340' : '#E6DFD4');
+    ctx.beginPath();
+    ctx.arc(gx + 8, yc, 10, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+    ctx.globalAlpha = alpha;
+    ctx.fillStyle = kept ? blushTxt : muted;
+    ctx.font = '700 11px "Hanken Grotesk", system-ui, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(kept ? '!' : 'i', gx + 8, yc);
+    ctx.font = '500 12px "Hanken Grotesk", system-ui, sans-serif';
+    ctx.textAlign = 'left';
+    ctx.fillStyle = txt;
+    ctx.fillText(kept ? 'Kept your text' : 'Select text first', gx + 20, yc);
   } else if (name === 'smart') {
     // "Something smart just happened": a correction toward a trained word.
     // Sparkle + "heard -> corrected", no button — a glance, then it fades.
@@ -625,6 +648,7 @@ function pillWidthFor(name) {
   if (name === 'cancelled') return 220;
   if (name === 'nomodel') return 248;
   if (name === 'smart') return 264; // "heard -> corrected" flyout
+  if (name === 'kept' || name === 'noselection') return 164; // Transform notes, no button
   return PW;
 }
 

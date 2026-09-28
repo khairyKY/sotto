@@ -5,7 +5,7 @@ use windows::Win32::Foundation::HWND;
 use windows::Win32::System::Threading::{AttachThreadInput, GetCurrentThreadId};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     GetAsyncKeyState, SendInput, VIRTUAL_KEY, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT,
-    KEYEVENTF_KEYUP, KEYEVENTF_UNICODE, VK_CONTROL, VK_LWIN, VK_MENU, VK_RWIN, VK_SHIFT, VK_V,
+    KEYEVENTF_KEYUP, KEYEVENTF_UNICODE, VK_C, VK_CONTROL, VK_LWIN, VK_MENU, VK_RWIN, VK_SHIFT, VK_V,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     GetForegroundWindow, GetWindowThreadProcessId, IsWindow, SetForegroundWindow,
@@ -61,7 +61,9 @@ pub fn inject_text(text: &str, mode: InjectionMode) -> anyhow::Result<()> {
     // when we start feeding KEYEVENTF_UNICODE events, the receiving app can
     // misinterpret some of them as Ctrl/Alt/Shift-chords instead of literal
     // characters, corrupting the output. Wait briefly for the coast to clear.
-    wait_for_modifiers_released();
+    if !wait_for_modifiers_released(Duration::from_millis(150)) {
+        tracing::warn!("modifier key still down after settle timeout — injecting anyway");
+    }
 
     match mode {
         InjectionMode::Unicode => inject_unicode(text),
@@ -69,9 +71,11 @@ pub fn inject_text(text: &str, mode: InjectionMode) -> anyhow::Result<()> {
     }
 }
 
-fn wait_for_modifiers_released() {
+/// Wait up to `timeout` for Ctrl/Shift/Alt/Win to be let go. False if one is
+/// still down when it runs out.
+pub fn wait_for_modifiers_released(timeout: Duration) -> bool {
     const MODIFIERS: [VIRTUAL_KEY; 5] = [VK_CONTROL, VK_SHIFT, VK_MENU, VK_LWIN, VK_RWIN];
-    let deadline = Instant::now() + Duration::from_millis(150);
+    let deadline = Instant::now() + timeout;
 
     loop {
         let any_down = MODIFIERS
@@ -79,14 +83,19 @@ fn wait_for_modifiers_released() {
             .any(|&vk| unsafe { (GetAsyncKeyState(vk.0 as i32) as u16) & 0x8000 != 0 });
 
         if !any_down {
-            return;
+            return true;
         }
         if Instant::now() >= deadline {
-            tracing::warn!("modifier key still down after settle timeout — injecting anyway");
-            return;
+            return false;
         }
         std::thread::sleep(Duration::from_millis(4));
     }
+}
+
+/// Whether the focused window is one of Sotto's own (the settings window,
+/// say), where a Transform chord has nothing to rewrite.
+pub fn foreground_is_ours() -> bool {
+    ForegroundTarget::capture().process_id == std::process::id()
 }
 
 // Fields are only read through the derived `Debug` (in the tracing call), which
@@ -172,7 +181,7 @@ fn inject_via_paste(text: &str) -> anyhow::Result<()> {
     clipboard.set_text(text.to_string())?;
     std::thread::sleep(Duration::from_millis(30));
 
-    send_ctrl_v()?;
+    send_ctrl(VK_V)?;
     std::thread::sleep(Duration::from_millis(80));
 
     match previous {
@@ -186,16 +195,23 @@ fn inject_via_paste(text: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn send_ctrl_v() -> anyhow::Result<()> {
+/// Ctrl+C into the focused window: a Transform's selection grab (#18). Same
+/// VK-only key path as the paste; the spike found it copies in Notepad, VS Code
+/// and an Edge text field alike, so no per-app fallback.
+pub fn send_ctrl_c() -> anyhow::Result<()> {
+    send_ctrl(VK_C)
+}
+
+fn send_ctrl(key: VIRTUAL_KEY) -> anyhow::Result<()> {
     let events = [
         vk_input(VK_CONTROL, false),
-        vk_input(VK_V, false),
-        vk_input(VK_V, true),
+        vk_input(key, false),
+        vk_input(key, true),
         vk_input(VK_CONTROL, true),
     ];
     let sent = unsafe { SendInput(&events, size_of::<INPUT>() as i32) };
     if sent as usize != events.len() {
-        anyhow::bail!("SendInput (ctrl+v) only accepted {sent}/{}", events.len());
+        anyhow::bail!("SendInput (ctrl+{key:?}) only accepted {sent}/{}", events.len());
     }
     Ok(())
 }

@@ -36,6 +36,17 @@ const mock = {
   asrModel: "parakeet-v3",
   asrLanguage: "auto",
   historyPersist: false,
+  // Transforms (#18): items are config::Transform as is, hence keep_words.
+  transformsEnabled: false,
+  transforms: [
+    { name: "Polish", chord: "Ctrl+Alt+Digit1", prompt: "Tighten and clarify it without changing its meaning. Keep the writer's own words wherever you can, and keep I, me and my as they are.", keep_words: true },
+    { name: "Prompt engineer", chord: "Ctrl+Alt+Digit2", prompt: "Turn it into a detailed prompt for an AI assistant, as four labelled lines: Goal, Context, Constraints, Output. Use only what the text says.", keep_words: false },
+    { name: "بالمصري", chord: "Ctrl+Alt+Shift+KeyE", prompt: "اكتبها بالعامية المصرية وخلي الـ English terms زي ما هي.", keep_words: false },
+  ],
+  transformDefaults: [
+    { name: "Polish", chord: "Ctrl+Alt+Digit1", prompt: "Tighten and clarify it without changing its meaning. Keep the writer's own words wherever you can, and keep I, me and my as they are.", keep_words: true },
+    { name: "Prompt engineer", chord: "Ctrl+Alt+Digit2", prompt: "Turn it into a detailed prompt for an AI assistant, as four labelled lines: Goal, Context, Constraints, Output. Use only what the text says.", keep_words: false },
+  ],
 };
 
 async function invoke(cmd, args) {
@@ -43,6 +54,8 @@ async function invoke(cmd, args) {
   console.log("[mock invoke]", cmd, args || "");
   if (cmd === "set_asr_model") mock.models.forEach(m => { m.selected = m.id === args.model; });
   if (cmd === "download_assets") mockDownload();
+  if (cmd === "set_transforms") mock.transforms = args.transforms;
+  if (cmd === "set_transforms_enabled") mock.transformsEnabled = args.enabled;
 }
 async function getSettings() {
   if (hasTauri) return T.core.invoke("get_settings");
@@ -1072,6 +1085,149 @@ if ($("pron-listen-btn")) {
   };
 }
 
+// ── transforms (#18) ──
+// Cards render the list; the editor is the hotkey picker's modal pattern. The
+// backend owns the chord matching (hotkey.rs parse_chord); this only builds
+// "Ctrl+Alt+Digit1" strings from a key press and keeps them unique.
+let transforms = [];
+let transformDefaults = [];
+let transformEditing = null; // index being edited, or -1 for a new one
+let transformDraftChord = "";
+const CHORD_MODS = ["Ctrl", "Alt", "Shift", "Win"];
+
+function chordKeysHtml(chord) {
+  const parts = (chord || "").split("+").map(p => p.trim()).filter(Boolean);
+  const label = (p) => CHORD_MODS.includes(p) ? p : (HOTKEY_LABELS[p] || p.replace(/^(Key|Digit)(?=\w$)/, ""));
+  return parts.map(p => `<span class="keycap-mini">${escapeHtml(label(p))}</span>`).join('<span class="key-plus">+</span>');
+}
+
+function renderTransforms() {
+  const grid = $("transforms-grid");
+  grid.innerHTML = "";
+  transforms.forEach((t, i) => {
+    const card = document.createElement("div");
+    card.className = "card-raised transform-card";
+    card.innerHTML = `
+      <div class="transform-keys">${chordKeysHtml(t.chord)}</div>
+      <div class="transform-title" dir="auto">${escapeHtml(t.name)}</div>
+      <div class="transform-desc" dir="auto">${escapeHtml(t.prompt)}</div>`;
+    card.onclick = () => openTransformModal(i);
+    grid.appendChild(card);
+  });
+  // The dashed "Create your own" card doubles as the empty state.
+  const add = document.createElement("div");
+  add.className = "transform-card dashed";
+  add.innerHTML = `<span class="plus-icon">+</span>
+    <div class="transform-title color-accent">Create your own</div>
+    <div class="transform-desc">bring your own prompt</div>`;
+  add.onclick = () => openTransformModal(-1);
+  grid.appendChild(add);
+}
+
+function setTransformCapture(chord, note) {
+  transformDraftChord = chord;
+  $("transform-capture-keys").innerHTML = chord ? chordKeysHtml(chord) : "Press the shortcut";
+  $("transform-capture-sub").textContent = note || (chord
+    ? "Press another to change it."
+    : "Focus this box, then press Ctrl, Alt or Win plus one key.");
+}
+
+function openTransformModal(i) {
+  transformEditing = i;
+  const t = i >= 0 ? transforms[i] : { name: "", chord: "", prompt: "", keep_words: false };
+  $("transform-modal-title").textContent = i >= 0 ? "Edit transform" : "New transform";
+  $("transform-name").value = t.name;
+  $("transform-prompt").value = t.prompt;
+  $("transform-keep-words").setAttribute("aria-checked", String(!!t.keep_words));
+  $("transform-remove").hidden = i < 0;
+  setTransformCapture(t.chord);
+  $("transform-modal").hidden = false;
+  setTimeout(() => $("transform-name").focus(), 0);
+}
+function closeTransformModal() {
+  $("transform-modal").hidden = true;
+  transformEditing = null;
+}
+function saveTransforms() {
+  invoke("set_transforms", { transforms });
+  renderTransforms();
+}
+
+$("transform-capture").addEventListener("keydown", (ev) => {
+  if (["Control", "Alt", "Shift", "Meta", "AltGraph"].includes(ev.key)) return; // wait for the key
+  if (ev.key === "Escape" && !ev.ctrlKey && !ev.altKey && !ev.metaKey) return; // the modal's own close
+  ev.preventDefault();
+  ev.stopPropagation();
+  const name = eventCodeToName(ev.code);
+  const mods = [ev.ctrlKey && "Ctrl", ev.altKey && "Alt", ev.shiftKey && "Shift", ev.metaKey && "Win"].filter(Boolean);
+  // The regex covers the browser preview, whose mock has no hotkey list.
+  const bindable = HOTKEY_LABELS[name] || /^(Key[A-Z]|Digit\d|F([1-9]|1[0-2]))$/.test(name);
+  if (!bindable || /^(Mouse|Control|Shift|Alt|Meta|CapsLock)/.test(name)) {
+    setTransformCapture(transformDraftChord, "That key isn't bindable. Try a letter, digit or F-key.");
+    return;
+  }
+  if (!mods.some(m => m !== "Shift")) {
+    setTransformCapture(transformDraftChord, "Add Ctrl, Alt or Win, or it would fire while you type.");
+    return;
+  }
+  const chord = [...mods, name].join("+");
+  const clash = transforms.find((t, i) => i !== transformEditing && t.chord === chord);
+  if (clash) {
+    setTransformCapture(transformDraftChord, `Already used by ${clash.name}.`);
+    return;
+  }
+  setTransformCapture(chord);
+});
+
+$("transform-save").onclick = () => {
+  const name = $("transform-name").value.trim();
+  const prompt = $("transform-prompt").value.trim();
+  if (!name) { $("transform-name").focus(); return; }
+  if (!prompt) { $("transform-prompt").focus(); return; }
+  if (!transformDraftChord) {
+    setTransformCapture("", "Press a shortcut for it first.");
+    $("transform-capture").focus();
+    return;
+  }
+  const t = { name, prompt, chord: transformDraftChord, keep_words: $("transform-keep-words").getAttribute("aria-checked") === "true" };
+  if (transformEditing >= 0) transforms[transformEditing] = t; else transforms.push(t);
+  closeTransformModal();
+  saveTransforms();
+};
+$("transform-remove").onclick = () => {
+  if (transformEditing < 0) return;
+  transforms.splice(transformEditing, 1);
+  closeTransformModal();
+  saveTransforms();
+};
+initSwitch($("transform-keep-words"), () => {});
+$("transform-cancel").onclick = closeTransformModal;
+$("transform-modal-close").onclick = closeTransformModal;
+$("transform-modal").onclick = (ev) => { if (ev.target.id === "transform-modal") closeTransformModal(); };
+document.addEventListener("keydown", (ev) => {
+  if (ev.key === "Escape" && !$("transform-modal").hidden) closeTransformModal();
+});
+$("transforms-add").onclick = () => openTransformModal(-1);
+$("transforms-reset").onclick = () => {
+  if (!confirm("Reset transforms to Polish and Prompt engineer?\n\nYour own transforms will be removed.")) return;
+  transforms = transformDefaults.map(t => ({ ...t }));
+  saveTransforms();
+};
+
+function initTransforms(s) {
+  transforms = (s.transforms || []).map(t => ({ ...t }));
+  transformDefaults = s.transformDefaults || [];
+  const sw = $("transforms-enabled");
+  const on = !!s.transformsEnabled;
+  sw.setAttribute("aria-checked", String(on));
+  $("transforms-grid").classList.toggle("list-disabled", !on);
+  initSwitch(sw, (v) => {
+    invoke("set_transforms_enabled", { enabled: v });
+    $("transforms-grid").classList.toggle("list-disabled", !v);
+  });
+  renderTransforms();
+}
+
 // ── settings page wiring ──
 // `selected` (which engine set_asr_model chose) and `state` (installed vs.
 // download, i.e. is it actually on disk) are independent — a model can be
@@ -1723,6 +1879,7 @@ async function boot() {
 
   renderDictPage(dictEntries);
   renderSnipPage(snipEntries);
+  initTransforms(s);
 
   // History data
   historyEntries = s.history || [];

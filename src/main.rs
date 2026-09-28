@@ -24,6 +24,7 @@ mod single_instance;
 mod sounds;
 mod startup;
 mod stats;
+mod transform;
 mod tray;
 
 use config::{ActivationMode, AppTone, Config, DictEntry, EntryKind, InjectionMode, PolishMode, VocabEntry};
@@ -118,6 +119,10 @@ pub struct Controls {
     pub training_word: Arc<Mutex<Option<String>>>,
     /// Per-app tone overrides: (app name, tone instruction) pairs.
     pub app_tones: Arc<Mutex<Vec<(String, String)>>>,
+    /// Transform chords (#18), read live by the hotkey listener — see
+    /// `config::Transform`. `transforms_enabled` arms them.
+    pub transforms: Arc<Mutex<Vec<config::Transform>>>,
+    pub transforms_enabled: Arc<AtomicBool>,
     pub history: history::History,
     /// Live mic RMS (f32 bits), written by the audio callback.
     pub level: Arc<AtomicU32>,
@@ -204,6 +209,8 @@ impl Controls {
             overlay_always_visible: Arc::new(AtomicBool::new(cfg.overlay.always_visible)),
             sound_enabled: Arc::new(AtomicBool::new(cfg.sound_enabled)),
             take_info: Arc::new(Mutex::new(None)),
+            transforms: Arc::new(Mutex::new(cfg.transforms.clone())),
+            transforms_enabled: Arc::new(AtomicBool::new(cfg.transforms_enabled)),
         }
     }
 }
@@ -362,6 +369,12 @@ struct SettingsPayload {
     recordings_size_mb: u64,
     /// "Keep history" toggle (N4) — History survives a restart.
     history_persist: bool,
+    /// Transforms page (#18): the chord master switch, the list, and the
+    /// seeds "Reset to defaults" restores. Items are `config::Transform` as
+    /// is: `{ name, chord, prompt, keep_words }`.
+    transforms_enabled: bool,
+    transforms: Vec<config::Transform>,
+    transform_defaults: Vec<config::Transform>,
 }
 
 // ── commands ───────────────────────────────────────────────────────────
@@ -490,6 +503,9 @@ fn get_settings(state: tauri::State<'_, AppState>) -> SettingsPayload {
         recordings_dir: recordings::recordings_dir().display().to_string(),
         recordings_size_mb: recordings::total_size_mb(),
         history_persist: cfg.persist_history,
+        transforms_enabled: c.transforms_enabled.load(Ordering::Relaxed),
+        transforms: c.transforms.lock().unwrap().clone(),
+        transform_defaults: config::default_transforms(),
     }
 }
 
@@ -705,6 +721,23 @@ fn set_app_tones(tones: Vec<AppToneDto>, state: tauri::State<'_, AppState>) {
     *state.controls.app_tones.lock().unwrap() = pairs.clone();
     let mut cfg = state.cfg.lock().unwrap();
     cfg.app_tones = pairs.into_iter().map(|(app, tone)| AppTone { app, tone }).collect();
+    let _ = cfg.save();
+}
+/// The Transforms page's list (#18). Nameless entries are dropped; a chord
+/// `hotkey::parse_chord` can't read is kept but never fires.
+#[tauri::command]
+fn set_transforms(transforms: Vec<config::Transform>, state: tauri::State<'_, AppState>) {
+    let list: Vec<config::Transform> = transforms.into_iter().filter(|t| !t.name.trim().is_empty()).collect();
+    *state.controls.transforms.lock().unwrap() = list.clone();
+    let mut cfg = state.cfg.lock().unwrap();
+    cfg.transforms = list;
+    let _ = cfg.save();
+}
+#[tauri::command]
+fn set_transforms_enabled(enabled: bool, state: tauri::State<'_, AppState>) {
+    state.controls.transforms_enabled.store(enabled, Ordering::Relaxed);
+    let mut cfg = state.cfg.lock().unwrap();
+    cfg.transforms_enabled = enabled;
     let _ = cfg.save();
 }
 #[tauri::command]
@@ -1046,6 +1079,9 @@ fn main() -> anyhow::Result<()> {
     if let Some(text) = arg_value("--polish") {
         return run_polish_once(&text);
     }
+    if let Some(text) = arg_value("--transform") {
+        return transform::run_once(&text);
+    }
     if std::env::args().any(|a| a == "--replay-flags") {
         return run_replay_flags(arg_value("--replay-flags"));
     }
@@ -1078,7 +1114,7 @@ fn main() -> anyhow::Result<()> {
         .manage(state)
         .invoke_handler(tauri::generate_handler![
             get_settings, set_hotkey, set_activation, set_polish, set_threshold,
-            set_dictionary, set_tone, set_app_tones, set_launch_login, set_start_hidden, set_theme, copy_text,
+            set_dictionary, set_tone, set_app_tones, set_transforms, set_transforms_enabled, set_launch_login, set_start_hidden, set_theme, copy_text,
             set_overlay_position, set_overlay_always_visible, get_overlay_settings, start_dictation, stop_dictation, mark_overlay_idle,
             set_asr_model, set_asr_language,
             open_url, check_update, install_update, retry_last, cancel_dictation, dismiss_take,
@@ -1456,8 +1492,12 @@ fn spawn_pipeline(
         let supp = suppressed.clone();
         let cancelled = controls.cancelled.clone();
         let listening = controls.listening.clone();
+        let transforms = controls.transforms.clone();
+        let transforms_enabled = controls.transforms_enabled.clone();
         std::thread::spawn(move || {
-            hotkey::run_listener(hotkey_idx, activation, tx, supp, paused, cancelled, listening)
+            hotkey::run_listener(
+                hotkey_idx, activation, tx, supp, paused, cancelled, listening, transforms, transforms_enabled,
+            )
         });
     }
 
@@ -1675,6 +1715,9 @@ fn spawn_pipeline(
                             emit_state(&app, "done");
                             tracing::info!("re-polished and copied {} chars", out.text.len());
                         }
+                    }
+                    Work::Transform(t) => {
+                        run_transform(&app, &polisher, &suppressed, &cancelled, &listening, injection_mode, &t)
                     }
                 }
             }
@@ -1924,6 +1967,9 @@ fn spawn_pipeline(
                 DictationEvent::Repolish(text) => {
                     let _ = work_tx.send(Work::Repolish(text));
                 }
+                DictationEvent::Transform(t) => {
+                    let _ = work_tx.send(Work::Transform(t));
+                }
             }
         }
     });
@@ -1941,6 +1987,8 @@ enum Work {
     Retry,
     Dismiss,
     Repolish(String),
+    /// A Transform chord fired (#18): rewrite the focused app's selection.
+    Transform(config::Transform),
     /// Spin the LLM sidecar up while the user is still speaking.
     Prewarm,
     /// Pronunciation Trainer: transcribe the take-so-far mid-recording and,
@@ -2191,6 +2239,8 @@ fn config_for_log(cfg: &Config) -> Config {
     let mut safe = cfg.clone();
     safe.dictionary.clear();
     safe.polish.vocabulary.clear();
+    // A custom transform's instruction is the user's own text.
+    safe.transforms.iter_mut().for_each(|t| t.prompt.clear());
     safe
 }
 
@@ -2465,6 +2515,86 @@ fn process_take(
             *stash = Some(take);
         }
     }
+}
+
+/// A Transform chord (#18): rewrite the focused app's selection in place. The
+/// order and the clipboard restore are `transform::run`'s; this feeds it the
+/// real clipboard, keys and model, and puts the outcome on the pill.
+fn run_transform(
+    app: &tauri::AppHandle,
+    polisher: &polish::Polisher,
+    suppressed: &Arc<AtomicBool>,
+    cancelled: &Arc<AtomicBool>,
+    listening: &Arc<AtomicBool>,
+    injection_mode: InjectionMode,
+    t: &config::Transform,
+) {
+    // Same rule as process_take: never pull the pill off a live take.
+    let emit_state = |s: &str| {
+        if !listening.load(Ordering::Relaxed) {
+            emit_state(app, s);
+        }
+    };
+    if inject::foreground_is_ours() {
+        return; // pressed in Sotto's own window, e.g. while setting a chord
+    }
+    let Some(llm) = polisher.llm() else {
+        tracing::warn!(name = %t.name, "transform: the AI model isn't installed");
+        emit_state("kept");
+        return;
+    };
+    let mut clip = match transform::SystemClipboard::new() {
+        Ok(c) => c,
+        Err(err) => {
+            tracing::error!(?err, "transform: clipboard unavailable");
+            emit_state("kept");
+            return;
+        }
+    };
+    cancelled.store(false, Ordering::SeqCst); // only an Escape from here on counts
+    // The model takes seconds: paste back where the text came from even if the
+    // user Alt-Tabbed meanwhile, same as a take's focus target.
+    let target = inject::capture_focus();
+    let t0 = Instant::now();
+    let outcome = transform::run(
+        &mut clip,
+        || {
+            // The chord's own Ctrl/Alt may still be down, and a Ctrl+C under
+            // a held Alt is Ctrl+Alt+C. Waited out before suppressing, so the
+            // listener still sees the user's own key releases.
+            anyhow::ensure!(inject::wait_for_modifiers_released(Duration::from_secs(2)), "chord keys still held");
+            suppressed.store(true, Ordering::SeqCst);
+            let sent = inject::send_ctrl_c();
+            std::thread::sleep(Duration::from_millis(30)); // our own keys pass the hook while suppressed
+            suppressed.store(false, Ordering::SeqCst);
+            sent
+        },
+        |text| {
+            emit_state("polishing");
+            let out = llm
+                .rewrite(text, &t.prompt)
+                .map_err(|err| tracing::warn!(error = %err, "transform: rewrite failed"))
+                .ok()?;
+            if cancelled.swap(false, Ordering::SeqCst) {
+                return None; // Escape while the model ran
+            }
+            transform::accept(text, &out, t.keep_words)
+        },
+        |out| {
+            inject::restore_focus(target);
+            suppressed.store(true, Ordering::SeqCst);
+            let pasted = inject::inject_text(out, injection_mode);
+            suppressed.store(false, Ordering::SeqCst);
+            pasted
+        },
+    );
+    // Counts only: the selection is the user's text, same rule as the transcript (#48).
+    tracing::info!(name = %t.name, ?outcome, ms = t0.elapsed().as_millis(), "transform");
+    emit_state(match outcome {
+        transform::Outcome::Replaced => "done",
+        transform::Outcome::NothingSelected => "noselection",
+        transform::Outcome::Kept => "kept",
+    });
 }
 
 fn emit_state(app: &tauri::AppHandle, s: &str) {
@@ -2787,8 +2917,14 @@ mod tests {
             heard_as: vec!["zicks widget".into()],
             recent: vec![],
         });
+        cfg.transforms.push(crate::config::Transform {
+            name: "Reply".into(),
+            chord: "Ctrl+Alt+Digit3".into(),
+            prompt: "Answer as Zyxperson from Zyxcorp".into(),
+            keep_words: false,
+        });
         let logged = format!("{:?}", config_for_log(&cfg));
-        for secret in ["private.person@example.com", "my work email", "office address", "Zyxwidget", "zicks widget"] {
+        for secret in ["private.person@example.com", "my work email", "office address", "Zyxwidget", "zicks widget", "Zyxperson"] {
             assert!(!logged.contains(secret), "{secret:?} leaked into the logged config");
         }
         assert!(logged.contains("hotkey"), "settings still logged");
