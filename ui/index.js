@@ -41,6 +41,8 @@ const mock = {
 async function invoke(cmd, args) {
   if (hasTauri) return T.core.invoke(cmd, args);
   console.log("[mock invoke]", cmd, args || "");
+  if (cmd === "set_asr_model") mock.models.forEach(m => { m.selected = m.id === args.model; });
+  if (cmd === "download_assets") mockDownload();
 }
 async function getSettings() {
   if (hasTauri) return T.core.invoke("get_settings");
@@ -1063,6 +1065,11 @@ let downloadingModelId = null;
 let downloadProgress = null; // { name, pct } | null while downloadingModelId is set
 let downloadError = null;
 let modelsCache = [];
+// The engine this session actually runs: asr.rs picks it once at startup (and
+// loads it lazily, so a first-run download still lands in it). Anything else
+// selected later only takes over after a restart, and the row says so.
+// ponytail: captured at boot, so a webview reload would mislabel it until restart.
+let runningAsrId = null;
 
 function renderModels(models) {
   modelsCache = models;
@@ -1078,7 +1085,7 @@ function renderModels(models) {
     let metaOverride = null;
     if (downloadingThis && downloadError) {
       rightStatus = `<button class="btn btn-primary model-download-btn" style="font-size:11px; padding:4px 10px; border-radius:6px;">Retry</button>`;
-      metaOverride = `<span style="color:var(--mm-coral)">Download failed &middot; tap Retry</span>`;
+      metaOverride = `<span style="color:var(--mm-coral)" title="${escapeHtml(downloadError)}">Download stopped &middot; Retry picks up where it left off</span>`;
     } else if (downloadingThis) {
       const pct = downloadProgress ? downloadProgress.pct : 0;
       rightStatus = `
@@ -1087,6 +1094,9 @@ function renderModels(models) {
           <span class="model-progress-bar"><span class="model-progress-fill" style="width:${pct}%"></span></span>
         </div>`;
       metaOverride = downloadProgress ? `Downloading ${escapeHtml(downloadProgress.name)}&hellip;` : "Starting download&hellip;";
+    } else if (m.selected && m.state === "installed" && m.id !== runningAsrId) {
+      rightStatus = `<span class="model-progress-label" style="width:auto; white-space:nowrap;">RESTART TO USE</span>`;
+      metaOverride = `Ready &middot; takes over after you restart Sotto`;
     } else if (m.selected && m.state === "installed") {
       rightStatus = `<span class="model-badge">ACTIVE</span>`;
     } else if (m.state === "installed") {
@@ -1126,7 +1136,7 @@ function renderModels(models) {
 // model at startup, so this can't take effect until a restart either way.
 async function selectAsrModel(id, alsoDownload) {
   await invoke("set_asr_model", { model: id });
-  showAsrRestartNote();
+  $("asr-restart-row").hidden = id === runningAsrId;
   if (alsoDownload) {
     downloadingModelId = id;
     downloadProgress = null;
@@ -1387,29 +1397,56 @@ async function initUpdates() {
 }
 
 // ── asset download banner ──
+// Handlers for the backend's asset-* events, keyed by event name so the
+// browser preview's mockDownload() can drive the very same UI.
+let assetEvents = {};
+
+// Browser preview only: fakes the selected model's download, dropping at 40%
+// on the first try so progress, error, resume (Retry) and done are all visible.
+let mockReceived = 0;
+let mockDropped = false;
+function mockDownload() {
+  const m = mock.models.find(x => x.selected);
+  const total = parseInt(m.size, 10) * 1048576;
+  const tick = setInterval(() => {
+    mockReceived = Math.min(total, mockReceived + total / 20);
+    assetEvents["asset-progress"]({ name: m.name, received: mockReceived, total });
+    if (!mockDropped && mockReceived >= total * 0.4) {
+      clearInterval(tick);
+      mockDropped = true;
+      assetEvents["asset-error"](`downloading ${m.name}: got ${mockReceived} of ${total} bytes — connection dropped`);
+    } else if (mockReceived >= total) {
+      clearInterval(tick);
+      m.state = "installed";
+      assetEvents["assets-ready"](true);
+    }
+  }, 150);
+}
+
 async function initAssets() {
   const banner = $("assets-banner");
   const fill = $("assets-fill");
   const text = $("assets-text");
   banner.hidden = true;
  
-  if (hasTauri && T.event) {
-    T.event.listen("asset-progress", (e) => {
-      const p = e.payload || {};
+  assetEvents = {
+    "asset-progress": (p) => {
+      p = p || {};
       const pct = p.total ? Math.round((p.received / p.total) * 100) : 0;
       const mbNow = (p.received / 1048576).toFixed(0);
       const mbAll = p.total ? (p.total / 1048576).toFixed(0) : "?";
       banner.hidden = false;
       fill.style.width = pct + "%";
       text.textContent = `Downloading ${p.name}… ${pct}% (${mbNow} / ${mbAll} MB)`;
+      text.title = "";
       // Mirror onto the Models row the user actually clicked Download for —
       // see the comment above renderModels() for why this isn't matched by name.
       if (downloadingModelId) {
         downloadProgress = { name: p.name, pct };
         renderModels(modelsCache);
       }
-    });
-    T.event.listen("assets-ready", async () => {
+    },
+    "assets-ready": async () => {
       fill.style.width = "100%";
       text.textContent = "All models ready.";
       setTimeout(() => { banner.hidden = true; }, 1500);
@@ -1420,15 +1457,20 @@ async function initAssets() {
         const s = await getSettings();
         renderModels(s.models || []);
       }
-    });
-    T.event.listen("asset-error", (e) => {
+    },
+    "asset-error": (msg) => {
       banner.hidden = false;
-      text.textContent = "Download failed: " + e.payload + " — restart Sotto to retry.";
+      // Kept `.part` files resume on the next pass (#52), so nothing is lost.
+      text.textContent = "Download stopped. Restart Sotto to resume where it left off.";
+      text.title = String(msg); // the cause chain, for anyone who hovers
       if (downloadingModelId) {
-        downloadError = String(e.payload);
+        downloadError = String(msg);
         renderModels(modelsCache);
       }
-    });
+    },
+  };
+  if (hasTauri && T.event) {
+    for (const [name, fn] of Object.entries(assetEvents)) T.event.listen(name, (e) => fn(e.payload));
   }
   const status = await invoke("assets_status");
   if (!status || status.ready) return;
@@ -1523,6 +1565,7 @@ async function boot() {
   if ($("theme")) selectSegment($("theme"), s.theme || "system");
   setThresholdUI(s.threshold);
   initToneUI(s);
+  runningAsrId = (s.models || []).find(m => m.selected)?.id || null;
   renderModels(s.models || []);
   if ($("asr-language-select")) {
     $("asr-language-select").value = s.asrLanguage || "auto";
