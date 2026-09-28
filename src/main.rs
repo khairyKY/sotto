@@ -1709,6 +1709,14 @@ fn spawn_pipeline(
                     }
                 }
                 DictationEvent::Stop => {
+                    // A stray Stop (the take already ended: pill-click stop
+                    // then a hold-mode key release, Escape then release, a
+                    // failed start) is a no-op. Handling it emitted "idle",
+                    // which hid a Transcribing pill or cut a cancelled/error
+                    // toast short.
+                    if !recording {
+                        continue;
+                    }
                     // Only tock if we were actually recording (a stray Stop —
                     // e.g. toggle-mode release edge — shouldn't chirp).
                     if listening.swap(false, Ordering::Relaxed)
