@@ -27,7 +27,8 @@ environment — see `docs/updating.md` §2)
 Hold **Right Ctrl**, speak, release. You'll see the overlay pill go
 Listening → Transcribing → (Polishing) → Done, and the transcribed text is
 typed/pasted into whatever app has focus. The tray mark turns accent-lilac while
-listening; right-click it for Pause / Polish tier / Settings / Quit.
+listening; right-click it for Pause / Insights / Dictionary / History / Retry
+last dictation / Settings / Quit.
 
 Only one instance runs at a time — launching a second one while the first is
 up just exits.
@@ -58,8 +59,11 @@ Settings persist to `%APPDATA%\sotto\config.toml` (hotkey, activation mode,
 polish tier/threshold, dictionary, `assets_dir`, etc). Edit it by hand or
 through the Settings window — both take effect live, no restart needed.
 
-Dictation **history** (recent transcripts, click to re-copy) lives only in
-memory for the current run — it resets on restart, by design.
+Dictation **history** (recent transcripts, click to re-copy) lives in memory
+only by default and resets on restart. Turn on **Keep history** in Settings →
+Data & privacy (or `persist_history` in `config.toml`) to mirror it to
+`history.jsonl` in the data dir and reload it on the next launch (capped at
+500 entries / 1 MB).
 
 ---
 

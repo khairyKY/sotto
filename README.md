@@ -24,15 +24,15 @@ The design philosophy of Sotto is **calm, quiet, precise, and unobtrusive** — 
 ## ✨ Features
 
 - **Push-to-Talk & Toggle Modes:** Hold to speak and release to transcribe, or tap once to start and tap again to stop.
-- **Offline ASR (Speech-to-Text):** Powered by NVIDIA's **Parakeet v3 int8** model running locally via ONNX Runtime.
+- **Offline ASR (Speech-to-Text):** **Parakeet v3 int8** (ONNX, English-only, default) or **Whisper large-v3-turbo** (multilingual, Vulkan GPU-accelerated) — pick your engine in Settings.
 - **AI Polish Tier:** Uses a local **Qwen2.5 1.5B Instruct** model via a background `llama.cpp` sidecar to clean up speech, correct grammar, fix stutters, and add punctuation.
 - **Rule-Based Polish Tier:** Fast, instant, zero-cost rules cleanup for short phrases, bypassing the LLM round-trip.
 - **Polish Word-Count Threshold:** Automatically routes shorter phrases through the rules tier and longer dictations through the AI tier.
 - **Custom Dictionary & Snippets:** Define custom replacements (e.g., `"gee pee tee"` ➔ `GPT`, `"my email"` ➔ `dev@sotto.app`).
 - **Cancel & Retry:** Press Escape (or click ✕ on the pill) to abort a dictation. The take is kept in memory, so ↻ on the pill — or **Retry last dictation** in the tray — re-runs it without speaking again.
 - **Insights Dashboard:** Words dictated, time saved, WPM, per-app breakdown, and a weekday-aligned streak calendar. Stats are local-only and can be turned off.
-- **Dictation History:** Recent dictations, with one click to re-copy or re-polish any row.
-- **Calm UI Overlay:** A transparent, click-through pill that only accepts clicks when a button is actually under your cursor.
+- **Dictation History:** Recent dictations, with one click to re-copy or re-polish any row. Opt in to **Keep history** in Settings to have it survive a restart.
+- **Calm UI Overlay:** A transparent pill, click-through except over its own buttons and — while listening — the pill body itself, so a click stops and delivers the take (✕ still cancels). Turn on **always-visible** in Settings to also start a take by clicking the idle pill.
 - **Themes & Zoom:** Light / Dark / follow-system, plus `Ctrl +` / `Ctrl -` / `Ctrl 0` to scale the whole window.
 - **Launch at Login** and **Minimized Launch:** Start automatically, hidden to the system tray.
 - **Clipboard Safety Net:** Every delivered dictation is also left on the clipboard, in case focus moved.
@@ -70,6 +70,9 @@ Sotto uses the **Marshmallow** design language — a soft cream/lilac palette, N
 ### 1. Install (~4 MB)
 Grab the latest installer from the [**Releases page**](https://github.com/khairyKY/sotto/releases/latest) — pick `Sotto_x.y.z_x64-setup.exe` and run it.
 
+> [!NOTE]
+> This README describes Sotto as built from `master`. The latest downloadable installer is **v0.3.0** — almost everything below already matches it; a couple of opt-in, off-by-default items (**Keep history**, **always-visible** pill) ship in the next release.
+
 > [!IMPORTANT]
 > **Windows will warn you before it runs.** You'll see a blue **"Windows protected your PC"** screen. Click **More info → Run anyway**.
 >
@@ -78,7 +81,7 @@ Grab the latest installer from the [**Releases page**](https://github.com/khairy
 > Don't just take our word for it. You can check:
 > - **Read the source.** All of it is in this repo, published for transparency. The installer is built from exactly this code.
 > - **Scan it.** Upload the `.exe` to [VirusTotal](https://www.virustotal.com/) before running it.
-> - **Watch the network.** Sotto contacts exactly two URLs, both on `github.com`: the [release feed](https://github.com/khairyKY/sotto/releases/latest/download/latest.json) (update check) and the [`assets-v1` release](https://github.com/khairyKY/sotto/releases/tag/assets-v1) (models, first run only). There is no telemetry or analytics of any kind — grep the source. It also talks to `127.0.0.1:8177`, which is the AI-polish model running on your own machine; that's loopback and never leaves your PC. Once the models are downloaded, pull your network cable and it still works.
+> - **Watch the network.** Sotto only ever talks to `github.com`: the [release feed](https://github.com/khairyKY/sotto/releases/latest/download/latest.json) (update check) and, first run only, the [`assets-v1`](https://github.com/khairyKY/sotto/releases/tag/assets-v1) release (Qwen, the llama.cpp runtime, and Parakeet) plus [`assets-v2`](https://github.com/khairyKY/sotto/releases/tag/assets-v2) if you pick the Whisper engine instead. There is no telemetry or analytics of any kind — grep the source. It also talks to `127.0.0.1:8177`, which is the AI-polish model running on your own machine; that's loopback and never leaves your PC. Once the models are downloaded, pull your network cable and it still works.
 > - **Check the signature.** Every release *is* cryptographically signed with [minisign](https://jedisct1.github.io/minisign/) for the auto-updater; that's what stops a tampered update from installing. It's just not the certificate flavour SmartScreen recognises.
 >
 > If you'd rather trust nothing, build it yourself — see [Development](#️-development--building-from-source).
@@ -115,7 +118,7 @@ Sotto launches minimized to the **system tray** (check the `^` overflow menu nex
 Open any app, hold **Right Ctrl** (the default — rebindable in Settings), speak, release. Sotto transcribes locally and pastes into the focused window. Press **Escape** to cancel; the take is kept so you can retry it.
 
 ### 4. Updates — one click, ~4 MB
-Sotto checks GitHub on launch. When a newer version is out, the app window shows an **Install & restart** banner (dismissable with ✕). Click it — the small installer downloads, verifies its minisign signature, and relaunches. Your models and settings are untouched.
+Sotto checks GitHub on launch. When a newer version is out, open the tray icon → **Settings**, where an **Install & restart** banner appears (dismissable with ✕). Click it — the small installer downloads, verifies its minisign signature, and relaunches. Your models and settings are untouched.
 
 ### 5. Uninstalling
 Uninstall Sotto from **Settings → Apps** or via `Sotto_*_x64-setup.exe /uninstall`. The uninstaller removes the app, disables launch-at-login, and asks whether to also delete the ~2.8 GB of downloaded models and your settings (default: **keep**, so a reinstall is instant).
@@ -137,7 +140,7 @@ Uninstall Sotto from **Settings → Apps** or via `Sotto_*_x64-setup.exe /uninst
 | :--- | :--- |
 | Tray icon there, hotkey does nothing | Another app grabbed the same key — rebind it in Settings. |
 | "Model downloading…" on the pill | First-run download hasn't finished. The take is stashed; press ↻ when it lands. |
-| Transcription is slow | Expected today — inference is CPU-only, roughly real-time. GPU support is planned. |
+| Transcription is slow | Parakeet (the default engine) is CPU-only ONNX, but still roughly real-time. Switch to the Whisper engine in Settings for Vulkan GPU acceleration (auto-picks your best GPU; falls back to CPU if none is found). |
 | Text lands in the wrong window | Sotto pastes into whatever was focused when you *started* talking. It's also on your clipboard. |
 
 ---
