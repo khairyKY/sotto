@@ -544,6 +544,26 @@ transcript text, ever, and nobody has to know a setting exists to be safe.
     spoke and are actively waiting on*, not a log, and it deletes itself. If
     Kai would rather it also be opt-in, it's one flag — say so.
 
+**Built 2026-09-28 (#9).** As above, with these differences:
+- History: `persist_history` (flat config field, default off). The toggle asks
+  before turning on (the consent text above) and before turning off (off
+  deletes the file). Kept history is held in memory too: 500 short lines is
+  tens of KB, simpler than a lazy file read. Entries from an earlier day show
+  their date ("Sep 27") instead of a clock time.
+- The journal streams *while recording* (every 250 ms tick), not on Stop, so
+  a crash mid-recording is covered too. Raw i16 in `data_dir()/pending/`, one
+  file per take, written and fsynced on its own thread; the audio thread only
+  does a channel send. Past 10 minutes the file stops growing (the first ten
+  minutes still come back).
+- A journal lives exactly as long as its undelivered take (`Drop for Take`),
+  so a cancelled take kept in the stash keeps its journal too.
+- Reason reads "Recovered after a restart", not "after a crash": a normal quit
+  with an undelivered take brings it back the same way. A recovered take is
+  not cleared by a later successful dictation (Sotto starts hidden, so its
+  card may not have been seen), only by Retry, Dismiss, or a later failed take
+  taking the single stash. It has no focus target, so Retry pastes into the
+  focused window and leaves the text on the clipboard.
+
 ### F1 — Voice formatting commands (S) — approved 2026-07-31
 
 Say "new paragraph" mid-dictation and get an actual break instead of the

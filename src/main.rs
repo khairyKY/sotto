@@ -16,6 +16,7 @@ mod history;
 mod hotkey;
 mod inject;
 mod job;
+mod journal;
 mod llm;
 mod polish;
 mod recordings;
@@ -38,6 +39,8 @@ use tracing_subscriber::fmt::writer::MakeWriterExt;
 
 /// Ignore captured clips shorter than this — almost always an accidental tap.
 const MIN_CLIP_SAMPLES: usize = 16_000 / 2; // 0.5s at 16 kHz
+/// Home card reason for a take the crash journal brought back (N4).
+const RECOVERED: &str = "Recovered after a restart";
 
 // ── chunked transcription (all counts are 16 kHz samples) ──────────────
 //
@@ -176,7 +179,7 @@ impl Controls {
             app_tones: Arc::new(Mutex::new(
                 cfg.app_tones.iter().map(|e| (e.app.clone(), e.tone.clone())).collect(),
             )),
-            history: history::History::new(),
+            history: history::History::new(cfg.persist_history),
             level: Arc::new(AtomicU32::new(0)),
             listening: Arc::new(AtomicBool::new(false)),
             focus_target: Arc::new(AtomicIsize::new(0)),
@@ -345,6 +348,8 @@ struct SettingsPayload {
     recordings_dir: String,
     /// Current total size of kept recordings, in MB.
     recordings_size_mb: u64,
+    /// "Keep history" toggle (N4) — History survives a restart.
+    history_persist: bool,
 }
 
 // ── commands ───────────────────────────────────────────────────────────
@@ -472,6 +477,7 @@ fn get_settings(state: tauri::State<'_, AppState>) -> SettingsPayload {
         retention_max_mb: cfg.retention.max_mb,
         recordings_dir: recordings::recordings_dir().display().to_string(),
         recordings_size_mb: recordings::total_size_mb(),
+        history_persist: cfg.persist_history,
     }
 }
 
@@ -939,6 +945,21 @@ fn clear_recordings() {
     recordings::clear();
 }
 
+/// "Keep history". Off deletes `history.jsonl` — see `History::set_persist`.
+#[tauri::command]
+fn set_history_persist(enabled: bool, state: tauri::State<'_, AppState>) {
+    state.controls.history.set_persist(enabled);
+    let mut cfg = state.cfg.lock().unwrap();
+    cfg.persist_history = enabled;
+    let _ = cfg.save();
+}
+
+#[tauri::command]
+fn clear_history(app: tauri::AppHandle, state: tauri::State<'_, AppState>) {
+    state.controls.history.clear();
+    emit_history(&app, &state.controls.history);
+}
+
 /// Send tracing to a file, not just stdout.
 ///
 /// Release builds are `windows_subsystem = "windows"` — there is no console, so
@@ -1025,7 +1046,7 @@ fn main() -> anyhow::Result<()> {
             set_asr_model, set_asr_language,
             open_url, check_update, install_update, retry_last, cancel_dictation, dismiss_take,
             repolish_copy, flag_transcription,
-            get_stats, clear_stats, set_stats_enabled, set_retention_enabled, clear_recordings,
+            get_stats, clear_stats, set_stats_enabled, set_retention_enabled, clear_recordings, set_history_persist, clear_history,
             set_microphone, set_sound_enabled, set_zoom,
             set_replacements_enabled,
             set_formatting_commands, set_number_formatting, set_phonetic_correction, set_quote_style, set_pronunciation_target, add_pronunciation_correction,
@@ -1440,6 +1461,20 @@ fn spawn_pipeline(
     // the audio thread never piles a second one behind it — see Work::Peek.
     let peek_busy = Arc::new(AtomicBool::new(false));
 
+    // N4: a take that was in flight (or sitting undelivered in the stash)
+    // when Sotto last died comes back as the stash. Runs before the audio
+    // thread exists, so none of this run's takes can pass for a leftover. No
+    // focus target: a window handle from the last run could be anything now.
+    let recovered = journal::recover(MIN_CLIP_SAMPLES).map(|(files, samples)| {
+        tracing::info!(files = files.len(), secs = samples.len() / 16_000, "recovered an undelivered take");
+        let mode = PolishMode::from_u8(polish_mode.load(Ordering::Relaxed));
+        let mut take = Take::new(samples, 0, mode, files);
+        take.reason = RECOVERED;
+        take
+    });
+    *take_info.lock().unwrap() = recovered.as_ref().map(TakeInfo::from);
+    journal::spawn();
+
     // Transcribe thread.
     {
         let app = app.clone();
@@ -1459,7 +1494,7 @@ fn spawn_pipeline(
             polisher.warm_rules();
             // The last dictation, kept in memory so Escape/error is
             // recoverable via Retry. Cleared on successful delivery.
-            let mut stash: Option<Take> = None;
+            let mut stash: Option<Take> = recovered;
             // Text from chunks transcribed while the user was still talking,
             // keyed by take. Usually holds at most one entry — but a queued
             // earlier take can still be waiting while the next one records.
@@ -1603,7 +1638,9 @@ fn spawn_pipeline(
             // Timed out mid-recording: collect what's been captured and hand
             // over a chunk if enough has piled up behind a pause.
             let Some(event) = event else {
-                all.extend(recorder.drain());
+                let fresh = recorder.drain();
+                journal::append(take_id, &fresh);
+                all.extend(fresh);
                 if chunking {
                     if let Some(cut) = chunk_cut(&all[sent..]) {
                         let end = sent + cut;
@@ -1696,12 +1733,15 @@ fn spawn_pipeline(
                         if sound_enabled.load(Ordering::Relaxed) {
                             sounds::tock();
                         }
-                        all.extend(recorder.stop().unwrap_or_default());
+                        let rest = recorder.stop().unwrap_or_default();
+                        journal::append(take_id, &rest);
+                        all.extend(rest);
                         cancelled.store(false, Ordering::SeqCst); // consumed here
                         let take = Take::new(
                             std::mem::take(&mut all),
                             focus_target.swap(0, Ordering::Relaxed),
                             PolishMode::from_u8(polish_mode.load(Ordering::Relaxed)),
+                            vec![journal::path_for(take_id)],
                         );
                         emit_state(&app, "cancelled");
                         tracing::info!("dictation cancelled while recording");
@@ -1726,7 +1766,10 @@ fn spawn_pipeline(
                     }
                     recording = false;
                     match recorder.stop() {
-                        Ok(s) => all.extend(s),
+                        Ok(s) => {
+                            journal::append(take_id, &s);
+                            all.extend(s)
+                        }
                         Err(err) => {
                             emit_state(&app, "error");
                             tracing::error!(?err, "failed to stop capture");
@@ -1738,6 +1781,7 @@ fn spawn_pipeline(
                                 std::mem::take(&mut all),
                                 focus_target.swap(0, Ordering::Relaxed),
                                 PolishMode::from_u8(polish_mode.load(Ordering::Relaxed)),
+                                vec![journal::path_for(take_id)],
                             );
                             let _ = work_tx.send(Work::Cancelled { id: take_id, take });
                             sent = 0;
@@ -1748,12 +1792,15 @@ fn spawn_pipeline(
                         emit_state(&app, "idle");
                         all.clear();
                         sent = 0;
+                        // No Take to drop, so clean its journal up here.
+                        journal::remove(journal::path_for(take_id));
                         continue;
                     }
                     let mut take = Take::new(
                         std::mem::take(&mut all),
                         focus_target.swap(0, Ordering::Relaxed),
                         PolishMode::from_u8(polish_mode.load(Ordering::Relaxed)),
+                        vec![journal::path_for(take_id)],
                     );
                     take.sent = sent;
                     sent = 0;
@@ -1864,9 +1911,10 @@ fn chunk_cut(pending: &[f32]) -> Option<usize> {
         .then_some(best_at + SILENCE_WIN / 2)
 }
 
-/// One dictation attempt kept in memory for a possible Retry. Never written to
-/// disk. `raw_text` is set once ASR has run, so a retry after a successful
-/// transcription skips straight to polish + injection.
+/// One dictation attempt kept in memory for a possible Retry, its audio
+/// mirrored to the crash journal until it's dropped. `raw_text` is set once
+/// ASR has run, so a retry after a successful transcription skips straight to
+/// polish + injection.
 struct Take {
     samples: Vec<f32>,
     raw_text: Option<String>,
@@ -1883,6 +1931,20 @@ struct Take {
     /// Why this take wasn't delivered, in the user's words — set at whichever
     /// stash site caught it, shown verbatim by Home's alert card.
     reason: &'static str,
+    /// This take's crash-journal files (see `journal.rs`).
+    journal: Vec<PathBuf>,
+}
+
+/// Every way a take ends (delivered, dismissed, replaced in the stash, too
+/// short to keep) drops it, so this is the one place its journal is cleaned
+/// up. A take still alive at a crash or quit never drops, which is exactly
+/// what leaves its journal behind for the next launch to recover.
+impl Drop for Take {
+    fn drop(&mut self) {
+        for f in self.journal.drain(..) {
+            journal::remove(f);
+        }
+    }
 }
 
 impl From<&Take> for TakeInfo {
@@ -1899,7 +1961,7 @@ impl Take {
     /// `mode` is read from the shared atom rather than from the `Polisher`,
     /// which now lives on the transcribe thread and isn't reachable from the
     /// audio thread that builds takes.
-    fn new(samples: Vec<f32>, focus_target: isize, mode: PolishMode) -> Self {
+    fn new(samples: Vec<f32>, focus_target: isize, mode: PolishMode, journal: Vec<PathBuf>) -> Self {
         // Recorder returns 16 kHz mono, so ms = samples / 16.
         let audio_ms = samples.len() as u64 * 1000 / 16_000;
         Take {
@@ -1911,6 +1973,7 @@ impl Take {
             reason: "",
             prefix_text: String::new(),
             sent: 0,
+            journal,
         }
     }
 }
@@ -2159,7 +2222,12 @@ fn process_take(
                     "injected",
                 ));
             }
-            *stash = None; // delivered — nothing to retry
+            // Delivered — nothing to retry. Except a take recovered after a
+            // restart: Sotto usually starts hidden, so nobody may have seen
+            // its card yet, and it can't be redone by just speaking again.
+            if !stash.as_ref().is_some_and(|t| t.reason == RECOVERED) {
+                *stash = None;
+            }
             tracing::info!("injected: {:?}", result.text);
         }
         Err(err) => {
@@ -2440,6 +2508,7 @@ mod tests {
             reason,
             prefix_text: String::new(),
             sent: 0,
+            journal: vec![],
         }
     }
 

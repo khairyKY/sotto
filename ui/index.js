@@ -31,6 +31,7 @@ const mock = {
   ],
   asrModel: "parakeet-v3",
   asrLanguage: "auto",
+  historyPersist: false,
 };
 
 async function invoke(cmd, args) {
@@ -180,7 +181,8 @@ function renderRecent(entries) {
     host.innerHTML = '<div class="recent-empty">Nothing dictated yet this session</div>';
     return;
   }
-  entries.forEach((e, i) => {
+  // Kept history can hold hundreds; Home only ever showed the last 20.
+  entries.slice(0, 20).forEach((e, i) => {
     const row = document.createElement("div");
     row.className = "recent-item";
     row.innerHTML = `
@@ -1578,6 +1580,29 @@ async function boot() {
         loadInsights();
         loadHome();
       }
+    };
+  }
+
+  // Kept history (N4): consent on the way in, and off deletes the file, so
+  // both directions ask first. Cancel puts the switch back.
+  if ($("history-persist-toggle")) {
+    const t = $("history-persist-toggle");
+    t.setAttribute("aria-checked", String(!!s.historyPersist));
+    initSwitch(t, (on) => {
+      const ok = confirm(on
+        ? "Keep history across restarts?\n\nYour dictated text will be written to history.jsonl in your data folder so it survives restarts. It stays on this device and is never uploaded. Turning this off deletes the file."
+        : "Stop keeping history?\n\nThis deletes the saved history file. This session's list stays until Sotto quits.");
+      if (!ok) { t.setAttribute("aria-checked", String(!on)); return; }
+      invoke("set_history_persist", { enabled: on });
+    });
+  }
+  if ($("clear-history-btn")) {
+    $("clear-history-btn").onclick = async () => {
+      if (!confirm("Are you sure you want to clear your history?")) return;
+      await invoke("clear_history");
+      historyEntries = [];
+      renderHistoryPage(historyEntries);
+      renderRecent(historyEntries);
     };
   }
 

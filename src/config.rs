@@ -390,6 +390,11 @@ pub struct Config {
     /// unlike stats, this persists dictated content and audio to disk.
     #[serde(default)]
     pub retention: RetentionConfig,
+    /// Keep the History list in `history.jsonl` so it survives a restart
+    /// (N4, see `history.rs`). Off by default (Kai, 2026-07-28): a fresh
+    /// install stores no transcript text unless someone opts in.
+    #[serde(default)]
+    pub persist_history: bool,
     /// UI theme: "light", "dark", or "system" (follow OS preference).
     #[serde(default = "default_theme")]
     pub theme: String,
@@ -457,6 +462,7 @@ impl Default for Config {
             start_hidden: true,
             stats_enabled: true,
             retention: RetentionConfig::default(),
+            persist_history: false,
             theme: default_theme(),
             microphone: None,
             sound_enabled: true,
@@ -749,6 +755,8 @@ injection_mode = "paste"
         .unwrap();
         assert!(!cfg.retention.enabled);
         assert_eq!(cfg.retention.max_mb, 500);
+        // Same privacy default for on-disk history (N4).
+        assert!(!cfg.persist_history);
     }
 
     #[test]
