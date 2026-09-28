@@ -2,13 +2,17 @@
 //! (int8, English-only, fast) and Whisper large-v3-turbo (multilingual)
 //! depending on `config::AsrConfig::model`.
 //!
-//! The model (hundreds of MB) is loaded lazily on the first dictation so
-//! startup stays instant and idle memory stays near zero. ONNX Runtime (used
-//! by Parakeet) is loaded dynamically at runtime from `onnxruntime.dll` (see
-//! `main::init_ort`).
+//! The model (hundreds of MB) is preloaded at startup, dropped after
+//! `asr.idle_unload_secs` without work, and loaded again at the next hotkey
+//! press (#12). The transcribe thread owns the one `Asr` and calls `sync`
+//! between takes, so an engine picked in Settings takes over on the next take
+//! (#10). ONNX Runtime (used by Parakeet) is loaded dynamically at runtime from
+//! `onnxruntime.dll` (see `main::init_ort`).
 
 use crate::config::{self, VocabEntry};
 use anyhow::Context;
+use std::sync::Mutex;
+use std::time::Duration;
 use transcribe_rs::onnx::parakeet::ParakeetModel;
 use transcribe_rs::onnx::Quantization;
 use transcribe_rs::whisper_cpp::{WhisperEngine, WhisperInferenceParams, WhisperLoadParams};
@@ -18,17 +22,50 @@ use transcribe_rs::{
 
 pub struct Asr {
     model: Option<Box<dyn SpeechModel>>,
-    /// `config::AsrConfig::model` at construction time, e.g. "parakeet-v3" or
-    /// "whisper-turbo". Switching engines needs a fresh `Asr` (app restart),
-    /// same as any other model-affecting setting.
+    /// The engine `model` is (or will next be) loaded as, e.g. "parakeet-v3"
+    /// or "whisper-turbo". Follows `config::AsrConfig::model` via `sync`.
     engine: String,
     /// `None` = auto-detect (config `language = "auto"`).
     language: Option<String>,
-    /// Whisper's `initial_prompt`, built once from the trained vocabulary.
-    /// ponytail: read at construction like `engine`, so a word trained after
-    /// startup joins the prompt on the next restart. Pass the live
-    /// `Controls::vocabulary` in if that lag ever matters.
+    /// Whisper's `initial_prompt`, rebuilt from the trained vocabulary by
+    /// every `sync`. A loaded model keeps the prompt it was loaded with, so a
+    /// newly trained word joins at the next load (engine switch or idle
+    /// reload). ponytail: not worth seconds of reload per trained word.
     prompt: Option<String>,
+    /// `asr.idle_unload_secs`; 0 keeps the model loaded.
+    idle_unload_secs: u64,
+}
+
+/// The engine behind the latest transcript. Flags are labelled with it (#10):
+/// after a hot switch, the configured engine is not always the one that ran.
+static LAST_ENGINE: Mutex<String> = Mutex::new(String::new());
+
+/// The engine that produced the latest transcript this session, if any.
+pub fn last_engine() -> Option<String> {
+    let engine = LAST_ENGINE.lock().unwrap().clone();
+    (!engine.is_empty()).then_some(engine)
+}
+
+/// Which engine `sync` should run (#10): the configured one, except while its
+/// files are missing and the current engine's are there. A Download click
+/// selects an engine before its files land, and dictation keeps working on
+/// the old one until they do.
+fn next_engine<'a>(current: &'a str, configured: &'a str, present: impl Fn(&str) -> bool) -> &'a str {
+    if configured == current || present(configured) || !present(current) {
+        configured
+    } else {
+        current
+    }
+}
+
+/// How long the transcribe thread waits for work before `unload` (#12):
+/// forever while nothing is loaded, or when idle unloading is off (0).
+fn idle_wait(loaded: bool, idle_unload_secs: u64) -> Duration {
+    if loaded && idle_unload_secs > 0 {
+        Duration::from_secs(idle_unload_secs)
+    } else {
+        Duration::MAX // crossbeam's recv_timeout falls back to a plain recv
+    }
 }
 
 /// Maps the config's language string to what `TranscribeOptions` expects.
@@ -113,11 +150,47 @@ impl Asr {
                  it will take effect the moment the engine switches to Whisper"
             );
         }
-        Self {
+        let mut asr = Self {
             model: None,
-            prompt: cfg.asr.vocabulary_prompt.then(|| vocab_prompt(&cfg.polish.vocabulary)).flatten(),
-            engine: cfg.asr.model,
-            language: to_language_option(&cfg.asr.language),
+            engine: cfg.asr.model.clone(),
+            language: None,
+            prompt: None,
+            idle_unload_secs: 0,
+        };
+        asr.sync(&cfg);
+        asr
+    }
+
+    /// Pick up the ASR settings from `cfg`. Call it only between takes: an
+    /// engine switch drops the loaded model (#10), and the next `preload` or
+    /// `transcribe` loads the new one. Language applies from the next call.
+    pub fn sync(&mut self, cfg: &config::Config) {
+        let next = next_engine(&self.engine, &cfg.asr.model, config::asr_model_present);
+        if next != self.engine {
+            tracing::info!(from = %self.engine, to = %next, "ASR engine switched");
+            self.engine = next.to_string();
+            self.model = None;
+        }
+        self.language = to_language_option(&cfg.asr.language);
+        self.prompt = cfg.asr.vocabulary_prompt.then(|| vocab_prompt(&cfg.polish.vocabulary)).flatten();
+        self.idle_unload_secs = cfg.asr.idle_unload_secs;
+    }
+
+    /// The engine the next transcript comes from.
+    pub fn engine(&self) -> &str {
+        &self.engine
+    }
+
+    /// How long the owner may wait for work before calling `unload`.
+    pub fn idle_wait(&self) -> Duration {
+        idle_wait(self.model.is_some(), self.idle_unload_secs)
+    }
+
+    /// Free the model's memory (#12). The next `preload` or `transcribe`
+    /// loads it again.
+    pub fn unload(&mut self) {
+        if self.model.take().is_some() {
+            tracing::info!(engine = %self.engine, "ASR model unloaded (idle)");
         }
     }
 
@@ -207,9 +280,10 @@ impl Asr {
 
     /// Load the model now instead of on the first dictation. It costs ~5s, and
     /// paying that *after* the user has already spoken is the worst-feeling
-    /// delay in the app. Called on the worker thread at startup; a failure here
-    /// is fine and silent — the model may simply not be downloaded yet, and
-    /// `transcribe` will retry lazily.
+    /// delay in the app. Called on the worker thread at startup and at every
+    /// hotkey press (a no-op while loaded); a failure here is fine and
+    /// silent — the model may simply not be downloaded yet, and `transcribe`
+    /// will retry lazily.
     pub fn preload(&mut self) {
         if let Err(err) = self.ensure_loaded() {
             tracing::info!(%err, "ASR preload skipped — will load on first use");
@@ -246,6 +320,7 @@ impl Asr {
             engine = %self.engine,
             "transcribed"
         );
+        *LAST_ENGINE.lock().unwrap() = self.engine.clone();
         Ok(collapse_loops(result.text.trim()))
     }
 }
@@ -368,5 +443,63 @@ mod tests {
         assert!(same_word("again.", "again"));
         assert!(!same_word("—", "—"));
         assert!(!same_word("their", "there"));
+    }
+
+    #[test]
+    fn a_picked_engine_takes_over_once_its_files_are_on_disk() {
+        let both = |_: &str| true;
+        assert_eq!(next_engine("parakeet-v3", "whisper-turbo", both), "whisper-turbo");
+        assert_eq!(next_engine("parakeet-v3", "parakeet-v3", both), "parakeet-v3");
+        // Download click: the new engine is selected before it lands, so the
+        // old one keeps transcribing.
+        let old_only = |e: &str| e == "parakeet-v3";
+        assert_eq!(next_engine("parakeet-v3", "whisper-turbo", old_only), "parakeet-v3");
+        // First run, nothing on disk: follow the config, so the "still
+        // downloading" check asks about the engine being downloaded.
+        let none = |_: &str| false;
+        assert_eq!(next_engine("parakeet-v3", "whisper-turbo", none), "whisper-turbo");
+    }
+
+    #[test]
+    fn idle_unload_waits_only_while_a_model_is_loaded() {
+        assert_eq!(idle_wait(true, 300), Duration::from_secs(300));
+        assert_eq!(idle_wait(false, 300), Duration::MAX); // nothing to free
+        assert_eq!(idle_wait(true, 0), Duration::MAX); // 0 = off
+    }
+
+    /// Stands in for a loaded model; `sync` and `unload` never call it.
+    struct Loaded;
+
+    impl SpeechModel for Loaded {
+        fn capabilities(&self) -> ModelCapabilities {
+            unimplemented!()
+        }
+        fn transcribe_raw(&mut self, _: &[f32], _: &TranscribeOptions) -> Result<TranscriptionResult, TranscribeError> {
+            unimplemented!()
+        }
+    }
+
+    #[test]
+    fn a_settings_change_without_an_engine_switch_keeps_the_model_then_idle_frees_it() {
+        let mut asr = Asr {
+            model: Some(Box::new(Loaded)),
+            engine: "whisper-turbo".into(),
+            language: None,
+            prompt: None,
+            idle_unload_secs: 0,
+        };
+        let mut cfg = config::Config::default();
+        cfg.asr.model = "whisper-turbo".into();
+        cfg.asr.language = "ar".into();
+        cfg.asr.idle_unload_secs = 60;
+        cfg.polish.vocabulary = vec![entry("Zorvex", 0, 0)];
+        asr.sync(&cfg);
+        assert!(asr.model.is_some(), "no reload for language or words");
+        assert_eq!(asr.language.as_deref(), Some("ar"));
+        assert_eq!(asr.prompt.as_deref(), Some("Zorvex.")); // used at the next load
+        assert_eq!(asr.idle_wait(), Duration::from_secs(60));
+        asr.unload();
+        assert!(asr.model.is_none());
+        assert_eq!(asr.idle_wait(), Duration::MAX);
     }
 }

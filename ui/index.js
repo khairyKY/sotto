@@ -1075,8 +1075,8 @@ if ($("pron-listen-btn")) {
 // ── settings page wiring ──
 // `selected` (which engine set_asr_model chose) and `state` (installed vs.
 // download, i.e. is it actually on disk) are independent — a model can be
-// selected but not yet downloaded, mid-download-and-restart. Only
-// installed + selected is truly ACTIVE; installed-but-not-selected offers a
+// selected but not yet downloaded, mid-download. Only installed + selected
+// is truly ACTIVE (it takes over on the next dictation, no restart); installed-but-not-selected offers a
 // switch, not-installed always offers Download regardless of selection.
 // assets_status()/get_settings() only ever say installed-or-not — the backend
 // has no "downloading" state — so the live per-row progress a Download click
@@ -1089,11 +1089,6 @@ let downloadingModelId = null;
 let downloadProgress = null; // { name, pct } | null while downloadingModelId is set
 let downloadError = null;
 let modelsCache = [];
-// The engine this session actually runs: asr.rs picks it once at startup (and
-// loads it lazily, so a first-run download still lands in it). Anything else
-// selected later only takes over after a restart, and the row says so.
-// ponytail: captured at boot, so a webview reload would mislabel it until restart.
-let runningAsrId = null;
 
 function renderModels(models) {
   modelsCache = models;
@@ -1118,9 +1113,6 @@ function renderModels(models) {
           <span class="model-progress-bar"><span class="model-progress-fill" style="width:${pct}%"></span></span>
         </div>`;
       metaOverride = downloadProgress ? `Downloading ${escapeHtml(downloadProgress.name)}&hellip;` : "Starting download&hellip;";
-    } else if (m.selected && m.state === "installed" && m.id !== runningAsrId) {
-      rightStatus = `<span class="model-progress-label" style="width:auto; white-space:nowrap;">RESTART TO USE</span>`;
-      metaOverride = `Ready &middot; takes over after you restart Sotto`;
     } else if (m.selected && m.state === "installed") {
       rightStatus = `<span class="model-badge">ACTIVE</span>`;
     } else if (m.state === "installed") {
@@ -1156,11 +1148,10 @@ function renderModels(models) {
 }
 
 // Picking a model (installed switch, or a not-yet-downloaded Download click)
-// only ever changes which engine is *configured* — asr.rs caches the loaded
-// model at startup, so this can't take effect until a restart either way.
+// changes which engine is configured. The next dictation loads it (#10); a
+// Download keeps the old engine transcribing until the files land.
 async function selectAsrModel(id, alsoDownload) {
   await invoke("set_asr_model", { model: id });
-  $("asr-restart-row").hidden = id === runningAsrId;
   if (alsoDownload) {
     downloadingModelId = id;
     downloadProgress = null;
@@ -1170,11 +1161,6 @@ async function selectAsrModel(id, alsoDownload) {
   }
   const s = await getSettings();
   renderModels(s.models || []);
-}
-
-function showAsrRestartNote() {
-  const row = $("asr-restart-row");
-  if (row) row.hidden = false;
 }
 
 // Parakeet is English-only and provably ignores the language setting — grey
@@ -1590,13 +1576,11 @@ async function boot() {
   if ($("theme")) selectSegment($("theme"), s.theme || "system");
   setThresholdUI(s.threshold);
   initToneUI(s);
-  runningAsrId = (s.models || []).find(m => m.selected)?.id || null;
   renderModels(s.models || []);
   if ($("asr-language-select")) {
     $("asr-language-select").value = s.asrLanguage || "auto";
     $("asr-language-select").onchange = () => {
       invoke("set_asr_language", { language: $("asr-language-select").value });
-      showAsrRestartNote();
     };
   }
   populateMicPicker(s.microphone_options || s.microphoneOptions || [], s.microphone || "");
