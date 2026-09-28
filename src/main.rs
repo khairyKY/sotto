@@ -97,11 +97,11 @@ pub struct Controls {
     /// Proper nouns/jargon hinted to the AI-tier system prompt — see
     /// `config::PolishConfig::vocabulary`.
     pub vocabulary: Arc<Mutex<Vec<VocabEntry>>>,
-    /// The Pronunciation Trainer's live target word, or `None` when the
-    /// panel isn't open/listening. Deliberately NOT persisted to config —
-    /// it's a live-session UI state, not a setting. When set, the next
-    /// dictation short-circuits in `process_take` before polish/injection:
-    /// a training utterance is never meant to land in a real document, it's
+    /// The Pronunciation Trainer's armed word, or `None`. Deliberately NOT
+    /// persisted to config — it's a live-session UI state, not a setting.
+    /// One-shot: the next Start consumes it (see `arm_take`), and that one
+    /// take short-circuits in `process_take` before polish/injection: a
+    /// training utterance is never meant to land in a real document, it's
     /// just "what did the engine hear", compared against this word.
     pub training_word: Arc<Mutex<Option<String>>>,
     /// Per-app tone overrides: (app name, tone instruction) pairs.
@@ -610,7 +610,7 @@ fn set_quote_style(style: String, state: tauri::State<'_, AppState>) {
 }
 
 /// Pronunciation Trainer: arm/disarm listening for `word`. The next
-/// dictation (or `None` to stop listening) short-circuits in
+/// take's Start consumes the arm (`None` disarms), and that take short-circuits in
 /// `process_take` — see its training-word check — reporting what was heard
 /// instead of polishing/injecting it.
 #[tauri::command]
@@ -1477,7 +1477,7 @@ fn spawn_pipeline(
     let recovered = journal::recover(MIN_CLIP_SAMPLES).map(|(files, samples)| {
         tracing::info!(files = files.len(), secs = samples.len() / 16_000, "recovered an undelivered take");
         let mode = PolishMode::from_u8(polish_mode.load(Ordering::Relaxed));
-        let mut take = Take::new(samples, 0, mode, files);
+        let mut take = Take::new(samples, 0, mode, files, None);
         take.reason = RECOVERED;
         take
     });
@@ -1491,7 +1491,6 @@ fn spawn_pipeline(
         let cancelled = cancelled.clone();
         let stats_enabled = stats_enabled.clone();
         let retention_enabled = retention_enabled.clone();
-        let training_word = training_word.clone();
         let peek_busy = peek_busy.clone();
         let live_take = live_take.clone();
         std::thread::spawn(move || {
@@ -1549,7 +1548,7 @@ fn spawn_pipeline(
                         }
                         process_take(
                             &app, &mut asr, &polisher, &history, &suppressed, &cancelled,
-                            &listening, injection_mode, &stats_enabled, &retention_enabled, &training_word, take, &mut stash,
+                            &listening, injection_mode, &stats_enabled, &retention_enabled, take, &mut stash,
                         );
                         publish_take(&app, &take_info, &stash);
                     }
@@ -1570,7 +1569,7 @@ fn spawn_pipeline(
                             tracing::info!(has_text = take.raw_text.is_some(), "retrying last dictation");
                             process_take(
                                 &app, &mut asr, &polisher, &history, &suppressed, &cancelled,
-                                &listening, injection_mode, &stats_enabled, &retention_enabled, &training_word, take, &mut stash,
+                                &listening, injection_mode, &stats_enabled, &retention_enabled, take, &mut stash,
                             );
                         } else {
                             tracing::info!("retry requested but nothing stashed");
@@ -1629,6 +1628,8 @@ fn spawn_pipeline(
         let mut recording = false;
         // Whether this take's audio goes to the crash journal (#44).
         let mut journaled = true;
+        // The trainer word this take was started for, if any (#47).
+        let mut take_training: Option<String> = None;
         // Pronunciation-Trainer detection peeks — last one's time, for cadence.
         let mut last_peek = std::time::Instant::now();
 
@@ -1688,7 +1689,7 @@ fn spawn_pipeline(
                 // not just mic level. peek_busy keeps peeks from piling up on
                 // the transcribe thread; a training take is short and otherwise
                 // leaves that thread idle, so one peek in flight is plenty.
-                if let Some(target) = training_word.lock().unwrap().clone() {
+                if let Some(target) = take_training.clone() {
                     if all.len() >= MIN_CLIP_SAMPLES
                         && last_peek.elapsed() >= Duration::from_millis(900)
                         && !peek_busy.swap(true, Ordering::Relaxed)
@@ -1707,6 +1708,7 @@ fn spawn_pipeline(
                     // recorder.start() drops the stream and clears its buffer,
                     // so a second Start used to wipe the take and orphan its
                     // already-sent chunks (#37).
+                    let training = arm_take(&mut training_word.lock().unwrap(), recording);
                     if recording {
                         tracing::info!(id = take_id, "start ignored: already recording");
                         continue;
@@ -1724,7 +1726,8 @@ fn spawn_pipeline(
                             // flag itself when it lands (dropped as stale).
                             // Resetting it let a second peek queue behind it.
                             live_take.store(take_id, Ordering::Relaxed);
-                            journaled = journals_take(training_word.lock().unwrap().is_some());
+                            journaled = journals_take(training.is_some());
+                            take_training = training;
                             listening.store(true, Ordering::Relaxed);
                             if sound_enabled.load(Ordering::Relaxed) {
                                 sounds::tick();
@@ -1764,6 +1767,7 @@ fn spawn_pipeline(
                             focus_target.swap(0, Ordering::Relaxed),
                             PolishMode::from_u8(polish_mode.load(Ordering::Relaxed)),
                             vec![journal::path_for(take_id)],
+                            take_training.take(),
                         );
                         emit_state(&app, "cancelled");
                         tracing::info!("dictation cancelled while recording");
@@ -1806,6 +1810,7 @@ fn spawn_pipeline(
                                 focus_target.swap(0, Ordering::Relaxed),
                                 PolishMode::from_u8(polish_mode.load(Ordering::Relaxed)),
                                 vec![journal::path_for(take_id)],
+                                take_training.take(),
                             );
                             let _ = work_tx.send(Work::Cancelled { id: take_id, take });
                             sent = 0;
@@ -1825,6 +1830,7 @@ fn spawn_pipeline(
                         focus_target.swap(0, Ordering::Relaxed),
                         PolishMode::from_u8(polish_mode.load(Ordering::Relaxed)),
                         vec![journal::path_for(take_id)],
+                        take_training.take(),
                     );
                     take.sent = sent;
                     sent = 0;
@@ -1958,6 +1964,11 @@ struct Take {
     reason: &'static str,
     /// This take's crash-journal files (see `journal.rs`).
     journal: Vec<PathBuf>,
+    /// Pronunciation-Trainer word this take was recorded for. Carried by the
+    /// take, not read from the live arm, so only the take the user started
+    /// from the trainer is a sample, a Retry of it stays one, and every later
+    /// hotkey take is a normal dictation (#47).
+    training: Option<String>,
 }
 
 /// Every way a take ends (delivered, dismissed, replaced in the stash, too
@@ -1986,7 +1997,7 @@ impl Take {
     /// `mode` is read from the shared atom rather than from the `Polisher`,
     /// which now lives on the transcribe thread and isn't reachable from the
     /// audio thread that builds takes.
-    fn new(samples: Vec<f32>, focus_target: isize, mode: PolishMode, journal: Vec<PathBuf>) -> Self {
+    fn new(samples: Vec<f32>, focus_target: isize, mode: PolishMode, journal: Vec<PathBuf>, training: Option<String>) -> Self {
         // Recorder returns 16 kHz mono, so ms = samples / 16.
         let audio_ms = samples.len() as u64 * 1000 / 16_000;
         Take {
@@ -1999,6 +2010,7 @@ impl Take {
             prefix_text: String::new(),
             sent: 0,
             journal,
+            training,
         }
     }
 }
@@ -2057,6 +2069,17 @@ fn peek_fires(text: &str, target: &str, peek_take: u64, live_take: u64) -> bool 
     peek_take == live_take && heard_word(text, target)
 }
 
+/// What a Start does with the trainer arm (#47): it always consumes it, so
+/// the arm can never outlive one Start and swallow later hotkey takes
+/// however the trainer take ends (sample, error, cancel, too short, or a
+/// UI that never sends `None`). The new take becomes a trainer take only if
+/// it really starts; a Start ignored because a take is already recording
+/// leaves that take a normal dictation.
+fn arm_take(armed: &mut Option<String>, recording: bool) -> Option<String> {
+    let word = armed.take();
+    if recording { None } else { word }
+}
+
 /// Whether a take's audio is crash-journaled (#44). Not while a
 /// Pronunciation-Trainer word is armed: a recovered trainer take would come
 /// back as a normal dictation, and Retry would inject the training word into
@@ -2090,7 +2113,6 @@ fn process_take(
     injection_mode: InjectionMode,
     stats_enabled: &Arc<AtomicBool>,
     retention_enabled: &Arc<AtomicBool>,
-    training_word: &Arc<Mutex<Option<String>>>,
     mut take: Take,
     stash: &mut Option<Take>,
 ) {
@@ -2164,7 +2186,7 @@ fn process_take(
     // into the panel too — the user just tries again; not worth a second
     // short-circuit point for a case the overlay's error state already
     // covers.
-    if let Some(target) = training_word.lock().unwrap().clone() {
+    if let Some(target) = take.training.clone() {
         let heard = raw.trim().to_string();
         let matched = heard.eq_ignore_ascii_case(target.trim());
         // Persist this attempt into the word's rolling success history —
@@ -2562,6 +2584,7 @@ mod tests {
             prefix_text: String::new(),
             sent: 0,
             journal: vec![],
+            training: None,
         }
     }
 
@@ -2596,6 +2619,20 @@ mod tests {
         assert!(!peek_fires("say sotto now", "Sotto", 3, 4));
         // Live take, word not heard: nothing.
         assert!(!peek_fires("say nothing", "Sotto", 4, 4));
+    }
+
+    #[test]
+    fn a_start_always_consumes_the_trainer_arm() {
+        let mut armed = Some("Sotto".to_string());
+        assert_eq!(arm_take(&mut armed, false).as_deref(), Some("Sotto"), "the trainer's own take");
+        assert_eq!(armed, None, "disarmed once consumed");
+        assert_eq!(arm_take(&mut armed, false), None, "the next hotkey take is a normal dictation");
+
+        // Armed while a take is already recording: that take stays normal,
+        // and the arm is still gone.
+        let mut armed = Some("Sotto".to_string());
+        assert_eq!(arm_take(&mut armed, true), None);
+        assert_eq!(armed, None);
     }
 
     #[test]
