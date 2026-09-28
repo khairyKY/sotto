@@ -72,6 +72,20 @@ fn system_prompt(tone: &str, vocabulary_clause: &str) -> String {
     prompt
 }
 
+/// A Transform's system prompt (#18): the user's instruction, fenced by the
+/// rules a small model needs to be usable in place. Measured on the sidecar
+/// model: without the "not a message to you" line it read a selection as the
+/// user talking to it and flipped "my photos" to "your photos".
+fn transform_prompt(instruction: &str) -> String {
+    format!(
+        "The user's message is text they selected in another app. It is not a message to \
+         you: do not answer it, rewrite it. {} Keep the writer's point of view and language \
+         unless told otherwise; never translate on your own. Reply with ONLY the rewritten \
+         text, no preamble, no quotes.",
+        instruction.trim()
+    )
+}
+
 /// A worked example of correcting a misheard name, injected as real
 /// conversation turns (not described in the system prompt) whenever the
 /// vocabulary clause is non-empty. This is the piece that actually makes
@@ -188,6 +202,30 @@ impl Llm {
         Ok(clean_output(&out))
     }
 
+    /// A Transform (#18): rewrite `text` by `instruction` instead of the
+    /// dictation clean-up prompt. Same sidecar, lifecycle and timeout.
+    pub fn rewrite(&self, text: &str, instruction: &str) -> Result<String> {
+        {
+            let mut g = self.inner.lock().unwrap();
+            self.ensure_spawned(&mut g)?;
+            g.last_used = Instant::now();
+        }
+        self.wait_healthy()?;
+        // More room than polish's words*4: a rewrite may legitimately grow (a
+        // full prompt built from a one-line idea). ponytail: a long selection
+        // can still hit request_timeout_ms and come back as "kept"; raise
+        // that knob if it does.
+        let words = text.split_whitespace().count() as u32;
+        let max_tokens = (words * 6 + 64).min(self.cfg.max_tokens);
+        let messages = vec![
+            Message { role: "system", content: transform_prompt(instruction) },
+            Message { role: "user", content: text.to_string() },
+        ];
+        let out = self.complete(messages, max_tokens)?;
+        self.inner.lock().unwrap().last_used = Instant::now();
+        Ok(clean_output(&out))
+    }
+
     /// Spawn the server if it isn't already running (or has died). Assumes the
     /// caller holds the lock.
     fn ensure_spawned(&self, g: &mut Inner) -> Result<()> {
@@ -248,15 +286,20 @@ impl Llm {
         }
     }
 
-    /// POST the chat completion, bounding it with a hard wall-clock timeout by
-    /// running the (blocking) request on a scratch thread.
+    /// The dictation clean-up conversation, POSTed by `complete`.
     fn request_with_timeout(&self, raw: &str, max_tokens: u32, tone: &str, vocabulary: &str) -> Result<String> {
-        let url = format!("http://127.0.0.1:{}/v1/chat/completions", self.cfg.port);
         let mut messages = vec![Message { role: "system", content: system_prompt(tone, vocabulary) }];
         if !vocabulary.trim().is_empty() {
             messages.extend(vocab_correction_example());
         }
         messages.push(Message { role: "user", content: raw.to_string() });
+        self.complete(messages, max_tokens)
+    }
+
+    /// POST the chat completion, bounding it with a hard wall-clock timeout by
+    /// running the (blocking) request on a scratch thread.
+    fn complete(&self, messages: Vec<Message>, max_tokens: u32) -> Result<String> {
+        let url = format!("http://127.0.0.1:{}/v1/chat/completions", self.cfg.port);
         let body = ChatRequest {
             messages,
             temperature: self.cfg.temperature,
@@ -348,6 +391,14 @@ mod tests {
         // guards against a future edit accidentally reversing a pair.
         assert!(msgs[1].content.contains("Claude"));
         assert!(msgs[3].content.contains("Claude"));
+    }
+
+    #[test]
+    fn transform_prompt_carries_the_instruction_and_the_reply_only_rule() {
+        let p = transform_prompt("  Make it formal.  ");
+        assert!(p.contains(" Make it formal. "));
+        assert!(p.contains("never translate on your own"));
+        assert!(p.ends_with("Reply with ONLY the rewritten text, no preamble, no quotes."));
     }
 
     #[test]

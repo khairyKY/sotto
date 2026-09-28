@@ -114,6 +114,42 @@ pub struct AppTone {
     pub tone: String,
 }
 
+/// A Transform (#18): select text in any app, press `chord`, and the local
+/// model rewrites the selection in place by `prompt`. Same small-struct shape
+/// as `AppTone`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Transform {
+    pub name: String,
+    /// "Ctrl+Alt+Digit1": modifiers, then one `hotkey::SUPPORTED_HOTKEYS`
+    /// key name. Parsed by `hotkey::parse_chord`; one it can't parse is inert.
+    pub chord: String,
+    /// The instruction the model rewrites by, e.g. "Tighten and clarify it".
+    pub prompt: String,
+    /// Keep the original when the rewrite drops too much of its wording (see
+    /// `transform::accept`). On for Polish: that's the #65 failure mode.
+    #[serde(default)]
+    pub keep_words: bool,
+}
+
+/// The seeds a config without a `transforms` list starts with. Ctrl+Alt, not
+/// Win+Alt: Windows 11 claims several Win+Alt combos for itself.
+pub fn default_transforms() -> Vec<Transform> {
+    vec![
+        Transform {
+            name: "Polish".into(),
+            chord: "Ctrl+Alt+Digit1".into(),
+            prompt: "Tighten and clarify it without changing its meaning. Keep the writer's own words wherever you can, and keep I, me and my as they are.".into(),
+            keep_words: true,
+        },
+        Transform {
+            name: "Prompt engineer".into(),
+            chord: "Ctrl+Alt+Digit2".into(),
+            prompt: "Turn it into a detailed prompt for an AI assistant, as four labelled lines: Goal, Context, Constraints, Output. Use only what the text says.".into(),
+            keep_words: false,
+        },
+    ]
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum InjectionMode {
@@ -384,6 +420,13 @@ pub struct Config {
     /// (matched case-insensitively) has no entry here.
     #[serde(default)]
     pub app_tones: Vec<AppTone>,
+    /// Arms the Transform chords (#18). Off by default while the feature is
+    /// new: the page shows, but no chord fires until this is on.
+    #[serde(default)]
+    pub transforms_enabled: bool,
+    /// Select-and-rewrite actions, each on its own chord.
+    #[serde(default = "default_transforms")]
+    pub transforms: Vec<Transform>,
     /// Start minimized to the tray (no window shown on launch).
     #[serde(default = "default_true")]
     pub start_hidden: bool,
@@ -465,6 +508,8 @@ impl Default for Config {
             chunked_transcription: true,
             tone: String::new(),
             app_tones: Vec::new(),
+            transforms_enabled: false,
+            transforms: default_transforms(),
             start_hidden: true,
             stats_enabled: true,
             retention: RetentionConfig::default(),
@@ -835,6 +880,38 @@ max_mb = 250
         let reloaded: Config = toml::from_str(&saved).unwrap();
         assert!(reloaded.retention.enabled);
         assert_eq!(reloaded.retention.max_mb, 250);
+    }
+
+    #[test]
+    fn transforms_default_off_with_the_seeds_in_a_config_written_before_them() {
+        let cfg: Config =
+            toml::from_str("hotkey = \"ControlRight\"\nactivation_mode = \"toggle\"\ninjection_mode = \"paste\"\n").unwrap();
+        assert!(!cfg.transforms_enabled);
+        assert_eq!(cfg.transforms, default_transforms());
+        let names: Vec<&str> = cfg.transforms.iter().map(|t| t.name.as_str()).collect();
+        assert_eq!(names, ["Polish", "Prompt engineer"]);
+        // Polish is the one that must keep the writer's words (#65).
+        assert!(cfg.transforms[0].keep_words && !cfg.transforms[1].keep_words);
+    }
+
+    #[test]
+    fn transforms_round_trip_and_an_emptied_list_stays_empty() {
+        let mut cfg = Config::default();
+        cfg.transforms_enabled = true;
+        cfg.transforms.push(Transform {
+            name: "Formal".into(),
+            chord: "Ctrl+Alt+Shift+KeyF".into(),
+            prompt: "Make it formal.".into(),
+            keep_words: false,
+        });
+        let reloaded: Config = toml::from_str(&toml::to_string_pretty(&cfg).unwrap()).unwrap();
+        assert!(reloaded.transforms_enabled);
+        assert_eq!(reloaded.transforms, cfg.transforms);
+
+        // Deleting every transform must not bring the seeds back on restart.
+        cfg.transforms.clear();
+        let reloaded: Config = toml::from_str(&toml::to_string_pretty(&cfg).unwrap()).unwrap();
+        assert!(reloaded.transforms.is_empty());
     }
 
     #[test]

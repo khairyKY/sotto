@@ -1,9 +1,9 @@
 use crossbeam_channel::Sender;
 use rdev::{listen, Button, EventType, Key};
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
-use crate::config::ActivationMode;
+use crate::config::{ActivationMode, Transform};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DictationEvent {
@@ -23,6 +23,9 @@ pub enum DictationEvent {
     /// Drop the stashed take without retrying it — Home's "Dismiss". Only the
     /// worker owns the stash, so this has to travel the same channel.
     Dismiss,
+    /// A Transform chord fired (#18): rewrite the focused app's selection.
+    /// Travels the same channel so it queues behind any take being delivered.
+    Transform(Transform),
 }
 
 /// A hotkey binding source — either a keyboard key or a mouse button. The
@@ -136,6 +139,137 @@ pub fn index_of(name: &str) -> usize {
         })
 }
 
+/// Modifiers a Transform chord holds. Side-blind: Left and Right Ctrl are the
+/// same Ctrl here.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Mods {
+    pub ctrl: bool,
+    pub alt: bool,
+    pub shift: bool,
+    pub win: bool,
+}
+
+/// A parsed Transform chord: exactly these modifiers, plus `key`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Chord {
+    pub mods: Mods,
+    pub key: Key,
+}
+
+fn is_modifier(k: Key) -> bool {
+    matches!(
+        k,
+        Key::ControlLeft | Key::ControlRight | Key::Alt | Key::AltGr | Key::ShiftLeft | Key::ShiftRight
+            | Key::MetaLeft | Key::MetaRight | Key::CapsLock
+    )
+}
+
+/// Parse a Transform chord, "Ctrl+Alt+Digit1": modifiers in any order, then
+/// one keyboard key from [`SUPPORTED_HOTKEYS`]. `None` for anything the
+/// listener can't match, and for a chord without Ctrl, Alt or Win, which would
+/// fire while you type (Shift+P is just a capital P).
+pub fn parse_chord(s: &str) -> Option<Chord> {
+    let mut parts: Vec<&str> = s.split('+').map(str::trim).collect();
+    let key_name = parts.pop()?;
+    let mut mods = Mods::default();
+    for p in parts {
+        match p.to_ascii_lowercase().as_str() {
+            "ctrl" => mods.ctrl = true,
+            "alt" => mods.alt = true,
+            "shift" => mods.shift = true,
+            "win" => mods.win = true,
+            _ => return None,
+        }
+    }
+    let key = SUPPORTED_HOTKEYS.iter().find_map(|(_, name, input, _)| match input {
+        Input::Key(k) if *name == key_name && !is_modifier(*k) => Some(*k),
+        _ => None,
+    })?;
+    (mods.ctrl || mods.alt || mods.win).then_some(Chord { mods, key })
+}
+
+/// The chord modifiers among `held` keys. The dictation hotkey never counts:
+/// with Right Ctrl bound to dictation, Right Ctrl+Alt+1 is a dictation with a
+/// stray Alt+1, and only Left Ctrl+Alt+1 is the chord. That's what keeps the
+/// two from firing off one key press.
+fn mods_from(held: &[Key], bound: Input) -> Mods {
+    let on = |a: Key, b: Key| held.iter().any(|&k| (k == a || k == b) && Input::Key(k) != bound);
+    Mods {
+        ctrl: on(Key::ControlLeft, Key::ControlRight),
+        alt: on(Key::Alt, Key::AltGr),
+        shift: on(Key::ShiftLeft, Key::ShiftRight),
+        win: on(Key::MetaLeft, Key::MetaRight),
+    }
+}
+
+/// The modifiers physically down right now, asked of the OS rather than
+/// tracked from hook events: the listener skips every event while
+/// `suppressed` is set, so a release that lands then would leave a tracked
+/// modifier stuck down (and a later plain key would match a chord).
+fn held_mods(bound: Input) -> Mods {
+    use windows::Win32::UI::Input::KeyboardAndMouse::*;
+    const VKS: [(Key, VIRTUAL_KEY); 8] = [
+        (Key::ControlLeft, VK_LCONTROL), (Key::ControlRight, VK_RCONTROL),
+        (Key::Alt, VK_LMENU), (Key::AltGr, VK_RMENU),
+        (Key::ShiftLeft, VK_LSHIFT), (Key::ShiftRight, VK_RSHIFT),
+        (Key::MetaLeft, VK_LWIN), (Key::MetaRight, VK_RWIN),
+    ];
+    let held: Vec<Key> = VKS
+        .iter()
+        .filter(|(_, vk)| unsafe { GetAsyncKeyState(vk.0 as i32) as u16 & 0x8000 != 0 })
+        .map(|&(k, _)| k)
+        .collect();
+    mods_from(&held, bound)
+}
+
+/// Transform chords' press/release state. A chord fires on the RELEASE of
+/// its key: by then the user has let go of most of the chord (a Ctrl+C sent
+/// under a still-held Alt is Ctrl+Alt+C, not a copy), and OS auto-repeat of
+/// the held key can't fire it twice. The press arms it.
+#[derive(Default)]
+struct ChordKey {
+    armed: Option<(usize, Key)>,
+}
+
+impl ChordKey {
+    /// Returns `(consumed, fire)`. A consumed event belongs to a chord and
+    /// must not also reach the dictation hotkey. `mods` is only asked for
+    /// when `key` is some chord's key. `blocked` (a take recording, or
+    /// paused) still consumes the chord, it just never fires.
+    fn on_key(
+        &mut self,
+        key: Key,
+        pressed: bool,
+        mods: impl FnOnce() -> Mods,
+        chords: &[Option<Chord>],
+        blocked: bool,
+    ) -> (bool, Option<usize>) {
+        if !pressed {
+            return match self.armed {
+                Some((i, k)) if k == key => {
+                    self.armed = None;
+                    (true, (!blocked).then_some(i))
+                }
+                _ => (false, None),
+            };
+        }
+        if self.armed.is_some_and(|(_, k)| k == key) {
+            return (true, None); // OS auto-repeat while held
+        }
+        if !chords.iter().flatten().any(|c| c.key == key) {
+            return (false, None);
+        }
+        let mods = mods();
+        match chords.iter().position(|c| *c == Some(Chord { mods, key })) {
+            Some(i) => {
+                self.armed = Some((i, key));
+                (true, None)
+            }
+            None => (false, None),
+        }
+    }
+}
+
 /// Toggle-mode's press/release state machine, split out from `run_listener`
 /// so the repeat-guard is unit-testable without a real OS hook (same reason
 /// `main.rs`'s `anchor_xy`/`chunk_cut` are split from their callers).
@@ -220,9 +354,12 @@ pub fn run_listener(
     paused: Arc<AtomicBool>,
     cancelled: Arc<AtomicBool>,
     listening: Arc<AtomicBool>,
+    transforms: Arc<Mutex<Vec<Transform>>>,
+    transforms_enabled: Arc<AtomicBool>,
 ) {
     let mut is_held = false;
     let mut toggle = ToggleKey::default();
+    let mut chord_key = ChordKey::default();
 
     let callback = move |event: rdev::Event| {
         if suppressed.load(Ordering::SeqCst) {
@@ -248,6 +385,30 @@ pub fn run_listener(
         // Read the bound input live so a rebind takes effect without a restart.
         let idx = hotkey_idx.load(Ordering::Relaxed).min(SUPPORTED_HOTKEYS.len() - 1);
         let bound = SUPPORTED_HOTKEYS[idx].2;
+
+        // Transform chords (#18) first: a chord's own key press/release is
+        // theirs, never also the dictation hotkey's. Never fires mid-take.
+        // ponytail: chords re-parsed per key event; a handful of short strings.
+        if transforms_enabled.load(Ordering::Relaxed) {
+            let key_event = match event.event_type {
+                EventType::KeyPress(k) => Some((k, true)),
+                EventType::KeyRelease(k) => Some((k, false)),
+                _ => None,
+            };
+            if let Some((key, pressed)) = key_event {
+                let list = transforms.lock().unwrap();
+                let chords: Vec<Option<Chord>> = list.iter().map(|t| parse_chord(&t.chord)).collect();
+                let blocked = listening.load(Ordering::Relaxed) || paused.load(Ordering::Relaxed);
+                let (consumed, fire) = chord_key.on_key(key, pressed, || held_mods(bound), &chords, blocked);
+                // `get`: the list can be edited between a chord's press and release.
+                if let Some(t) = fire.and_then(|i| list.get(i)) {
+                    let _ = tx.send(DictationEvent::Transform(t.clone()));
+                }
+                if consumed {
+                    return;
+                }
+            }
+        }
 
         // Match either KeyPress/KeyRelease or ButtonPress/ButtonRelease
         // depending on the bound input family. Wrong-family events early-out.
@@ -361,6 +522,75 @@ mod tests {
         // ...and after it has stopped, the next press starts a new take.
         assert_eq!(key.on_key(false, true, false), None);
         assert_eq!(key.on_key(true, /* stopped */ false, false), Some(DictationEvent::Start));
+    }
+
+    const CTRL_ALT: Mods = Mods { ctrl: true, alt: true, shift: false, win: false };
+
+    #[test]
+    fn parses_chords_and_refuses_ones_that_would_fire_while_typing() {
+        assert_eq!(parse_chord("Ctrl+Alt+Digit1"), Some(Chord { mods: CTRL_ALT, key: Key::Num1 }));
+        assert_eq!(parse_chord(" alt + ctrl + KeyP "), Some(Chord { mods: CTRL_ALT, key: Key::KeyP }));
+        assert_eq!(parse_chord("Win+Shift+F9").map(|c| (c.mods.win, c.mods.shift, c.key)), Some((true, true, Key::F9)));
+        for bad in ["", "KeyP", "Shift+KeyP", "Ctrl+Alt+ControlLeft", "Ctrl+Alt+MouseMiddle", "Ctrl+Alt+Nope", "Hyper+KeyP"] {
+            assert_eq!(parse_chord(bad), None, "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn the_dictation_hotkey_never_counts_as_a_chord_modifier() {
+        let held = [Key::ControlRight, Key::Alt];
+        // Right Ctrl bound to dictation: Right Ctrl+Alt is just Alt to chords.
+        assert_eq!(mods_from(&held, Input::Key(Key::ControlRight)), Mods { alt: true, ..Mods::default() });
+        // Anything else bound: it's Ctrl+Alt, whichever side.
+        assert_eq!(mods_from(&held, Input::Key(Key::F9)), CTRL_ALT);
+        assert_eq!(mods_from(&[Key::ControlLeft, Key::AltGr], Input::Key(Key::ControlRight)), CTRL_ALT);
+    }
+
+    #[test]
+    fn a_chord_arms_on_press_and_fires_once_on_release() {
+        let chords = [parse_chord("Ctrl+Alt+Digit1"), parse_chord("Ctrl+Alt+Digit2")];
+        let mut ck = ChordKey::default();
+        assert_eq!(ck.on_key(Key::Num2, true, || CTRL_ALT, &chords, false), (true, None));
+        assert_eq!(ck.on_key(Key::Num2, true, || CTRL_ALT, &chords, false), (true, None)); // auto-repeat
+        assert_eq!(ck.on_key(Key::Num2, false, || CTRL_ALT, &chords, false), (true, Some(1)));
+        assert_eq!(ck.on_key(Key::Num2, false, || CTRL_ALT, &chords, false), (false, None)); // stray release
+    }
+
+    #[test]
+    fn plain_typing_and_wrong_modifiers_pass_through_untouched() {
+        let chords = [parse_chord("Ctrl+Alt+Digit1")];
+        let mut ck = ChordKey::default();
+        // A key no chord uses never even asks for the modifier state.
+        assert_eq!(ck.on_key(Key::KeyA, true, || unreachable!(), &chords, false), (false, None));
+        // Ctrl+1 alone is someone else's shortcut.
+        let ctrl = Mods { ctrl: true, ..Mods::default() };
+        assert_eq!(ck.on_key(Key::Num1, true, || ctrl, &chords, false), (false, None));
+        assert_eq!(ck.on_key(Key::Num1, false, || ctrl, &chords, false), (false, None));
+        // Ctrl+Alt+Shift+1 isn't Ctrl+Alt+1 either: modifiers match exactly.
+        let more = Mods { shift: true, ..CTRL_ALT };
+        assert_eq!(ck.on_key(Key::Num1, true, || more, &chords, false), (false, None));
+    }
+
+    #[test]
+    fn a_chord_never_fires_while_a_take_is_recording() {
+        let chords = [parse_chord("Ctrl+Alt+Digit1")];
+        let mut ck = ChordKey::default();
+        ck.on_key(Key::Num1, true, || CTRL_ALT, &chords, true);
+        // Still consumed, so the key can't leak to the dictation hotkey, but no fire.
+        assert_eq!(ck.on_key(Key::Num1, false, || CTRL_ALT, &chords, true), (true, None));
+    }
+
+    #[test]
+    fn a_chord_on_the_dictation_key_keeps_both_press_and_release_from_it() {
+        // Dictation on F9, a chord on Ctrl+Alt+F9: the chord's press and
+        // release are consumed, so the dictation hotkey never sees either.
+        let chords = [parse_chord("Ctrl+Alt+F9")];
+        let mut ck = ChordKey::default();
+        let mods = || mods_from(&[Key::ControlLeft, Key::Alt], Input::Key(Key::F9));
+        assert_eq!(ck.on_key(Key::F9, true, mods, &chords, false), (true, None));
+        assert_eq!(ck.on_key(Key::F9, false, mods, &chords, false), (true, Some(0)));
+        // ...and a bare F9 still goes to dictation.
+        assert_eq!(ck.on_key(Key::F9, true, Mods::default, &chords, false), (false, None));
     }
 
     #[test]

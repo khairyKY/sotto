@@ -73,6 +73,12 @@ impl Polisher {
         PolishMode::from_u8(self.controls.polish_mode.load(Ordering::Relaxed))
     }
 
+    /// The AI tier's sidecar handle, lent to Transforms (#18) so they never
+    /// spawn a second model. `None` when the model isn't installed.
+    pub fn llm(&self) -> Option<&Llm> {
+        self.llm.as_ref()
+    }
+
     fn ai_min_words(&self) -> usize {
         self.controls.ai_min_words.load(Ordering::Relaxed)
     }

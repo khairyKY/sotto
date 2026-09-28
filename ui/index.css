@@ -1079,7 +1079,8 @@ input[type="range"]::-webkit-slider-thumb {
 
 /* Master toggle off: dim the whole list so it can't read as "on but silently
    doing nothing" — the exact silent-off-state the user lost track of once. */
-.dict-entries-list.list-disabled { opacity: 0.5; }
+.dict-entries-list.list-disabled,
+.transforms-grid.list-disabled { opacity: 0.5; }
 
 /* Per-entry toggle off: dim just the text, not the row itself — it must stay
    fully legible enough to re-enable, edit, or delete. */
@@ -1399,6 +1400,16 @@ input[type="range"]::-webkit-slider-thumb {
 .transform-desc {
   font: 400 11.5px/1.5 'Hanken Grotesk';
   color: var(--mm-muted-3);
+}
+/* Live page (#18): every card opens the editor; a card's text is the full
+   instruction, so it's held to three lines. */
+.transforms-grid .transform-card { cursor: pointer; }
+.transforms-grid .transform-card:hover .transform-title { color: var(--mm-accent-ink); }
+.transforms-grid .transform-desc {
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
 }
 .plus-icon {
   font-size: 20px;
