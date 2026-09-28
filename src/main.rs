@@ -1166,9 +1166,8 @@ fn menu_action(app: tauri::AppHandle, action: String) {
         if let Some(w) = app.get_webview_window("settings") {
             let _ = w.show();
             let _ = w.set_focus();
-            if action != "settings" {
-                let _ = w.emit("navigate", action);
-            }
+            // "settings" too: it's a modal now, and navigate() is what opens it.
+            let _ = w.emit("navigate", action);
         }
     }
 }

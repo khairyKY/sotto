@@ -70,6 +70,7 @@ const settingsOpen = () => !$("settings-scrim").hidden;
 // ── page routing ──
 function navigate(page) {
   if (page === 'settings') { openSettings(); return; }
+  closeSettings(); // tray → Insights etc. while the modal is up should land on that page
   document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
   document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
   const pg = $(`page-${page}`);
