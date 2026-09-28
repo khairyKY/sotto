@@ -1384,8 +1384,9 @@ fn spawn_pipeline(
         let paused = controls.paused.clone();
         let supp = suppressed.clone();
         let cancelled = controls.cancelled.clone();
+        let listening = controls.listening.clone();
         std::thread::spawn(move || {
-            hotkey::run_listener(hotkey_idx, activation, tx, supp, paused, cancelled)
+            hotkey::run_listener(hotkey_idx, activation, tx, supp, paused, cancelled, listening)
         });
     }
 
@@ -1649,6 +1650,15 @@ fn spawn_pipeline(
 
             match event {
                 DictationEvent::Start => {
+                    // Start is idempotent mid-take. The hotkey, the overlay
+                    // pill and the trainer button can all send it, and
+                    // recorder.start() drops the stream and clears its buffer,
+                    // so a second Start used to wipe the take and orphan its
+                    // already-sent chunks (#37).
+                    if recording {
+                        tracing::info!(id = take_id, "start ignored: already recording");
+                        continue;
+                    }
                     cancelled.store(false, Ordering::SeqCst);
                     match recorder.start() {
                         Ok(()) => {

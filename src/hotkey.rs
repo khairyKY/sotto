@@ -176,6 +176,32 @@ fn toggle_step(
     (true, new_active, ev)
 }
 
+/// Toggle-mode state the listener keeps between hook events.
+///
+/// Whether a press means Start or Stop comes from `listening` (the pipeline's
+/// own flag), never from a private copy here: a take can also be started by
+/// a click on the overlay pill or the trainer button, which this listener
+/// never sees. With a private copy the first press after a click-started
+/// take sent a second Start, and a Start mid-take wiped the take (#37).
+///
+/// ponytail: `listening` flips when the audio thread actually opens the mic,
+/// so a double-tap faster than that (~100 ms) reads the second press as
+/// another Start (ignored mid-take, see the Start guard in main.rs); one
+/// more press then stops it. Nothing is lost. Track a pending Start here if
+/// that ever matters.
+#[derive(Default)]
+struct ToggleKey {
+    is_down: bool,
+}
+
+impl ToggleKey {
+    fn on_key(&mut self, pressed: bool, listening: bool, paused: bool) -> Option<DictationEvent> {
+        let (down, _, ev) = toggle_step(pressed, self.is_down, listening, paused);
+        self.is_down = down;
+        ev
+    }
+}
+
 /// Blocks the calling thread forever, listening system-wide for the configured
 /// hotkey and emitting `DictationEvent`s on `tx`. Must run on its own
 /// dedicated OS thread — rdev owns the thread it's called from on Windows.
@@ -193,10 +219,10 @@ pub fn run_listener(
     suppressed: Arc<AtomicBool>,
     paused: Arc<AtomicBool>,
     cancelled: Arc<AtomicBool>,
+    listening: Arc<AtomicBool>,
 ) {
     let mut is_held = false;
-    let mut is_active = false; // toggle-mode recording state
-    let mut is_down = false; // toggle-mode: is the bound key *currently* down
+    let mut toggle = ToggleKey::default();
 
     let callback = move |event: rdev::Event| {
         if suppressed.load(Ordering::SeqCst) {
@@ -252,10 +278,11 @@ pub fn run_listener(
                 }
             }
             ActivationMode::Toggle => {
-                let (new_down, new_active, ev) =
-                    toggle_step(pressed, is_down, is_active, paused.load(Ordering::Relaxed));
-                is_down = new_down;
-                is_active = new_active;
+                let ev = toggle.on_key(
+                    pressed,
+                    listening.load(Ordering::Relaxed),
+                    paused.load(Ordering::Relaxed),
+                );
                 if let Some(ev) = ev {
                     let _ = tx.send(ev);
                 }
@@ -322,6 +349,18 @@ mod tests {
         assert_eq!((down, active, ev), (true, false, None));
         let (down, active, ev) = toggle_step(false, down, active, true);
         assert_eq!((down, active, ev), (false, false, None));
+    }
+
+    #[test]
+    fn a_take_started_by_click_is_stopped_by_the_first_toggle_press() {
+        // #37: the overlay pill and the trainer button start a take without
+        // the hotkey. The first press must stop it, not send a second Start
+        // (which restarts the recorder and wipes the take).
+        let mut key = ToggleKey::default();
+        assert_eq!(key.on_key(true, /* pipeline listening */ true, false), Some(DictationEvent::Stop));
+        // ...and after it has stopped, the next press starts a new take.
+        assert_eq!(key.on_key(false, true, false), None);
+        assert_eq!(key.on_key(true, /* stopped */ false, false), Some(DictationEvent::Start));
     }
 
     #[test]

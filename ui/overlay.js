@@ -669,6 +669,12 @@ canvas.addEventListener('click', (e) => {
     const d = Math.hypot(e.offsetX - activeBtn.x, e.offsetY - activeBtn.y);
     if (d <= activeBtn.r + 3) { // +3px forgiving hit-area for a small target
       invoke(activeBtn.action === 'retry' ? 'retry_last' : 'cancel_dictation');
+    } else if (state.name === 'listening') {
+      // The pill body while listening stops the take (and delivers it), so a
+      // take started with a click can be finished with one (#37). The ✕ still
+      // cancels.
+      pressUntil = performance.now() + PRESS_MS;
+      invoke('stop_dictation');
     }
     return;
   }
