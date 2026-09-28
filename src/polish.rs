@@ -19,7 +19,7 @@ use crate::config::{EntryKind, LlmConfig, PolishMode, VocabEntry};
 use crate::llm::Llm;
 use crate::Controls;
 use harper_core::linting::{Lint, LintGroup, LintKind, Linter};
-use harper_core::spell::FstDictionary;
+use harper_core::spell::{Dictionary, FstDictionary};
 use harper_core::{Dialect, Document, remove_overlaps};
 use std::cell::RefCell;
 use std::sync::atomic::Ordering;
@@ -169,19 +169,13 @@ impl Polisher {
         // Phonetic correction: after the exact Word-dictionary pass (so it only
         // handles mishearings the exact entries didn't already fix), before the
         // mode branch (so the LLM sees the intended proper noun). Targets are
-        // the single-word trained-vocabulary entries — see
+        // the trained-vocabulary entries, single words and phrases — see
         // `apply_phonetic_corrections`.
         let phoneticized;
         let mut notable: Vec<(String, String)> = Vec::new();
         let raw = if self.controls.phonetic_correction.load(Ordering::Relaxed) {
-            let targets: Vec<String> = {
-                let vocab = self.controls.vocabulary.lock().unwrap();
-                vocab
-                    .iter()
-                    .map(|e| e.word.clone())
-                    .filter(|w| w.split_whitespace().count() == 1)
-                    .collect()
-            };
+            let targets: Vec<String> =
+                self.controls.vocabulary.lock().unwrap().iter().map(|e| e.word.clone()).collect();
             if targets.is_empty() {
                 raw
             } else {
@@ -633,7 +627,9 @@ fn parse_number_run(words: &[&str]) -> Option<NumberRun> {
 /// to reattach.
 fn split_affixes(tok: &str) -> (&str, &str, &str) {
     let start = tok.find(|c: char| c.is_alphanumeric()).unwrap_or(tok.len());
-    let end = tok.rfind(|c: char| c.is_alphanumeric()).map_or(start, |i| i + 1);
+    // End after the last alphanumeric char's full width — `+ 1` would slice
+    // inside a multi-byte one ("café", any Arabic word) and panic.
+    let end = tok.char_indices().rev().find(|(_, c)| c.is_alphanumeric()).map_or(start, |(i, c)| i + c.len_utf8());
     (&tok[..start], &tok[start..end], &tok[end..])
 }
 
@@ -1013,16 +1009,20 @@ fn capitalize_first(s: &str) -> String {
 // ── phonetic correction ──────────────────────────────────────────────────
 // Exact dictionary/vocabulary entries fix mishearings the user has already
 // seen and listed. This catches the *unseen* ones: a token that sounds like a
-// trained proper noun but was misheard a new way ("clode"/"cloud"/"claud" for
-// "Claude"). Classic American Soundex keys both, then a 1-edit tolerance on
-// the 4-char code bridges near-misses like "claw" (C400) -> "Claude" (C430).
-// Deliberately fires ONLY toward words the user explicitly trained, so being
-// aggressive there is correct, not reckless — and it runs before the LLM, so
+// trained proper noun but was misheard a new way ("clode"/"claud" for
+// "Claude"). Classic American Soundex keys both. It runs before the LLM, so
 // the model still sees the intended word.
+//
+// Precision over recall (#63): the first version matched any word with the
+// same first letter and a 4-char code within one edit, and on real takes it
+// fired wrongly ~10x more often than rightly ("said"/"sure"/"soon" ->
+// "Sotto", "called"/"class" -> "Claude"). Now a token must key EXACTLY like
+// the target over its whole skeleton, must not be a real English word (names
+// aside), and must be plain letters, not code (a filename, path or number).
 
-/// American Soundex code (first letter + up to three consonant digits, zero-
-/// padded to length 4) for the alphabetic part of `word`. "" for a wordless
-/// token.
+/// American Soundex code — first letter + EVERY consonant digit (no 4-char
+/// cut or zero padding: the whole skeleton must match) — for the alphabetic
+/// part of `word`. "" for a wordless token.
 fn soundex(word: &str) -> String {
     let letters: Vec<char> =
         word.chars().filter(|c| c.is_ascii_alphabetic()).map(|c| c.to_ascii_uppercase()).collect();
@@ -1040,16 +1040,13 @@ fn soundex(word: &str) -> String {
             _ => 0, // vowels + H, W, Y carry no digit
         }
     };
-    let mut out = String::with_capacity(4);
+    let mut out = String::with_capacity(letters.len());
     out.push(letters[0]);
     let mut last = code(letters[0]);
     for &c in &letters[1..] {
         let d = code(c);
         if d != 0 && d != last {
             out.push(d as char);
-            if out.len() == 4 {
-                break;
-            }
         }
         // H and W are transparent (don't reset the "same code merges" run);
         // a vowel does reset it, so a repeated code across a vowel is kept.
@@ -1057,65 +1054,65 @@ fn soundex(word: &str) -> String {
             last = d;
         }
     }
-    while out.len() < 4 {
-        out.push('0');
-    }
     out
 }
 
-/// Levenshtein edit distance — tiny, only ever called on 4-char Soundex codes.
-fn edit_distance(a: &str, b: &str) -> usize {
-    let a: Vec<char> = a.chars().collect();
-    let b: Vec<char> = b.chars().collect();
-    let mut prev: Vec<usize> = (0..=b.len()).collect();
-    for (i, &ca) in a.iter().enumerate() {
-        let mut cur = vec![i + 1];
-        for (j, &cb) in b.iter().enumerate() {
-            let cost = usize::from(ca != cb);
-            cur.push((prev[j + 1] + 1).min(cur[j] + 1).min(prev[j] + cost));
-        }
-        prev = cur;
-    }
-    prev[b.len()]
+/// A token that is code, not speech — a filename, path, identifier or number
+/// ("claude.md", "src/sotto", "sotto_v2"). Trailing sentence punctuation
+/// doesn't count, so "soto." is still a word.
+fn looks_like_code(tok: &str) -> bool {
+    tok.trim_end_matches(|c: char| c.is_ascii_punctuation() && !matches!(c, '/' | '\\' | '_'))
+        .contains(|c: char| matches!(c, '.' | '/' | '\\' | '_') || c.is_ascii_digit())
 }
 
 /// Pull tokens that *sound like* a trained target word back to that word.
-/// `targets` are single words (proper nouns/jargon) the user trained. Returns
-/// the corrected text plus the `(heard, corrected)` pairs that fired.
+/// `targets` are the words and phrases (proper nouns/jargon) the user
+/// trained. Multi-word spans go first (`apply_span_corrections`), then single
+/// tokens toward the single-word targets. Returns the corrected text plus the
+/// `(heard, corrected)` pairs that fired.
 fn apply_phonetic_corrections(text: &str, targets: &[String]) -> (String, Vec<(String, String)>) {
-    // Only targets of 4+ letters — short words are too collision-prone to
-    // phonetic-match safely, and exact dictionary entries cover those anyway.
+    let (text, mut fired) = apply_span_corrections(text, targets);
+    // Only single-word targets of 4+ letters — short words are too collision-
+    // prone to phonetic-match safely, and exact dictionary entries cover
+    // those anyway.
     let coded: Vec<(&str, String)> = targets
         .iter()
+        .filter(|t| t.split_whitespace().count() == 1)
         .filter(|t| t.chars().filter(|c| c.is_ascii_alphabetic()).count() >= 4)
         .map(|t| (t.as_str(), soundex(t)))
         .filter(|(_, c)| !c.is_empty())
         .collect();
     if coded.is_empty() {
-        return (text.to_string(), Vec::new());
+        return (text, fired);
     }
+    // Harper's curated dictionary (already loaded for Rules mode) knows which
+    // tokens are real English words.
+    let english = FstDictionary::curated();
 
-    let mut fired = Vec::new();
     let out = text
         .split_whitespace()
         .map(|tok| {
             let (lead, core, trail) = split_affixes(tok);
-            if core.len() < 4 {
+            // Plain letters only: skips code ("std::io"), contractions and
+            // possessives ("they're", "Claude's") and non-English words.
+            if core.len() < 4 || looks_like_code(tok) || !core.chars().all(|c| c.is_ascii_alphabetic()) {
                 return tok.to_string();
             }
             // Already the intended word (any casing) — never touch it.
             if coded.iter().any(|(t, _)| t.eq_ignore_ascii_case(core)) {
                 return tok.to_string();
             }
-            let tc = soundex(core);
-            if tc.is_empty() {
+            // A real English word is what the speaker said, not a mishearing
+            // — common ("said", "called") or not ("culled", "trie"). Only
+            // non-words ("clode") and names ("Soto") are fair game.
+            if english.get_word_metadata_str(core).is_some_and(|m| m.common || !m.is_proper_noun()) {
                 return tok.to_string();
             }
+            let tc = soundex(core);
             for (target, gc) in &coded {
-                // Same leading sound (Soundex keeps the real first letter) and
-                // within one edit on the code — tight enough to skip unrelated
-                // words, loose enough to bridge a dropped/added final sound.
-                if tc.chars().next() == gc.chars().next() && edit_distance(&tc, gc) <= 1 {
+                // The whole skeleton, exactly — including the real first
+                // letter Soundex keeps.
+                if tc == *gc {
                     fired.push((core.to_string(), (*target).to_string()));
                     return format!("{lead}{target}{trail}");
                 }
@@ -1125,6 +1122,154 @@ fn apply_phonetic_corrections(text: &str, targets: &[String]) -> (String, Vec<(S
         .collect::<Vec<_>>()
         .join(" ");
     (out, fired)
+}
+
+/// A span's code must be at least this long (onset letter + 5 consonant
+/// digits) to match at all. Shorter skeletons are ordinary phrases too:
+/// "Kai's Flow" keys K214, exactly like "keys fell".
+const SPAN_MIN_CODE: usize = 6;
+/// ...and this long before one slip (`one_slip`) is forgiven; shorter codes
+/// must match exactly.
+const SPAN_SLIP_CODE: usize = 7;
+
+/// Common function words. Short, frequent and weakly stressed: ASR drops,
+/// adds and swaps them freely, and their 0–2 digit codes would let a window
+/// slide a match across ordinary sentence glue. A span holding one never
+/// matches, unless the target itself contains that word. Compared with the
+/// apostrophe removed ("it's" -> "its").
+const FUNCTION_WORDS: &[&str] = &[
+    "a", "an", "the", "and", "or", "but", "nor", "so", "if", "as", "at", "by", "for", "from", "in", "into", "of",
+    "off", "on", "onto", "out", "over", "to", "up", "with", "is", "am", "are", "was", "were", "be", "been", "do",
+    "does", "did", "has", "have", "had", "i", "me", "my", "we", "us", "our", "you", "your", "he", "him", "his",
+    "she", "her", "it", "its", "they", "them", "their", "this", "that", "these", "those", "there", "here", "what",
+    "which", "who", "when", "where", "how", "all", "then", "than", "not", "no", "can", "will", "just", "im", "ive",
+    "dont", "cant", "thats", "lets",
+];
+
+/// Multi-word half of `apply_phonetic_corrections`: pull a RUN of words that
+/// sounds like a trained target back to it — "adding gravity" ->
+/// "Antigravity", "hugging phase" -> "Hugging Face". Every run of words is a
+/// candidate, so the guard is far stricter than a naive match: see
+/// `span_matches`, and the negative tests for the phrases each check stops.
+/// Unlike the single-token pass, a span of real English words CAN match —
+/// ASR hears an unknown name as real words — so the phonetic key itself
+/// carries the precision.
+fn apply_span_corrections(text: &str, targets: &[String]) -> (String, Vec<(String, String)>) {
+    let keyed: Vec<(&str, Vec<&str>, String, usize)> = targets
+        .iter()
+        .filter_map(|t| {
+            let words: Vec<&str> = t.split_whitespace().collect();
+            let (code, beats) = span_key(&words);
+            (code.len() >= SPAN_MIN_CODE).then_some((t.as_str(), words, code, beats))
+        })
+        .collect();
+    let mut fired = Vec::new();
+    if keyed.is_empty() {
+        return (text.to_string(), fired);
+    }
+    // Each token with its byte offset, so the text between tokens (line
+    // breaks included) is copied through untouched.
+    let toks: Vec<(usize, &str)> =
+        text.split_whitespace().map(|t| (t.as_ptr() as usize - text.as_ptr() as usize, t)).collect();
+    let mut out = String::with_capacity(text.len());
+    let mut copied = 0;
+    let mut i = 0;
+    while i < toks.len() {
+        // Window = the target's word count ±1, longest first: ASR moves word
+        // boundaries freely ("adding gravity" for "Antigravity"). 1 word -> a
+        // 1-word target is the single-token pass's job.
+        let hit = keyed.iter().find_map(|(target, words, code, beats)| {
+            let n = words.len();
+            [n + 1, n, n - 1]
+                .into_iter()
+                .filter(|&k| k >= 1 && !(k == 1 && n == 1) && i + k <= toks.len())
+                .find(|&k| span_matches(&toks[i..i + k], words, code, *beats))
+                .map(|k| (k, *target))
+        });
+        let Some((k, target)) = hit else {
+            i += 1;
+            continue;
+        };
+        let (start, first) = toks[i];
+        let (end, last) = toks[i + k - 1];
+        let (lead, _, _) = split_affixes(first);
+        let (_, _, trail) = split_affixes(last);
+        let heard = &text[start + lead.len()..end + last.len() - trail.len()];
+        fired.push((heard.to_string(), target.to_string()));
+        out.push_str(&text[copied..start]);
+        out.push_str(&format!("{lead}{target}{trail}"));
+        copied = end + last.len();
+        i += k;
+    }
+    out.push_str(&text[copied..]);
+    (out, fired)
+}
+
+/// The guard for one candidate span against one target.
+fn span_matches(span: &[(usize, &str)], words: &[&str], code: &str, beats: usize) -> bool {
+    // Same onset letter first: it's cheap, and nearly every window fails it.
+    if split_affixes(span[0].1).1.bytes().next().map(|b| b.to_ascii_uppercase()) != code.bytes().next() {
+        return false;
+    }
+    let mut cores = Vec::with_capacity(span.len());
+    for (j, (_, tok)) in span.iter().enumerate() {
+        let (lead, core, trail) = split_affixes(tok);
+        // Punctuation INSIDE the run is a pause the speaker made — never
+        // bridge it ("adding, gravity").
+        if (j > 0 && !lead.is_empty()) || (j + 1 < span.len() && !trail.is_empty()) {
+            return false;
+        }
+        // Plain English-letter words only, never code: a number or an Arabic
+        // word adds nothing to the code, so it would be swallowed unseen.
+        if looks_like_code(tok)
+            || core.is_empty()
+            || !core.chars().all(|c| c.is_ascii_alphabetic() || matches!(c, '\'' | '’' | '-'))
+        {
+            return false;
+        }
+        let plain = core.chars().filter(char::is_ascii_alphabetic).collect::<String>().to_ascii_lowercase();
+        if FUNCTION_WORDS.contains(&plain.as_str()) && !words.iter().any(|w| w.eq_ignore_ascii_case(core)) {
+            return false;
+        }
+        cores.push(core);
+    }
+    // Already the intended words (any casing) — never touch them.
+    if cores.len() == words.len() && cores.iter().zip(words).all(|(c, w)| c.eq_ignore_ascii_case(w)) {
+        return false;
+    }
+    let (sc, sb) = span_key(&cores);
+    // Same beat count (Soundex is vowel-blind: "Andy grabbed" IS A532613,
+    // Antigravity's code, but 4 beats to its 5), then an exact skeleton — or
+    // one slip on a long one. The onset already matched above, so a slip is
+    // never in the first letter.
+    sb == beats && (sc == code || (code.len() >= SPAN_SLIP_CODE && one_slip(&sc, code)))
+}
+
+/// Phonetic key of a run of words: the Soundex skeleton of the words run
+/// together (word boundaries aren't audible, so 2 heard words can key like 1
+/// target word) + its beat count (vowel groups per word, a syllable proxy).
+fn span_key(words: &[&str]) -> (String, usize) {
+    let beats = words
+        .iter()
+        .map(|w| w.to_ascii_lowercase().split(|c: char| !"aeiouy".contains(c)).filter(|s| !s.is_empty()).count())
+        .sum();
+    (soundex(&words.concat()), beats)
+}
+
+/// Same length and at most one slip: one sound substituted, or two
+/// neighbouring sounds swapped ("adding" D-N vs "anti" N-T). No dropped or
+/// extra sound — that's how an unrelated phrase gets close.
+fn one_slip(a: &str, b: &str) -> bool {
+    let (a, b) = (a.as_bytes(), b.as_bytes());
+    if a.len() != b.len() {
+        return false;
+    }
+    let diff: Vec<usize> = (0..a.len()).filter(|&i| a[i] != b[i]).collect();
+    match diff[..] {
+        [] | [_] => true,
+        [i, j] => j == i + 1 && a[i] == b[j] && a[j] == b[i],
+        _ => false,
+    }
 }
 
 /// Apply replacements. Each entry is `(phrases, replacement, kind)` where
@@ -1597,11 +1742,13 @@ mod tests {
 
     #[test]
     fn soundex_codes_known_pairs() {
-        assert_eq!(soundex("Claude"), "C430");
-        assert_eq!(soundex("clod"), "C430"); // same code -> exact match
-        assert_eq!(soundex("clawed"), "C430");
-        assert_eq!(soundex("claw"), "C400"); // one edit from C430
-        assert_eq!(soundex("Sotto"), "S300");
+        assert_eq!(soundex("Claude"), "C43");
+        assert_eq!(soundex("clod"), "C43"); // same code -> exact match
+        assert_eq!(soundex("clawed"), "C43");
+        assert_eq!(soundex("claw"), "C4"); // a different skeleton: no match
+        assert_eq!(soundex("Claude's"), "C432"); // nor is the possessive
+        assert_eq!(soundex("Sotto"), "S3");
+        assert_eq!(soundex("Antigravity"), "A532613"); // no 4-char cut
         assert_eq!(soundex(""), "");
         assert_eq!(soundex("!!"), "");
     }
@@ -1609,14 +1756,32 @@ mod tests {
     #[test]
     fn phonetic_pulls_mishearings_to_trained_words() {
         let targets = vec!["Claude".to_string(), "Sotto".to_string()];
-        let (out, fired) = apply_phonetic_corrections("ask clod to help", &targets);
+        let (out, fired) = apply_phonetic_corrections("ask clode to help", &targets);
         assert_eq!(out, "ask Claude to help");
-        assert_eq!(fired, vec![("clod".to_string(), "Claude".to_string())]);
+        assert_eq!(fired, vec![("clode".to_string(), "Claude".to_string())]);
 
-        // One-edit bridge, and punctuation preserved.
-        assert_eq!(apply_phonetic_corrections("thanks claw,", &targets).0, "thanks Claude,");
-        // "soto" -> Sotto.
+        // Punctuation preserved.
+        assert_eq!(apply_phonetic_corrections("thanks clode,", &targets).0, "thanks Claude,");
+        // "soto" -> Sotto, even at the end of a sentence.
         assert_eq!(apply_phonetic_corrections("open soto now", &targets).0, "open Sotto now");
+        assert_eq!(apply_phonetic_corrections("I use soto.", &targets).0, "I use Sotto.");
+    }
+
+    #[test]
+    fn phonetic_never_replaces_common_words_or_code() {
+        // #63's repro: each of these keyed within one edit of a trained word.
+        let targets = vec!["Claude".to_string(), "Sotto".to_string()];
+        for s in [
+            "I'm not sure but I said we should study it soon, sorry",
+            "called class clear claw clawed cloud could",
+            "a clod of earth was culled", // real words, just not common ones
+            "Claude's and Sotto's", // the target's own possessive stays
+            "open claude.md and src/sotto then sotto_v2 or claude3",
+        ] {
+            let (out, fired) = apply_phonetic_corrections(s, &targets);
+            assert_eq!(out, s);
+            assert!(fired.is_empty(), "{s}: {fired:?}");
+        }
     }
 
     #[test]
@@ -1632,6 +1797,67 @@ mod tests {
         assert_eq!(apply_phonetic_corrections("go to lab", &targets).0, "go to lab");
         // No targets -> no-op.
         assert_eq!(apply_phonetic_corrections("anything at all", &[]).0, "anything at all");
+    }
+
+    #[test]
+    fn split_affixes_keeps_a_multibyte_last_char_whole() {
+        // Used to slice inside the last char and panic — on any Arabic word,
+        // in both the number and the phonetic pass.
+        assert_eq!(split_affixes("café,"), ("", "café", ","));
+        assert_eq!(split_affixes("«يعني»"), ("«", "يعني", "»"));
+        let targets = vec!["Sotto".to_string()];
+        assert_eq!(apply_phonetic_corrections("قال soto يعني", &targets).0, "قال Sotto يعني");
+    }
+
+    fn span_targets() -> Vec<String> {
+        ["Antigravity", "Kai's Flow", "Hugging Face", "Jupyter Notebook"].map(String::from).to_vec()
+    }
+
+    #[test]
+    fn phonetic_pulls_multiword_mishearings_to_trained_phrases() {
+        let t = span_targets();
+        // 2 heard words -> 1 target word, bridged by one swapped sound (D-N/N-T).
+        let (out, fired) = apply_phonetic_corrections("open adding gravity and run it", &t);
+        assert_eq!(out, "open Antigravity and run it");
+        assert_eq!(fired, vec![("adding gravity".to_string(), "Antigravity".to_string())]);
+        // A split compound, punctuation kept.
+        assert_eq!(apply_phonetic_corrections("anti gravity, then ship", &t).0, "Antigravity, then ship");
+        // 2 -> 2.
+        assert_eq!(apply_phonetic_corrections("load the Jupiter notebook", &t).0, "load the Jupyter Notebook");
+        assert_eq!(apply_phonetic_corrections("push it to hugging phase.", &t).0, "push it to Hugging Face.");
+        // 1 -> 2.
+        assert_eq!(apply_phonetic_corrections("the huggingface hub", &t).0, "the Hugging Face hub");
+        // Line breaks around a span survive.
+        let face = vec!["Hugging Face".to_string()];
+        assert_eq!(apply_phonetic_corrections("hugging phase\n\nnext", &face).0, "Hugging Face\n\nnext");
+    }
+
+    #[test]
+    fn phonetic_multiword_leaves_ordinary_english_alone() {
+        let t = span_targets();
+        for s in [
+            "the keys fell off the desk",           // K214 = Kai's Flow's whole code: too short to match
+            "our cash flow is fine",                // C214, same
+            "a house fly landed on the rim",        // H214, same
+            "his flaw is pride",                    // function word
+            "we are adding a gravity term",         // function word inside the window
+            "we kept adding, gravity did the rest", // a pause inside the window
+            "adding great value",                   // one sound short of Antigravity
+            "we were adding gravel to the path",    // two slips, and 4 beats to 5
+            "Andy grabbed the rope",                // A532613 = Antigravity exactly, but 4 beats to 5
+            "the kids were hugging fish",           // H25212 = Hugging Face exactly, but 3 beats to 4
+            "hugging يعني phase",                   // an Arabic word is never swallowed
+            "open hugging.face or hugging/phase",   // code, not speech
+            "Hugging Face and hugging face and Jupyter Notebook", // already right, any casing
+            // The issue's own example, deliberately NOT corrected: H214 is a
+            // changed onset on a 3-digit skeleton, the same shape as "house
+            // fly" and "cash flow". An exact dictionary entry covers it.
+            "high's flaw",
+        ] {
+            let (out, fired) = apply_phonetic_corrections(s, &t);
+            assert_eq!(out, s);
+            assert!(fired.is_empty(), "{s}: {fired:?}");
+        }
     }
 
     #[test]
