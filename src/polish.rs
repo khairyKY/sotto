@@ -199,8 +199,13 @@ impl Polisher {
             PolishMode::Ai => {
                 let rules = tier0(raw);
                 match self.polish_ai(raw, &rules, tone) {
+                    // No Harper on the model's output: the model already makes
+                    // the mechanical fixes Harper targets, with the whole
+                    // sentence in view, and on invented model outputs Harper's
+                    // only change was a wrong one ("Hi Sam," -> "Hi SAM,").
                     Ok(text) => (text, "ai", ""),
-                    Err(reason) => (rules, "rules", reason),
+                    // Every fallback gets exactly what Rules mode gives (#55).
+                    Err(reason) => (self.apply_harper(&rules), "rules", reason),
                 }
             }
         };
@@ -234,9 +239,9 @@ impl Polisher {
     /// Called once at worker startup, where it hides behind the ASR model load
     /// we already pay for and the user feels nothing. Doing it lazily instead
     /// costs that 640 ms at the worst possible moment: on `Start` it delays the
-    /// listening pill past the hotkey press, and in the AI tier — which still
-    /// routes short clips through these rules — it lands *after* the user has
-    /// already spoken.
+    /// listening pill past the hotkey press, and in the AI tier — whose rules
+    /// fallback (short clips, tidy ones, LLM failures) runs these too — it
+    /// lands *after* the user has already spoken.
     ///
     /// Warmed regardless of the current mode: `polish.mode` is live-switchable
     /// from the tray, so "Off at launch" doesn't mean off at dictation time.
@@ -2326,6 +2331,21 @@ mod tests {
         controls.ai_min_words.store(50, Ordering::Relaxed);
         let out = p.polish("um hello there");
         assert_eq!((out.tier, out.fallback), ("rules", "short"));
+    }
+
+    #[test]
+    fn ai_mode_fallback_gets_the_same_harper_fixes_as_rules() {
+        let cfg = crate::config::Config::default();
+        let controls = crate::Controls::from_config(&cfg);
+        let p = Polisher::new(controls.clone(), cfg.llm.clone());
+        let clip = "we shipped it , i think";
+        controls.polish_mode.store(PolishMode::Rules.as_u8(), Ordering::Relaxed);
+        let rules = p.polish(clip).text;
+        assert_eq!(rules, "We shipped it, I think"); // Harper's fixes, not just tier0's
+        controls.polish_mode.store(PolishMode::Ai.as_u8(), Ordering::Relaxed);
+        controls.ai_min_words.store(50, Ordering::Relaxed); // short: never reaches the sidecar
+        let ai = p.polish(clip);
+        assert_eq!((ai.text.as_str(), ai.fallback), (rules.as_str(), "short"));
     }
 
     #[test]
