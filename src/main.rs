@@ -2141,6 +2141,7 @@ fn process_take(
         emit_state(app, "polishing");
     }
     let result = polisher.polish_for(&raw, &app_name);
+    take.tier = result.tier.into(); // the tier that ran, not the configured one (#67)
     if cancelled.swap(false, Ordering::SeqCst) {
         emit_state(app, "cancelled");
         record_outcome(&take, stats_enabled, "cancelled");
@@ -2208,6 +2209,7 @@ fn process_take(
                     &take.tier,
                     take.audio_ms,
                     max_mb,
+                    result.fallback,
                 );
             }
             if stats_enabled.load(Ordering::Relaxed) {

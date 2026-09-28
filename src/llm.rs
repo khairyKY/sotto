@@ -94,12 +94,22 @@ fn system_prompt(tone: &str, vocabulary_clause: &str) -> String {
 /// same as it does with only the first pair — the model already uses
 /// sentence context to judge "code" case by case, this just shows it what
 /// the OTHER case looks like.
+///
+/// The model has also answered a real take WITH this example's words
+/// (#65), so `polish::rewrite_guard` treats any of them turning up from
+/// nowhere as a leak and falls back to rules — hence `pub`.
+pub const VOCAB_EXAMPLE: [(&str, &str); 2] = [
+    ("clawed is really helpful today", "Claude is really helpful today."),
+    ("can you ask code to fix this for me", "Can you ask Claude to fix this for me?"),
+];
+
 fn vocab_correction_example() -> [Message; 4] {
+    let [(u1, a1), (u2, a2)] = VOCAB_EXAMPLE;
     [
-        Message { role: "user", content: "clawed is really helpful today".to_string() },
-        Message { role: "assistant", content: "Claude is really helpful today.".to_string() },
-        Message { role: "user", content: "can you ask code to fix this for me".to_string() },
-        Message { role: "assistant", content: "Can you ask Claude to fix this for me?".to_string() },
+        Message { role: "user", content: u1.to_string() },
+        Message { role: "assistant", content: a1.to_string() },
+        Message { role: "user", content: u2.to_string() },
+        Message { role: "assistant", content: a2.to_string() },
     ]
 }
 
