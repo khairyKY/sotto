@@ -415,7 +415,7 @@ function renderDictPage(entries) {
 
     // `_draft` marks a row prefilled from an example chip: it opens in edit
     // state even though it has content, because nothing is saved until the
-    // user confirms. Stripped by saveDict/SnipPage, so it never reaches Rust.
+    // user confirms. buildCombinedEntries skips it, so it never reaches Rust.
     let isEditing = (e.spoken === "" || e._draft === true);
     let draftAliases = (e.aliases || []).slice(); // working copy; only committed to e on Save
 
@@ -537,10 +537,13 @@ function renderDictPage(entries) {
 // 5 fields: dropping any of them here silently wipes it server-side. `kind`
 // falls back by which array the entry is sitting in, purely as a last-resort
 // safety net — every entry should already carry its own kind from creation.
+// Unconfirmed example-chip drafts and blank new rows stay client-side: a save
+// from the other page (or a toggle on this one) must not commit them (#57).
 function buildCombinedEntries() {
+  const saved = (e) => !e._draft && e.spoken.trim() !== "";
   return [
-    ...dictEntries.map(e => ({ spoken: e.spoken, replacement: e.replacement, aliases: e.aliases || [], enabled: e.enabled !== false, kind: e.kind || "word" })),
-    ...snipEntries.map(e => ({ spoken: e.spoken, replacement: e.replacement, aliases: e.aliases || [], enabled: e.enabled !== false, kind: e.kind || "snippet" })),
+    ...dictEntries.filter(saved).map(e => ({ spoken: e.spoken, replacement: e.replacement, aliases: e.aliases || [], enabled: e.enabled !== false, kind: e.kind || "word" })),
+    ...snipEntries.filter(saved).map(e => ({ spoken: e.spoken, replacement: e.replacement, aliases: e.aliases || [], enabled: e.enabled !== false, kind: e.kind || "snippet" })),
   ];
 }
 
@@ -595,7 +598,7 @@ function renderSnipPage(entries) {
 
     // `_draft` marks a row prefilled from an example chip: it opens in edit
     // state even though it has content, because nothing is saved until the
-    // user confirms. Stripped by saveDict/SnipPage, so it never reaches Rust.
+    // user confirms. buildCombinedEntries skips it, so it never reaches Rust.
     let isEditing = (e.spoken === "" || e._draft === true);
     let draftAliases = (e.aliases || []).slice(); // working copy; only committed to e on Save
 
