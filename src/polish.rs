@@ -19,7 +19,7 @@ use crate::config::{EntryKind, LlmConfig, PolishMode, VocabEntry};
 use crate::llm::Llm;
 use crate::Controls;
 use harper_core::linting::{Lint, LintGroup, LintKind, Linter};
-use harper_core::spell::FstDictionary;
+use harper_core::spell::{Dictionary, FstDictionary};
 use harper_core::{Dialect, Document, remove_overlaps};
 use std::cell::RefCell;
 use std::sync::atomic::Ordering;
@@ -633,7 +633,9 @@ fn parse_number_run(words: &[&str]) -> Option<NumberRun> {
 /// to reattach.
 fn split_affixes(tok: &str) -> (&str, &str, &str) {
     let start = tok.find(|c: char| c.is_alphanumeric()).unwrap_or(tok.len());
-    let end = tok.rfind(|c: char| c.is_alphanumeric()).map_or(start, |i| i + 1);
+    // End after the last alphanumeric char's full width — `+ 1` would slice
+    // inside a multi-byte one ("café", any Arabic word) and panic.
+    let end = tok.char_indices().rev().find(|(_, c)| c.is_alphanumeric()).map_or(start, |(i, c)| i + c.len_utf8());
     (&tok[..start], &tok[start..end], &tok[end..])
 }
 
@@ -1013,16 +1015,20 @@ fn capitalize_first(s: &str) -> String {
 // ── phonetic correction ──────────────────────────────────────────────────
 // Exact dictionary/vocabulary entries fix mishearings the user has already
 // seen and listed. This catches the *unseen* ones: a token that sounds like a
-// trained proper noun but was misheard a new way ("clode"/"cloud"/"claud" for
-// "Claude"). Classic American Soundex keys both, then a 1-edit tolerance on
-// the 4-char code bridges near-misses like "claw" (C400) -> "Claude" (C430).
-// Deliberately fires ONLY toward words the user explicitly trained, so being
-// aggressive there is correct, not reckless — and it runs before the LLM, so
+// trained proper noun but was misheard a new way ("clode"/"claud" for
+// "Claude"). Classic American Soundex keys both. It runs before the LLM, so
 // the model still sees the intended word.
+//
+// Precision over recall (#63): the first version matched any word with the
+// same first letter and a 4-char code within one edit, and on real takes it
+// fired wrongly ~10x more often than rightly ("said"/"sure"/"soon" ->
+// "Sotto", "called"/"class" -> "Claude"). Now a token must key EXACTLY like
+// the target over its whole skeleton, must not be a real English word (names
+// aside), and must be plain letters, not code (a filename, path or number).
 
-/// American Soundex code (first letter + up to three consonant digits, zero-
-/// padded to length 4) for the alphabetic part of `word`. "" for a wordless
-/// token.
+/// American Soundex code — first letter + EVERY consonant digit (no 4-char
+/// cut or zero padding: the whole skeleton must match) — for the alphabetic
+/// part of `word`. "" for a wordless token.
 fn soundex(word: &str) -> String {
     let letters: Vec<char> =
         word.chars().filter(|c| c.is_ascii_alphabetic()).map(|c| c.to_ascii_uppercase()).collect();
@@ -1040,16 +1046,13 @@ fn soundex(word: &str) -> String {
             _ => 0, // vowels + H, W, Y carry no digit
         }
     };
-    let mut out = String::with_capacity(4);
+    let mut out = String::with_capacity(letters.len());
     out.push(letters[0]);
     let mut last = code(letters[0]);
     for &c in &letters[1..] {
         let d = code(c);
         if d != 0 && d != last {
             out.push(d as char);
-            if out.len() == 4 {
-                break;
-            }
         }
         // H and W are transparent (don't reset the "same code merges" run);
         // a vowel does reset it, so a repeated code across a vowel is kept.
@@ -1057,26 +1060,15 @@ fn soundex(word: &str) -> String {
             last = d;
         }
     }
-    while out.len() < 4 {
-        out.push('0');
-    }
     out
 }
 
-/// Levenshtein edit distance — tiny, only ever called on 4-char Soundex codes.
-fn edit_distance(a: &str, b: &str) -> usize {
-    let a: Vec<char> = a.chars().collect();
-    let b: Vec<char> = b.chars().collect();
-    let mut prev: Vec<usize> = (0..=b.len()).collect();
-    for (i, &ca) in a.iter().enumerate() {
-        let mut cur = vec![i + 1];
-        for (j, &cb) in b.iter().enumerate() {
-            let cost = usize::from(ca != cb);
-            cur.push((prev[j + 1] + 1).min(cur[j] + 1).min(prev[j] + cost));
-        }
-        prev = cur;
-    }
-    prev[b.len()]
+/// A token that is code, not speech — a filename, path, identifier or number
+/// ("claude.md", "src/sotto", "sotto_v2"). Trailing sentence punctuation
+/// doesn't count, so "soto." is still a word.
+fn looks_like_code(tok: &str) -> bool {
+    tok.trim_end_matches(|c: char| c.is_ascii_punctuation() && !matches!(c, '/' | '\\' | '_'))
+        .contains(|c: char| matches!(c, '.' | '/' | '\\' | '_') || c.is_ascii_digit())
 }
 
 /// Pull tokens that *sound like* a trained target word back to that word.
@@ -1094,28 +1086,35 @@ fn apply_phonetic_corrections(text: &str, targets: &[String]) -> (String, Vec<(S
     if coded.is_empty() {
         return (text.to_string(), Vec::new());
     }
+    // Harper's curated dictionary (already loaded for Rules mode) knows which
+    // tokens are real English words.
+    let english = FstDictionary::curated();
 
     let mut fired = Vec::new();
     let out = text
         .split_whitespace()
         .map(|tok| {
             let (lead, core, trail) = split_affixes(tok);
-            if core.len() < 4 {
+            // Plain letters only: skips code ("std::io"), contractions and
+            // possessives ("they're", "Claude's") and non-English words.
+            if core.len() < 4 || looks_like_code(tok) || !core.chars().all(|c| c.is_ascii_alphabetic()) {
                 return tok.to_string();
             }
             // Already the intended word (any casing) — never touch it.
             if coded.iter().any(|(t, _)| t.eq_ignore_ascii_case(core)) {
                 return tok.to_string();
             }
-            let tc = soundex(core);
-            if tc.is_empty() {
+            // A real English word is what the speaker said, not a mishearing
+            // — common ("said", "called") or not ("culled", "trie"). Only
+            // non-words ("clode") and names ("Soto") are fair game.
+            if english.get_word_metadata_str(core).is_some_and(|m| m.common || !m.is_proper_noun()) {
                 return tok.to_string();
             }
+            let tc = soundex(core);
             for (target, gc) in &coded {
-                // Same leading sound (Soundex keeps the real first letter) and
-                // within one edit on the code — tight enough to skip unrelated
-                // words, loose enough to bridge a dropped/added final sound.
-                if tc.chars().next() == gc.chars().next() && edit_distance(&tc, gc) <= 1 {
+                // The whole skeleton, exactly — including the real first
+                // letter Soundex keeps.
+                if tc == *gc {
                     fired.push((core.to_string(), (*target).to_string()));
                     return format!("{lead}{target}{trail}");
                 }
@@ -1597,11 +1596,13 @@ mod tests {
 
     #[test]
     fn soundex_codes_known_pairs() {
-        assert_eq!(soundex("Claude"), "C430");
-        assert_eq!(soundex("clod"), "C430"); // same code -> exact match
-        assert_eq!(soundex("clawed"), "C430");
-        assert_eq!(soundex("claw"), "C400"); // one edit from C430
-        assert_eq!(soundex("Sotto"), "S300");
+        assert_eq!(soundex("Claude"), "C43");
+        assert_eq!(soundex("clod"), "C43"); // same code -> exact match
+        assert_eq!(soundex("clawed"), "C43");
+        assert_eq!(soundex("claw"), "C4"); // a different skeleton: no match
+        assert_eq!(soundex("Claude's"), "C432"); // nor is the possessive
+        assert_eq!(soundex("Sotto"), "S3");
+        assert_eq!(soundex("Antigravity"), "A532613"); // no 4-char cut
         assert_eq!(soundex(""), "");
         assert_eq!(soundex("!!"), "");
     }
@@ -1609,14 +1610,32 @@ mod tests {
     #[test]
     fn phonetic_pulls_mishearings_to_trained_words() {
         let targets = vec!["Claude".to_string(), "Sotto".to_string()];
-        let (out, fired) = apply_phonetic_corrections("ask clod to help", &targets);
+        let (out, fired) = apply_phonetic_corrections("ask clode to help", &targets);
         assert_eq!(out, "ask Claude to help");
-        assert_eq!(fired, vec![("clod".to_string(), "Claude".to_string())]);
+        assert_eq!(fired, vec![("clode".to_string(), "Claude".to_string())]);
 
-        // One-edit bridge, and punctuation preserved.
-        assert_eq!(apply_phonetic_corrections("thanks claw,", &targets).0, "thanks Claude,");
-        // "soto" -> Sotto.
+        // Punctuation preserved.
+        assert_eq!(apply_phonetic_corrections("thanks clode,", &targets).0, "thanks Claude,");
+        // "soto" -> Sotto, even at the end of a sentence.
         assert_eq!(apply_phonetic_corrections("open soto now", &targets).0, "open Sotto now");
+        assert_eq!(apply_phonetic_corrections("I use soto.", &targets).0, "I use Sotto.");
+    }
+
+    #[test]
+    fn phonetic_never_replaces_common_words_or_code() {
+        // #63's repro: each of these keyed within one edit of a trained word.
+        let targets = vec!["Claude".to_string(), "Sotto".to_string()];
+        for s in [
+            "I'm not sure but I said we should study it soon, sorry",
+            "called class clear claw clawed cloud could",
+            "a clod of earth was culled", // real words, just not common ones
+            "Claude's and Sotto's", // the target's own possessive stays
+            "open claude.md and src/sotto then sotto_v2 or claude3",
+        ] {
+            let (out, fired) = apply_phonetic_corrections(s, &targets);
+            assert_eq!(out, s);
+            assert!(fired.is_empty(), "{s}: {fired:?}");
+        }
     }
 
     #[test]
@@ -1632,6 +1651,16 @@ mod tests {
         assert_eq!(apply_phonetic_corrections("go to lab", &targets).0, "go to lab");
         // No targets -> no-op.
         assert_eq!(apply_phonetic_corrections("anything at all", &[]).0, "anything at all");
+    }
+
+    #[test]
+    fn split_affixes_keeps_a_multibyte_last_char_whole() {
+        // Used to slice inside the last char and panic — on any Arabic word,
+        // in both the number and the phonetic pass.
+        assert_eq!(split_affixes("café,"), ("", "café", ","));
+        assert_eq!(split_affixes("«يعني»"), ("«", "يعني", "»"));
+        let targets = vec!["Sotto".to_string()];
+        assert_eq!(apply_phonetic_corrections("قال soto يعني", &targets).0, "قال Sotto يعني");
     }
 
     #[test]
