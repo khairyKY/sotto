@@ -182,6 +182,10 @@ async function loadHome() {
 }
 function updateStatusBar(s) {
   const parts = [];
+  // Paused (tray) stops the hotkey and pill from starting takes, same chip
+  // as "polish off" for the same reason: nothing else here would show it (#60).
+  if (s?.paused) parts.push('<span class="status-warn">paused</span>');
+  document.querySelector("#status-bar .status-dot").style.background = s?.paused ? "var(--mm-muted-2)" : "";
   if (s?.models?.length) {
     const sel = s.models.find(m => m.selected);
     if (sel) parts.push(escapeHtml(sel.name));
@@ -1058,7 +1062,12 @@ if ($("pron-listen-btn")) {
     if (!word) return;
     // Armed before Start is sent: Start consumes the arm, so it must land first.
     await invoke("set_pronunciation_target", { word });
-    invoke("start_dictation");
+    if (await invoke("start_dictation") === false) {
+      // Paused from the tray: no take will come, so don't sit on "Listening".
+      invoke("set_pronunciation_target", { word: null });
+      $("pron-status").textContent = "Dictation is paused. Resume it from the tray menu.";
+      return;
+    }
     pronSetState("listening", word);
   };
 }
@@ -1793,6 +1802,7 @@ async function boot() {
         pronSetState("idle");
       }
     });
+    T.event.listen("paused-changed", () => loadHome());
     T.event.listen("navigate", (e) => {
       const page = e.payload;
       if (page && document.querySelector(`.nav-item[data-page="${page}"]`)) navigate(page);

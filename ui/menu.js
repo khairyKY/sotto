@@ -17,6 +17,8 @@ function setPauseUI(paused) {
   document.getElementById("pause-item").classList.toggle("checked", paused);
   document.getElementById("pause-label").textContent = paused ? "Resume dictation" : "Pause dictation";
   document.getElementById("status-text").textContent = paused ? "Paused" : "Ready";
+  // Green reads as "live"; muted while paused, same as Home's status dot.
+  document.querySelector(".status-dot").style.background = paused ? "var(--mm-muted-2)" : "";
 }
 
 // Pull live state (theme, paused, retry availability). The menu window
