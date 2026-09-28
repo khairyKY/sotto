@@ -54,8 +54,20 @@ const CHUNK_MIN_SAMPLES: usize = 16_000 * 10; // don't cut before 10s of audio
 const CHUNK_MAX_SAMPLES: usize = 16_000 * 24; // cut by 24s, pause or not
 const SILENCE_WIN: usize = 16_000 * 300 / 1000; // pause detector window, 300ms
 const SILENCE_STEP: usize = 16_000 * 50 / 1000; // scan stride, 50ms
-/// RMS below this counts as a pause rather than speech.
+/// RMS below this counts as a pause rather than speech; a 30 ms frame above
+/// it counts as voiced (see `has_speech`).
 const SILENCE_RMS: f32 = 0.015;
+const SPEECH_FRAME: usize = 16_000 * 30 / 1000; // speech detector frame, 30ms
+/// Voiced frames a stretch needs to hold speech: 150 ms, shorter than a word.
+const SPEECH_MIN_FRAMES: usize = 5;
+/// Each chunk after the first also re-hears this much audio before its cut,
+/// so a word the cut clipped is heard whole on one side (see `seam_start`).
+const CHUNK_OVERLAP: usize = 16_000; // 1s
+/// How many trailing words of the text so far `join_text` searches for the
+/// words a chunk's overlap repeats, and how many edge words either side of
+/// that repeat it may drop as the halves of a clipped word.
+const SEAM_WORDS: usize = 8;
+const SEAM_SLACK: usize = 2;
 /// How often the audio thread wakes to collect audio while recording.
 const CHUNK_POLL: Duration = Duration::from_millis(250);
 
@@ -1523,20 +1535,15 @@ fn spawn_pipeline(
                     // An empty chunk is a silent one — register the take as
                     // chunked so Finish only transcribes the tail, but never
                     // hand the model room tone to put words to.
-                    Work::Chunk { id, samples } if samples.is_empty() => {
+                    Work::Chunk { id, samples, .. } if samples.is_empty() => {
                         partials.entry(id).or_insert_with(|| Partial::Text(String::new()));
                     }
-                    Work::Chunk { id, samples } => match asr.transcribe(&samples) {
+                    Work::Chunk { id, samples, seam } => match asr.transcribe(&samples) {
                         Ok(text) => {
                             if let Partial::Text(acc) =
                                 partials.entry(id).or_insert_with(|| Partial::Text(String::new()))
                             {
-                                if !text.is_empty() {
-                                    if !acc.is_empty() {
-                                        acc.push(' ');
-                                    }
-                                    acc.push_str(&text);
-                                }
+                                *acc = join_text(acc, &text, seam);
                             }
                         }
                         // One failed chunk poisons the whole take: its partial
@@ -1667,11 +1674,9 @@ fn spawn_pipeline(
                 }
                 all.extend(fresh);
                 if chunking {
-                    if let Some(cut) = chunk_cut(&all[sent..]) {
-                        let end = sent + cut;
-                        let chunk = &all[sent..end];
-                        // A chunk that's silence end to end is sent *empty*:
-                        // fed room tone the model invents a phrase and it gets
+                    if let Some((from, end, speech)) = next_chunk(&all, sent) {
+                        // A chunk with no speech in it is sent *empty*: fed
+                        // room tone the model invents a phrase and it gets
                         // injected as if it were speech (one-shot could do that
                         // once per take; chunking would do it once per chunk).
                         //
@@ -1679,15 +1684,15 @@ fn spawn_pipeline(
                         // be recorded as chunked, or Finish sees no partial,
                         // assumes chunking never happened, and re-transcribes
                         // the whole take from zero.
-                        let silent = rms(chunk) < SILENCE_RMS;
                         let _ = work_tx.send(Work::Chunk {
                             id: take_id,
-                            samples: if silent { Vec::new() } else { chunk.to_vec() },
+                            samples: if speech { all[from..end].to_vec() } else { Vec::new() },
+                            seam: from < sent,
                         });
                         tracing::info!(
                             id = take_id,
-                            secs = cut as f64 / 16_000.0,
-                            silent,
+                            secs = (end - sent) as f64 / 16_000.0,
+                            silent = !speech,
                             "chunk sent"
                         );
                         sent = end;
@@ -1826,7 +1831,16 @@ fn spawn_pipeline(
                             continue;
                         }
                     }
-                    if all.len() < MIN_CLIP_SAMPLES {
+                    // Too short to be anything but an accidental tap, or an
+                    // unchunked take with no speech in it: fed room tone the
+                    // model invents a phrase, and it would be typed (#51).
+                    // A chunked take is gated chunk by chunk instead.
+                    if all.len() < MIN_CLIP_SAMPLES || (sent == 0 && !has_speech(&all)) {
+                        tracing::info!(
+                            id = take_id,
+                            secs = all.len() as f64 / 16_000.0,
+                            "take dropped: too short or no speech"
+                        );
                         emit_state(&app, "idle");
                         all.clear();
                         sent = 0;
@@ -1869,7 +1883,9 @@ fn spawn_pipeline(
 /// chunk to the take it came from, so a chunk that lands after the next take
 /// has already started recording still joins the right transcript.
 enum Work {
-    Chunk { id: u64, samples: Vec<f32> },
+    /// `seam`: the audio starts before the previous cut (see `seam_start`),
+    /// so its text repeats the end of the last chunk's for `join_text` to drop.
+    Chunk { id: u64, samples: Vec<f32>, seam: bool },
     Finish { id: u64, take: Take },
     Cancelled { id: u64, take: Take },
     Retry,
@@ -1906,6 +1922,49 @@ fn publish_take(
     let _ = app.emit("take-changed", info);
 }
 
+/// Root-mean-square level of a slice — how loud it is, 0.0 for pure silence.
+fn rms(s: &[f32]) -> f32 {
+    if s.is_empty() {
+        return 0.0;
+    }
+    (s.iter().map(|v| v * v).sum::<f32>() / s.len() as f32).sqrt()
+}
+
+/// Whether `s` holds any speech: at least SPEECH_MIN_FRAMES 30 ms frames
+/// louder than SILENCE_RMS. Counted, not averaged: a whole-chunk mean let
+/// 10 s of quiet speech pass for silence (#64), and a share of frames would
+/// still drown one short word in a long chunk.
+///
+/// ponytail: loudness only. Steady room tone stays under the bar, but a run
+/// of keyboard clatter can clear it and reach the model. The upgrade is a
+/// real VAD (Silero), which needs a model file: a Conductor call.
+fn has_speech(s: &[f32]) -> bool {
+    s.chunks(SPEECH_FRAME).filter(|f| rms(f) > SILENCE_RMS).count() >= SPEECH_MIN_FRAMES
+}
+
+/// Where the audio after a cut at `cut` starts when it's handed to the model:
+/// CHUNK_OVERLAP early if there's speech in that second, so a word the cut
+/// clipped is heard whole on this side (#64); right at the cut if that second
+/// was a pause, with nothing to re-hear. An early start is what tells
+/// `join_text` to drop the words both sides heard.
+fn seam_start(all: &[f32], cut: usize) -> usize {
+    let from = cut.saturating_sub(CHUNK_OVERLAP);
+    if has_speech(&all[from..cut]) { from } else { cut }
+}
+
+/// The next chunk due out of `all` (the take so far) once `sent` samples of it
+/// have gone: `(from, end, speech)`, or `None` to keep recording. The new
+/// audio is `sent..end`, `from` adds the overlap, and `speech` is judged on the
+/// new audio alone, since the overlap was judged with the chunk before.
+fn next_chunk(all: &[f32], sent: usize) -> Option<(usize, usize, bool)> {
+    let end = sent + chunk_cut(&all[sent..])?;
+    let from = seam_start(all, sent);
+    let speech = has_speech(&all[sent..end]);
+    // The seams, for auditing lost words against the audio.
+    tracing::debug!(from, sent, end, speech, "chunk boundary");
+    Some((from, end, speech))
+}
+
 /// Where to cut the next chunk out of the not-yet-sent audio (16 kHz mono),
 /// or `None` to keep accumulating.
 ///
@@ -1917,14 +1976,6 @@ fn publish_take(
 ///
 /// Below `CHUNK_MIN_SAMPLES` nothing is ever cut, so ordinary short dictations
 /// take exactly the path they took before chunking existed.
-/// Root-mean-square level of a slice — how loud it is, 0.0 for pure silence.
-fn rms(s: &[f32]) -> f32 {
-    if s.is_empty() {
-        return 0.0;
-    }
-    (s.iter().map(|v| v * v).sum::<f32>() / s.len() as f32).sqrt()
-}
-
 fn chunk_cut(pending: &[f32]) -> Option<usize> {
     if pending.len() < CHUNK_MIN_SAMPLES {
         return None;
@@ -2024,11 +2075,49 @@ impl Take {
     }
 }
 
-/// Glue two transcript pieces together. Chunk boundaries land in a pause and
-/// each side is already punctuated by the model, so a single space is the
-/// right join — and either side being empty is normal (a silent chunk, or no
-/// chunking at all).
-fn join_text(a: &str, b: &str) -> String {
+/// Glue two transcript pieces together: the chunk text so far and the next
+/// chunk's, or the tail's. Across a pause each side is already punctuated by
+/// the model, so a single space is the right join — and either side being
+/// empty is normal (a silent chunk, or no chunking at all).
+///
+/// With `seam`, `b`'s audio started before the cut (see `seam_start`), so `b`
+/// opens by repeating the last words of `a`. The longest such repeat is where
+/// the two splice: `a` up to it, `b` after it. Up to SEAM_SLACK words either
+/// side of it go too: the halves of a word the cut clipped, which the other
+/// side heard whole. A lone repeated word must sit right at the seam, as a
+/// lone "the" further off is a coincidence. The joining word keeps `a`'s
+/// letters (it heard what came before) and `b`'s punctuation (it heard what
+/// came after), so no stray full stop or capital is left mid-sentence.
+///
+/// ponytail: text matching, no word timestamps. If both sides mishear the
+/// overlap differently, nothing matches and its words come out twice.
+fn join_text(a: &str, b: &str, seam: bool) -> String {
+    let (aw, bw): (Vec<&str>, Vec<&str>) =
+        (a.split_whitespace().collect(), b.split_whitespace().collect());
+    // (i, j, k, dropped): aw[i..i+k] repeats as bw[j..j+k], and `dropped`
+    // words of `a` follow the repeat.
+    let repeat = (aw.len().saturating_sub(SEAM_WORDS)..aw.len())
+        .flat_map(|i| (0..=SEAM_SLACK).map(move |j| (i, j)))
+        .map(|(i, j)| {
+            let k = (0..)
+                .take_while(|&k| i + k < aw.len() && j + k < bw.len() && asr::same_word(aw[i + k], bw[j + k]))
+                .count();
+            (i, j, k, aw.len() - i - k)
+        })
+        .filter(|&(_, j, k, dropped)| dropped <= SEAM_SLACK && (k >= 2 || (k == 1 && j + dropped <= 1)))
+        .max_by_key(|&(_, j, k, dropped)| (k, std::cmp::Reverse(j + dropped)));
+    if let Some((i, j, k, _)) = repeat.filter(|_| seam) {
+        let bare = |w: &str| w.trim_end_matches(|c: char| !c.is_alphanumeric()).len();
+        let (last_a, last_b) = (aw[i + k - 1], bw[j + k - 1]);
+        let joint = format!("{}{}", &last_a[..bare(last_a)], &last_b[bare(last_b)..]);
+        return aw[..i + k - 1]
+            .iter()
+            .copied()
+            .chain([joint.as_str()])
+            .chain(bw[j + k..].iter().copied())
+            .collect::<Vec<_>>()
+            .join(" ");
+    }
     match (a.trim(), b.trim()) {
         ("", b) => b.to_string(),
         (a, "") => a.to_string(),
@@ -2140,18 +2229,20 @@ fn process_take(
         // Only the tail: `sent` bytes were already transcribed as chunks while
         // the user was speaking, and `prefix_text` holds that result. `sent` is
         // 0 whenever chunking didn't happen or can't be trusted, which makes
-        // this the original whole-take call.
-        let tail = &take.samples[take.sent.min(take.samples.len())..];
-        // Releasing the key just after a chunk cut leaves a sliver of a tail.
-        // Handing that to the model invites a hallucinated word tacked onto
-        // the end, so anything this short is treated as the silence it is.
-        let tail_text = if take.sent > 0 && tail.len() < MIN_CLIP_SAMPLES {
+        // this the original whole-take call. Like a chunk, the tail re-hears
+        // the second before the last cut (`seam_start`).
+        let sent = take.sent.min(take.samples.len());
+        let from = seam_start(&take.samples, sent);
+        // Releasing the key just after a chunk cut leaves a tail with nothing
+        // in it. Handed that, the model invents a word to tack onto the end,
+        // so a tail with no speech is treated as the silence it is.
+        let tail_text = if sent > 0 && !has_speech(&take.samples[sent..]) {
             Ok(String::new())
         } else {
-            asr.transcribe(tail)
+            asr.transcribe(&take.samples[from..])
         };
         match tail_text {
-            Ok(t) => take.raw_text = Some(join_text(&take.prefix_text, &t)),
+            Ok(t) => take.raw_text = Some(join_text(&take.prefix_text, &t, from < sent)),
             Err(err) => {
                 tracing::error!(?err, "transcription failed");
                 // Drop the chunked prefix so a Retry re-transcribes cleanly
@@ -2582,6 +2673,26 @@ fn run_transcribe_once(path: &str) -> anyhow::Result<()> {
     let t = Instant::now();
     let text = asr.transcribe(&samples)?;
     println!("({} samples, {} ms) => {text:?}", samples.len(), t.elapsed().as_millis());
+    // A clip long enough to chunk is also run the way a live take is: fed in
+    // CHUNK_POLL at a time, cut and joined by the same helpers, tail last. A
+    // seam that loses words shows up as a diff against the line above.
+    if samples.len() >= CHUNK_MIN_SAMPLES {
+        let poll = CHUNK_POLL.as_millis() as usize * 16;
+        let (mut sent, mut text) = (0, String::new());
+        for have in (poll..samples.len()).step_by(poll) {
+            if let Some((from, end, speech)) = next_chunk(&samples[..have], sent) {
+                if speech {
+                    text = join_text(&text, &asr.transcribe(&samples[from..end])?, from < sent);
+                }
+                sent = end;
+            }
+        }
+        let from = seam_start(&samples, sent);
+        if sent == 0 || has_speech(&samples[sent..]) {
+            text = join_text(&text, &asr.transcribe(&samples[from..])?, from < sent);
+        }
+        println!("chunked => {text:?}");
+    }
     Ok(())
 }
 
@@ -2795,28 +2906,122 @@ mod tests {
         assert!(cut >= CHUNK_MIN_SAMPLES && cut <= CHUNK_MAX_SAMPLES);
     }
 
+    /// Syllable-like bursts: 200 ms of a 150 Hz tone at peak `amp`, then 300
+    /// ms of nothing, over and over.
+    fn bursts(n: usize, amp: f32) -> Vec<f32> {
+        let tone = |i: usize| amp * (i as f32 * 150.0 * std::f32::consts::TAU / 16_000.0).sin();
+        (0..n).map(|i| if i % 8_000 < 3_200 { tone(i) } else { 0.0 }).collect()
+    }
+    /// Steady room tone at `level` RMS: deterministic white noise.
+    fn room_tone(n: usize, level: f32) -> Vec<f32> {
+        let mut x: u32 = 1;
+        (0..n)
+            .map(|_| {
+                x = x.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                ((x >> 8) as f32 / (1u32 << 24) as f32 * 2.0 - 1.0) * level * 3f32.sqrt()
+            })
+            .collect()
+    }
+
     #[test]
     fn silence_is_recognised_as_silence() {
-        // The guard that stops a chunk of pure room tone from being handed to
-        // the model, which answers it with an invented phrase.
-        assert!(rms(&quiet(16_000)) < SILENCE_RMS);
-        assert!(rms(&speech(16_000)) > SILENCE_RMS);
-        // Mostly-quiet audio with a real burst of speech in it must NOT be
-        // mistaken for silence, or that speech is dropped outright.
-        let mut sparse = quiet(16_000 * 9);
-        sparse.extend(speech(16_000));
-        assert!(rms(&sparse) > SILENCE_RMS, "a spoken second inside a quiet chunk must survive");
+        // The guard that stops pure room tone from being handed to the model,
+        // which answers it with an invented phrase — a whole chunk (#64) or
+        // a whole short take (#51) of it.
+        assert!(!has_speech(&quiet(CHUNK_MAX_SAMPLES)));
+        let mut tone = room_tone(CHUNK_MAX_SAMPLES, 0.004);
+        // A few clicks (a desk knock, a key) are not speech either.
+        for at in [16_000, 16_000 * 7, 16_000 * 20] {
+            tone[at] = 0.5;
+        }
+        assert!(!has_speech(&tone));
+        assert!(!has_speech(&room_tone(16_000 * 3, 0.004)), "a silent short take must not reach the model");
+    }
+
+    #[test]
+    fn quiet_speech_is_not_silence() {
+        // #64: a quiet speaker's 10 s chunk averaged under SILENCE_RMS and was
+        // thrown away whole. The mean was the wrong question; this is speech.
+        let quiet_speech = bursts(CHUNK_MIN_SAMPLES, 0.03);
+        assert!(rms(&quiet_speech) < SILENCE_RMS, "the old whole-chunk mean called this silence");
+        assert!(has_speech(&quiet_speech));
+        // One short word in a long quiet chunk survives too: counting voiced
+        // frames, not their share, keeps it from drowning.
+        let mut one_word = room_tone(CHUNK_MAX_SAMPLES, 0.003);
+        one_word.extend(bursts(16_000 * 3 / 10, 0.05));
+        assert!(has_speech(&one_word));
+        // #51: a short take that is mostly quiet with one spoken second.
+        let mut short = quiet(16_000 * 2);
+        short.extend(bursts(16_000, 0.03));
+        assert!(has_speech(&short), "a spoken second inside a quiet take must survive");
+    }
+
+    #[test]
+    fn chunks_overlap_the_cut_only_when_there_is_speech_to_re_hear() {
+        let pause_at = CHUNK_MIN_SAMPLES + 16_000 / 2;
+        let mut audio = speech(pause_at);
+        audio.extend(quiet(16_000));
+        audio.extend(speech(16_000 * 3));
+        let (from, end, speech_in) = next_chunk(&audio, 0).expect("a clear pause should produce a cut");
+        assert_eq!(from, 0, "the first chunk has nothing before it");
+        assert!(speech_in);
+        // The cut sits just inside the pause, so the second before it is the
+        // end of the sentence: the next piece re-hears it.
+        assert_eq!(seam_start(&audio, end), end - CHUNK_OVERLAP);
+        // After a pause longer than the overlap there's nothing to re-hear,
+        // and no overlap means no dedupe at the join.
+        let mut long_pause = speech(CHUNK_MIN_SAMPLES);
+        long_pause.extend(quiet(16_000 * 2));
+        let cut = CHUNK_MIN_SAMPLES + 16_000 * 3 / 2;
+        assert_eq!(seam_start(&long_pause, cut), cut);
     }
 
     #[test]
     fn join_text_handles_empty_sides() {
         // Empty sides are routine: a silent chunk, or no chunking at all.
-        assert_eq!(join_text("", "hello"), "hello");
-        assert_eq!(join_text("hello", ""), "hello");
-        assert_eq!(join_text("", ""), "");
-        assert_eq!(join_text("first part.", "Second part."), "first part. Second part.");
-        // No double space when a piece arrives already padded.
-        assert_eq!(join_text("first. ", " Second."), "first. Second.");
+        for seam in [false, true] {
+            assert_eq!(join_text("", "hello", seam), "hello");
+            assert_eq!(join_text("hello", "", seam), "hello");
+            assert_eq!(join_text("", "", seam), "");
+            // No double space when a piece arrives already padded.
+            assert_eq!(join_text("first. ", " Second.", seam), "first. Second.");
+        }
+        assert_eq!(join_text("first part.", "Second part.", false), "first part. Second part.");
+    }
+
+    #[test]
+    fn seam_join_drops_the_words_both_sides_heard() {
+        // The plain case: the overlap repeats the last few words.
+        assert_eq!(
+            join_text("we should check the numbers again.", "the numbers again. Then send it.", true),
+            "we should check the numbers again. Then send it."
+        );
+        // The first side closed the sentence and the second opened one; the
+        // joining word takes the first's letters and the second's punctuation.
+        assert_eq!(
+            join_text("I want to see the report.", "The report and then we go.", true),
+            "I want to see the report and then we go."
+        );
+        // The first side lost its last words at the cut (the #64 seam loss):
+        // the overlap brings them back.
+        assert_eq!(join_text("I think he", "he only mentioned it once.", true), "I think he only mentioned it once.");
+        // The overlap started mid-word, leaving a fragment in front.
+        assert_eq!(
+            join_text("check the numbers again.", "ers again. Then send it.", true),
+            "check the numbers again. Then send it."
+        );
+        // The cut clipped the first side's last word; the second heard it whole.
+        assert_eq!(join_text("we went to the sto", "to the store and back.", true), "we went to the store and back.");
+    }
+
+    #[test]
+    fn seam_join_leaves_coincidences_alone() {
+        // No overlap (a pause at the cut): a repeated word is just speech.
+        assert_eq!(join_text("I'll fix it.", "It works now.", false), "I'll fix it. It works now.");
+        // A lone common word away from the seam is not a repeat.
+        assert_eq!(join_text("I read the book today.", "The day was long.", true), "I read the book today. The day was long.");
+        // Nothing repeated: the second side's model dropped the overlap.
+        assert_eq!(join_text("That was the plan.", "Next we test.", true), "That was the plan. Next we test.");
     }
 
     #[test]

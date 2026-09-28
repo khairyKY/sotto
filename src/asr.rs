@@ -246,8 +246,49 @@ impl Asr {
             engine = %self.engine,
             "transcribed"
         );
-        Ok(result.text.trim().to_string())
+        Ok(collapse_loops(result.text.trim()))
     }
+}
+
+/// Two transcript words are the same once case and edge punctuation are
+/// ignored ("The" / "the,"). Punctuation-only tokens never match.
+pub fn same_word(a: &str, b: &str) -> bool {
+    fn bare(w: &str) -> &str {
+        w.trim_matches(|c: char| !c.is_alphanumeric())
+    }
+    !bare(a).is_empty() && bare(a).eq_ignore_ascii_case(bare(b))
+}
+
+/// A group of 1–3 words repeated this many times in a row is a decoding loop
+/// ("to to to to …", seen on a chunk in #64), not speech. People do say "no,
+/// no, no"; nobody dictates the same word five times running.
+const LOOP_MIN: usize = 5;
+
+/// Collapse each decoding loop to one copy, the last, so a full stop that
+/// ends the loop survives. Text without a loop comes back untouched, and so
+/// do digits: "5 5 5 5 5" is a code someone read out.
+fn collapse_loops(text: &str) -> String {
+    let w: Vec<&str> = text.split_whitespace().collect();
+    let mut out = Vec::with_capacity(w.len());
+    let mut i = 0;
+    while i < w.len() {
+        let mut n = 1;
+        let digits = w[i].chars().any(|c| c.is_ascii_digit());
+        for len in (1..=3).filter(|_| !digits) {
+            let reps = 1 + (1..)
+                .take_while(|&r| i + (r + 1) * len <= w.len() && (0..len).all(|k| same_word(w[i + k], w[i + r * len + k])))
+                .count();
+            if reps >= LOOP_MIN {
+                tracing::info!(words = len, reps, "collapsed a repetition loop");
+                i += (reps - 1) * len;
+                n = len;
+                break;
+            }
+        }
+        out.extend_from_slice(&w[i..i + n]);
+        i += n;
+    }
+    if out.len() == w.len() { text.to_string() } else { out.join(" ") }
 }
 
 #[cfg(test)]
@@ -304,5 +345,28 @@ mod tests {
         let long = "L".repeat(PROMPT_MAX_BYTES);
         let vocab = [entry(&long, 5, 0), entry("Zorvex", 0, 0)];
         assert_eq!(vocab_prompt(&vocab).unwrap(), "Zorvex.");
+    }
+
+    #[test]
+    fn repetition_loops_collapse_to_one_copy() {
+        assert_eq!(collapse_loops("I want to to to to to to to to go."), "I want to go.");
+        assert_eq!(collapse_loops("thank you thank you thank you thank you thank you."), "thank you.");
+        assert_eq!(collapse_loops("so so so so so so"), "so");
+    }
+
+    #[test]
+    fn ordinary_repeats_are_speech_not_loops() {
+        // Emphasis and stutters stay exactly as heard.
+        for s in ["No, no, no, not that one.", "very very very very good", "It is what it is.", "PIN 5 5 5 5 5 1", ""] {
+            assert_eq!(collapse_loops(s), s);
+        }
+    }
+
+    #[test]
+    fn same_word_ignores_case_and_edge_punctuation() {
+        assert!(same_word("The", "the,"));
+        assert!(same_word("again.", "again"));
+        assert!(!same_word("—", "—"));
+        assert!(!same_word("their", "there"));
     }
 }
