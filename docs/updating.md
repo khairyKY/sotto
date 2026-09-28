@@ -6,6 +6,13 @@ a release. Last verified against the repo and against GitHub on **2026-09-23**.
 > **Standing instruction: do not push commits and do not publish a release until
 > Kai explicitly says so.** Everything from §4 step 6 onward is gated on that.
 > The build and verify steps are always safe to run.
+>
+> **Update, 2026-09-28:** Kai made the Conductor loop fully autonomous for
+> push + publish. The Conductor no longer waits for a go-ahead to push commits
+> or publish a release through the gate below. It still waits for Kai's word
+> before swapping his installed build (§4 step 3's smoke test runs against
+> that installed copy), and a public release only follows that installed smoke
+> test passing.
 
 ---
 
@@ -21,6 +28,12 @@ a release. Last verified against the repo and against GitHub on **2026-09-23**.
 
 Anyone running the public build is on v0.3.0 and is missing v0.4.x, v0.5.x and
 v0.6.0 entirely. That is deliberate, per the instruction above.
+
+**Update, 2026-09-28:** the snapshot above has aged (it was accurate when
+written on 2026-09-23). As of today, `origin/master` = local master, both at
+`ab09d50` — no gap. PR #38 is merged. The next release to cut is **v0.6.1**.
+The old snapshot is left in place above for history; don't treat its numbers
+as current.
 
 ### Known release blocker — fix before ever publishing again
 

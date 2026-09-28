@@ -1,5 +1,12 @@
 # Sotto — current state & path to done (handoff)
 
+> **Superseded 2026-09-28:** this snapshot is from 2026-07-15, before the Tauri
+> migration finished. `master` is now the Tauri v2 app (v0.6.x) described below
+> as "Path B" — the `tauri-migration` branch it refers to no longer exists (it
+> was merged), and the MSVC blocker is resolved (the toolchain lives on D:, see
+> `docs/msvc-setup.md`). For how to run and build today, see `RUNNING.md` and
+> `docs/updating.md`. The body below is kept as history, unedited.
+
 > Snapshot for planning the finish. Sotto is a **local, offline, hands-free
 > voice-dictation app for Windows**: hold (or toggle) a hotkey, speak, and your
 > speech is transcribed by a local model and typed into whatever app is focused,

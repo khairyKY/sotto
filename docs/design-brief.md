@@ -1,5 +1,12 @@
 # Sotto — Design Brief (prompt for Claude Design)
 
+> **Superseded 2026-09-28:** this brief was written for the egui build
+> (charcoal + cyan, Inter, egui-primitive constraints). The shipped UI is now
+> the Tauri/HTML Marshmallow design instead — Newsreader + Hanken Grotesk +
+> JetBrains Mono, lilac `--mm-accent`, neumorphic shadows, tokens in
+> `ui/theme.css`. See `docs/marshmallow-spec-extracted.md` for that spec. Kept
+> below as history.
+
 Copy everything in the box below into Claude Design (or a fresh Claude Design session). It's written as a standalone brief so it doesn't need this repo for context.
 
 ---

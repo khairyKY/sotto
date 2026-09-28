@@ -59,9 +59,13 @@ It empties the VS download cache (D:), user/system temp, and stale VS installer
 caches, and reports before/after free space per drive. For a deeper system pass,
 `cleanmgr /d C:`.
 
-## Reverting to the old gnu build
+## ~~Reverting to the old gnu build~~
 
-The complete working egui version is on the `master` branch, toolchain gnu:
+> **Struck 2026-09-28:** the egui app is not on `master` anymore — `master` is
+> the Tauri v2 (msvc) app. There is no branch to switch to for the old build;
+> reverting means checking out an old commit from before the migration.
+
+~~The complete working egui version is on the `master` branch, toolchain gnu:~~
 
 ```powershell
 git checkout master
