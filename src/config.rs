@@ -536,6 +536,41 @@ pub fn assets_dir() -> PathBuf {
     }
 }
 
+/// Filename inside `data_dir()` that hands the uninstaller a relocated
+/// `assets_dir` — NSIS can't parse TOML, so this is the handoff instead of
+/// making the installer link a TOML parser. Absent/empty means assets live
+/// in `data_dir()`, which the uninstaller already deletes outright.
+const ASSETS_DIR_MARKER: &str = "assets_dir.txt";
+
+/// Resolve what the marker file should contain for a given config: the
+/// trimmed `assets_dir`, or `None` when it's unset (assets live in
+/// `data_dir()`, already covered by the uninstaller's `$APPDATA\sotto`
+/// delete — no marker needed, and a stale one must not linger).
+fn resolve_assets_dir_marker(cfg: &Config) -> Option<String> {
+    let dir = cfg.assets_dir.trim();
+    if dir.is_empty() {
+        None
+    } else {
+        Some(dir.to_string())
+    }
+}
+
+/// Write (or clear) the assets_dir marker for the uninstaller. Called once at
+/// startup after config loads — cheap, and keeps the marker in sync with
+/// whatever the user last set in Settings → Data & privacy.
+pub fn write_assets_dir_marker(cfg: &Config) {
+    let marker = data_dir().join(ASSETS_DIR_MARKER);
+    match resolve_assets_dir_marker(cfg) {
+        Some(dir) => {
+            let _ = std::fs::create_dir_all(data_dir());
+            let _ = std::fs::write(&marker, dir);
+        }
+        None => {
+            let _ = std::fs::remove_file(&marker);
+        }
+    }
+}
+
 /// Which ASR engine is configured, read the same way as `assets_dir()` — a
 /// raw disk read rather than `Config::load_or_init()`, so asset provisioning
 /// (which can run before or without full app state) never has the side
@@ -738,6 +773,21 @@ assets_dir = '  D:\sotto  '
         .unwrap();
         // Trimmed at use, so a stray space in a hand-edited config still works.
         assert_eq!(cfg.assets_dir.trim(), r"D:\sotto");
+    }
+
+    /// The uninstaller only trusts the marker when there's something to
+    /// hand it — no marker means "assets live in data_dir(), already
+    /// deleted", which must win over a stale file from an earlier custom dir.
+    #[test]
+    fn assets_dir_marker_is_none_when_unset() {
+        let cfg = Config { assets_dir: "  ".to_string(), ..Config::default() };
+        assert_eq!(resolve_assets_dir_marker(&cfg), None);
+    }
+
+    #[test]
+    fn assets_dir_marker_carries_the_trimmed_custom_dir() {
+        let cfg = Config { assets_dir: "  E:\\sotto-models  ".to_string(), ..Config::default() };
+        assert_eq!(resolve_assets_dir_marker(&cfg), Some(r"E:\sotto-models".to_string()));
     }
 
     #[test]
