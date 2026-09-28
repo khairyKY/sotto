@@ -183,22 +183,8 @@ pub fn spawn_provision_if_missing(app: AppHandle) {
         }
         let names: Vec<&str> = missing.iter().map(|a| a.name).collect();
         tracing::info!(?names, "provisioning missing assets from GitHub");
-        // Clear leftovers from interrupted runs (downloads restart from zero,
-        // so a stale .part / zip is pure disk garbage).
-        for a in &missing {
-            let dir = match &a.kind {
-                Kind::File { dest } => dest().parent().map(|p| p.to_path_buf()),
-                Kind::Zip { dir, .. } => Some(dir()),
-            };
-            let Some(dir) = dir else { continue };
-            let Ok(entries) = fs::read_dir(&dir) else { continue };
-            for e in entries.flatten() {
-                let name = e.file_name().to_string_lossy().into_owned();
-                if name.ends_with(".part") || name == "_download.zip" {
-                    let _ = fs::remove_file(e.path());
-                }
-            }
-        }
+        // Leftover `<dest>.part` files from an interrupted run are kept on
+        // purpose: `download_to` resumes them with a Range request (#52).
         let result = provision(&app, &missing);
         IN_PROGRESS.store(false, Ordering::SeqCst);
         match result {
@@ -208,7 +194,9 @@ pub fn spawn_provision_if_missing(app: AppHandle) {
             }
             Err(err) => {
                 tracing::error!(?err, "asset provisioning failed");
-                let _ = app.emit("asset-error", err.to_string());
+                // `{:#}` keeps the cause chain ("downloading X: got N of M bytes …"),
+                // not just the outermost context.
+                let _ = app.emit("asset-error", format!("{err:#}"));
             }
         }
     });
@@ -217,18 +205,14 @@ pub fn spawn_provision_if_missing(app: AppHandle) {
 fn provision(app: &AppHandle, assets: &[Asset]) -> Result<()> {
     for a in assets {
         let url = format!("{RELEASE_BASE}/{}/{}", a.tag, a.file);
+        let progress = |received, total| {
+            let _ = app.emit("asset-progress", Progress { name: a.name.into(), received, total });
+        };
         match &a.kind {
-            Kind::File { dest } => {
-                let dest = dest();
-                download_to(app, a.name, &url, &dest)
-                    .with_context(|| format!("downloading {}", a.name))?;
-            }
-            Kind::Zip { dir, .. } => {
-                let dir = dir();
-                download_and_extract(app, a.name, &url, &dir)
-                    .with_context(|| format!("downloading {}", a.name))?;
-            }
+            Kind::File { dest } => download_to(&url, &dest(), &progress),
+            Kind::Zip { dir, .. } => download_and_extract(&url, &dir(), &progress),
         }
+        .with_context(|| format!("downloading {}", a.name))?;
     }
     Ok(())
 }
@@ -273,7 +257,7 @@ fn parse_content_range(s: &str) -> Option<(u64, u64, u64)> {
 /// `.part` already has bytes from an interrupted run, resumes with an HTTP
 /// `Range` request instead of restarting the file from zero — the difference
 /// between losing a second and losing 90% of a 1 GB model on a flaky link.
-fn download_to(app: &AppHandle, name: &str, url: &str, dest: &Path) -> Result<()> {
+fn download_to(url: &str, dest: &Path, progress: &dyn Fn(u64, u64)) -> Result<()> {
     if let Some(parent) = dest.parent() {
         fs::create_dir_all(parent)?;
     }
@@ -349,7 +333,7 @@ fn download_to(app: &AppHandle, name: &str, url: &str, dest: &Path) -> Result<()
         file.write_all(&buf[..n])?;
         received += n as u64;
         if last_emit.elapsed().as_millis() >= 200 {
-            let _ = app.emit("asset-progress", Progress { name: name.into(), received, total });
+            progress(received, total);
             last_emit = std::time::Instant::now();
         }
     }
@@ -360,18 +344,20 @@ fn download_to(app: &AppHandle, name: &str, url: &str, dest: &Path) -> Result<()
     // where it reads as "installed" forever and only ever fails to load. Bail
     // instead and leave the `.part`: the next run resumes it from here.
     if total > 0 && received != total {
-        anyhow::bail!("{name}: got {received} of {total} bytes — connection dropped");
+        anyhow::bail!("got {received} of {total} bytes — connection dropped");
     }
     fs::rename(&part, dest)
         .with_context(|| format!("finalizing {}", dest.display()))?;
-    let _ = app.emit("asset-progress", Progress { name: name.into(), received, total });
+    progress(received, total);
     Ok(())
 }
 
-fn download_and_extract(app: &AppHandle, name: &str, url: &str, dir: &Path) -> Result<()> {
+fn download_and_extract(url: &str, dir: &Path, progress: &dyn Fn(u64, u64)) -> Result<()> {
     fs::create_dir_all(dir)?;
+    // A `_download.zip` left complete by a crash mid-extract is simply
+    // re-fetched and renamed over; its `.part` resumes like any other.
     let tmp = dir.join("_download.zip");
-    download_to(app, name, url, &tmp)?;
+    download_to(url, &tmp, progress)?;
 
     let f = fs::File::open(&tmp)?;
     let mut zip = zip::ZipArchive::new(f).context("opening downloaded zip")?;
@@ -488,6 +474,105 @@ mod tests {
         // (hypothetical) response would say.
         let d = resume_decision(0, 200, None);
         assert_eq!(d, Resume::Restart);
+    }
+
+    /// Minimal HTTP/1.1 server for one fake file with `Range` support — the
+    /// download tests run against this on 127.0.0.1, never the real release.
+    /// `cut` drops every connection once the file offset reaches that byte.
+    /// Each request's `Range` start (None = no header) is sent on the channel.
+    fn serve(body: Vec<u8>, cut: Option<usize>) -> (String, std::sync::mpsc::Receiver<Option<usize>>) {
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/asset.bin", l.local_addr().unwrap());
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            for s in l.incoming() {
+                let mut s = s.unwrap();
+                let mut req = Vec::new();
+                let mut b = [0u8; 1];
+                while !req.ends_with(b"\r\n\r\n") && s.read(&mut b).unwrap_or(0) == 1 {
+                    req.push(b[0]);
+                }
+                let req = String::from_utf8_lossy(&req).to_lowercase();
+                let start: Option<usize> = req.lines().find_map(|l| {
+                    l.trim().strip_prefix("range: bytes=")?.strip_suffix('-')?.parse().ok()
+                });
+                let _ = tx.send(start);
+                let len = body.len();
+                let (head, from) = match start {
+                    Some(n) if n >= len => (format!("416 Range Not Satisfiable\r\nContent-Range: bytes */{len}\r\nContent-Length: 0"), len),
+                    Some(n) => (format!("206 Partial Content\r\nContent-Range: bytes {n}-{}/{len}\r\nContent-Length: {}", len - 1, len - n), n),
+                    None => (format!("200 OK\r\nContent-Length: {len}"), 0),
+                };
+                let end = cut.map_or(len, |c| c.min(len)).max(from);
+                let _ = s.write_all(format!("HTTP/1.1 {head}\r\nConnection: close\r\n\r\n").as_bytes());
+                let _ = s.write_all(&body[from..end]);
+            }
+        });
+        (url, rx)
+    }
+
+    fn fake_body() -> Vec<u8> {
+        (0..50_000u32).map(|i| (i % 251) as u8).collect()
+    }
+
+    fn scratch(tag: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("sotto-dl-{tag}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&d);
+        fs::create_dir_all(&d).unwrap();
+        d.join("model.bin")
+    }
+
+    fn part_of(dest: &Path) -> PathBuf {
+        PathBuf::from(format!("{}.part", dest.display()))
+    }
+
+    #[test]
+    fn dropped_stream_keeps_part_then_next_run_resumes() {
+        let body = fake_body();
+        let dest = scratch("resume");
+
+        // Connection drops at byte 20 000: error, nothing renamed into place.
+        let (url, _) = serve(body.clone(), Some(20_000));
+        assert!(download_to(&url, &dest, &|_, _| {}).is_err());
+        assert!(!dest.exists(), "a short stream must never be renamed into place");
+        let kept = fs::metadata(part_of(&dest)).unwrap().len();
+        assert!(kept > 0 && kept <= 20_000, "kept {kept}");
+
+        // The next run asks for the tail only and ends with the exact file (#52).
+        let (url, rx) = serve(body.clone(), None);
+        let last = std::cell::Cell::new(0);
+        download_to(&url, &dest, &|r, t| {
+            assert_eq!(t, body.len() as u64);
+            last.set(r);
+        })
+        .unwrap();
+        assert_eq!(rx.recv().unwrap(), Some(kept as usize));
+        assert_eq!(last.get(), body.len() as u64);
+        assert_eq!(fs::read(&dest).unwrap(), body);
+        assert!(!part_of(&dest).exists());
+    }
+
+    #[test]
+    fn oversized_part_restarts_clean_after_416() {
+        let body = fake_body();
+        let dest = scratch("oversized");
+        fs::write(part_of(&dest), vec![7u8; 60_000]).unwrap();
+        let (url, rx) = serve(body.clone(), None);
+        download_to(&url, &dest, &|_, _| {}).unwrap();
+        assert_eq!(rx.recv().unwrap(), Some(60_000));
+        assert_eq!(rx.recv().unwrap(), None, "the retry is a plain full GET");
+        assert_eq!(fs::read(&dest).unwrap(), body);
+    }
+
+    #[test]
+    fn empty_part_is_a_plain_download() {
+        let body = fake_body();
+        let dest = scratch("empty");
+        fs::write(part_of(&dest), b"").unwrap();
+        let (url, rx) = serve(body.clone(), None);
+        download_to(&url, &dest, &|_, _| {}).unwrap();
+        assert_eq!(rx.recv().unwrap(), None);
+        assert_eq!(fs::read(&dest).unwrap(), body);
     }
 
     #[test]
