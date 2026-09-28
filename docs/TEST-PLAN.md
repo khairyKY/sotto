@@ -145,6 +145,21 @@ State changes:
 | P21 | Tone: set Default tone to Casual and a per-app override "Slack → Professional". AI mode. Dictate into Slack and into Notepad. | Slack gets the override (matched case-insensitively), Notepad the default. In Rules/Off the tone has no effect, and the Tone card is greyed out with "Needs AI polish". | `polish::tests::resolve_tone_prefers_exact_app_match_case_insensitively`, `polish::tests::resolve_tone_falls_back_to_default_when_no_app_match`, `polish::tests::resolve_tone_empty_default_yields_no_tone`, `polish::tests::tone_has_no_effect_outside_ai_mode`, `llm::tests::empty_tone_leaves_system_prompt_unchanged`, `llm::tests::tone_appends_as_one_extra_clause` + manual | published | 2026-09-28 auto |
 | P22 | Vocabulary hints: train a word with a logged mishearing. AI mode, dictate the mishearing in a long sentence. | The model fixes it back. "I need to write some code" stays "code". | `polish::tests::vocabulary_clause_names_heard_as_variants`, `polish::tests::vocabulary_clause_skips_blank_entries_and_empty_list_is_empty_string`, `llm::tests::empty_vocabulary_leaves_system_prompt_unchanged`, `llm::tests::vocabulary_appends_after_tone`, `llm::tests::vocabulary_alone_appends_without_a_tone_clause`, `llm::tests::vocab_correction_example_is_two_user_assistant_pairs` + manual | installed | 2026-09-28 auto |
 | P23 | Insights "Fixes made by Sotto" after a take with fillers and one dictionary hit. | Corrected words and dictionary fixes are counted separately, with no double count. | `polish::tests::changed_words_counts_edits_not_reorderings_of_identical_text` + manual | published | 2026-09-28 auto |
+| 🆕 P24 | Dictate "um so the the plan works", then ⚑ flag its History row. | The new line in `bug-reports.jsonl` has `"raw"` (what the engine heard) beside `"text"` (what was typed). Raw lives in memory only: history.jsonl never holds it, so a row reloaded after a restart flags with an empty `raw`. Older lines without `raw` still load. | `bug_reports::tests::a_line_from_before_raw_existed_still_parses`, `history::tests::raw_is_found_by_row_text_but_never_written_to_disk` + manual | branch (#8) | 2026-09-28 auto |
+| 🆕 P25 | `sotto.exe --replay-flags` twice. Change a polish rule, run it again, then once more. | Each flag with a raw prints raw / delivered / now; older flags count as "skipped (no raw)". `bug-reports.snapshot.json` appears next to the flags. Run 2: "0 changed", exit 0. After the change: the moved flags show `CHANGED  last run …`, exit 1. Run 4: exit 0 (run 3 became the baseline). No dictated text in `sotto.log`. | `bug_reports::tests::replay_diffs_against_the_last_run` + manual | branch (#8) | 2026-09-28 auto + debug-build CLI run on invented flags |
+
+**Flag replay (#8).** Run it after any polish-layer change. It replays every ⚑ flag's raw
+transcript through the current chain and your live config (dictionary, vocabulary,
+toggles). Flags use the Rules tier, except a flag taken in AI mode, which replays through AI.
+```powershell
+sotto.exe --replay-flags | Out-Host; $LASTEXITCODE              # the data dir's bug-reports.jsonl
+sotto.exe --replay-flags D:\x\flags.jsonl | Out-Host; $LASTEXITCODE  # any flags file; snapshot beside it
+```
+- The pipe matters on a release build: it has no console, and the pipe makes PowerShell wait for the exit code.
+- Exit 1 means some flag's output moved since the last run. Read the `CHANGED` lines. That run is
+  already the new baseline, so the next run passes.
+- Like `--polish`, it starts a fresh `sotto.log` in its data dir. A Sotto running on the same
+  data dir keeps logging into what is now `sotto.log.1`.
 
 State changes:
 - (none yet)
