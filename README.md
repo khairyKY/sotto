@@ -130,8 +130,8 @@ Uninstall Sotto from **Settings → Apps** or via `Sotto_*_x64-setup.exe /uninst
 
 - `sotto.log` — the current run. `sotto.log.1` — the previous one. Plain text; open it in Notepad.
 - It records the app version, where it's reading models from, and what failed. **When reporting a bug, attach it** — it's the difference between a fix and a guessing game.
-- It never contains your dictated text. Counts and timings only.
-- Need more detail? Set `SOTTO_LOG=debug` and relaunch. `llama-server.log` in the same folder covers the AI polish sidecar.
+- It never contains your dictated text or your dictionary/snippet entries. Counts and timings only.
+- Need more detail? Set `SOTTO_LOG=debug` and relaunch. **Debug logs DO include what you dictated** (raw vs polished), so read one before attaching it anywhere public. `llama-server.log` in the same folder covers the AI polish sidecar.
 
 | Symptom | Likely cause |
 | :--- | :--- |

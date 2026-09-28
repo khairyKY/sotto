@@ -1029,7 +1029,13 @@ fn main() -> anyhow::Result<()> {
     };
 
     let cfg = Config::load_or_init()?;
-    tracing::info!(?cfg, path = %Config::path().display(), "loaded config");
+    tracing::info!(
+        cfg = ?config_for_log(&cfg),
+        dictionary = cfg.dictionary.len(),
+        vocabulary = cfg.polish.vocabulary.len(),
+        path = %Config::path().display(),
+        "loaded config"
+    );
     let controls = Controls::from_config(&cfg);
 
     // The worker's event channel is created here so both the pipeline and the
@@ -1998,6 +2004,17 @@ fn mode_str(m: PolishMode) -> &'static str {
     }
 }
 
+/// The config as it may appear in the log (#48): dictionary/snippet entries
+/// and trained vocabulary are the user's own words (emails, phone numbers,
+/// names), so they're dropped; `main` logs their counts instead. Everything
+/// else is settings, safe to show.
+fn config_for_log(cfg: &Config) -> Config {
+    let mut safe = cfg.clone();
+    safe.dictionary.clear();
+    safe.polish.vocabulary.clear();
+    safe
+}
+
 /// True if `text` contains `target` — as a whole word (case-insensitive,
 /// punctuation-stripped) for a single-word target, or as a substring for a
 /// multi-word one. The trainer's peek detection.
@@ -2156,12 +2173,12 @@ fn process_take(
         return;
     }
 
-    // Always leave a heard-vs-typed trail in the log, independent of audio
-    // retention: this is the cheapest diagnostic surface for "the
-    // transcription was wrong" reports — the raw ASR output next to what
-    // polish produced — and it survives even when retention is off or the
-    // audio has since been evicted.
-    tracing::info!(raw = %raw, polished = %result.text, "transcript");
+    // Heard-vs-typed trail, at debug only (#48): the log is what users attach
+    // to public bug reports, and the README promises it never holds dictated
+    // text. `SOTTO_LOG=debug` brings it back for a diagnosis session; opt-in
+    // retention keeps the same pair in recordings/index.jsonl.
+    tracing::debug!(raw = %raw, polished = %result.text, "transcript");
+    tracing::info!(raw_chars = raw.chars().count(), chars = result.text.chars().count(), "transcript");
 
     // Stage 3 — inject into the original window.
     inject::restore_focus(take.focus_target);
@@ -2228,7 +2245,7 @@ fn process_take(
             if !stash.as_ref().is_some_and(|t| t.reason == RECOVERED) {
                 *stash = None;
             }
-            tracing::info!("injected: {:?}", result.text);
+            tracing::info!(chars = result.text.chars().count(), "injected");
         }
         Err(err) => {
             tracing::error!(?err, "injection failed");
@@ -2510,6 +2527,28 @@ mod tests {
             sent: 0,
             journal: vec![],
         }
+    }
+
+    #[test]
+    fn logged_config_holds_no_dictionary_or_vocabulary_text() {
+        let mut cfg = Config::default();
+        cfg.dictionary.push(crate::config::DictEntry {
+            spoken: "my work email".into(),
+            replacement: "private.person@example.com".into(),
+            aliases: vec!["office address".into()],
+            enabled: true,
+            kind: Some(crate::config::EntryKind::Snippet),
+        });
+        cfg.polish.vocabulary.push(crate::config::VocabEntry {
+            word: "Zyxwidget".into(),
+            heard_as: vec!["zicks widget".into()],
+            recent: vec![],
+        });
+        let logged = format!("{:?}", config_for_log(&cfg));
+        for secret in ["private.person@example.com", "my work email", "office address", "Zyxwidget", "zicks widget"] {
+            assert!(!logged.contains(secret), "{secret:?} leaked into the logged config");
+        }
+        assert!(logged.contains("hotkey"), "settings still logged");
     }
 
     #[test]
