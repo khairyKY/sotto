@@ -27,6 +27,7 @@ mod startup;
 mod stats;
 mod transform;
 mod tray;
+mod uia;
 
 use config::{ActivationMode, AppTone, Config, DictEntry, EntryKind, InjectionMode, PolishMode, VocabEntry};
 use hotkey::DictationEvent;
@@ -1604,6 +1605,7 @@ fn spawn_pipeline(
     let take_info = controls.take_info.clone();
     let polish_mode = controls.polish_mode.clone();
     let chunking = cfg.chunked_transcription;
+    let auto_tone = cfg.auto_tone;
     let (work_tx, work_rx) = crossbeam_channel::unbounded::<Work>();
     // True while a Pronunciation-Trainer peek transcription is in flight, so
     // the audio thread never piles a second one behind it — see Work::Peek.
@@ -1802,6 +1804,8 @@ fn spawn_pipeline(
         let mut journaled = true;
         // The trainer word this take was started for, if any (#47).
         let mut take_training: Option<Training> = None;
+        // Auto tone (#28): the field-context read started with this take.
+        let mut take_context: Option<std::sync::mpsc::Receiver<String>> = None;
         // Pronunciation-Trainer detection peeks — last one's time, for cadence.
         let mut last_peek = std::time::Instant::now();
 
@@ -1906,6 +1910,10 @@ fn spawn_pipeline(
                             // Capture the focus target NOW so an Alt-Tab during
                             // dictation doesn't reroute the injection.
                             focus_target.store(inject::capture_focus(), Ordering::Relaxed);
+                            // Auto tone (#28): read the field's text off this
+                            // thread, for the AI tier only (nothing else uses it).
+                            let ai = PolishMode::from_u8(polish_mode.load(Ordering::Relaxed)) == PolishMode::Ai;
+                            take_context = (auto_tone && ai).then(|| uia::spawn_read(focus_target.load(Ordering::Relaxed)));
                             // Warm the LLM sidecar while the user speaks.
                             let _ = work_tx.send(Work::Prewarm);
                             show_overlay(&app);
@@ -2013,6 +2021,7 @@ fn spawn_pipeline(
                         take_training.take(),
                     );
                     take.sent = sent;
+                    take.context = take_context.take().and_then(|rx| rx.try_recv().ok());
                     sent = 0;
                     // Cancel arrived during/right after recording.
                     if cancelled.swap(false, Ordering::SeqCst) {
@@ -2207,6 +2216,10 @@ struct Take {
     /// from the trainer is a sample, a Retry of it stays one, and every later
     /// hotkey take is a normal dictation (#47).
     training: Option<Training>,
+    /// Auto tone (#28): the focused field's text before the caret when the
+    /// take started, if it was read in time. Memory only: never logged,
+    /// never journaled, gone when the take drops.
+    context: Option<String>,
 }
 
 /// Every way a take ends (delivered, dismissed, replaced in the stash, too
@@ -2249,6 +2262,7 @@ impl Take {
             sent: 0,
             journal,
             training,
+            context: None,
         }
     }
 }
@@ -2534,7 +2548,7 @@ fn process_take(
     if polisher.uses_ai_tier(&raw) {
         emit_state(app, "polishing");
     }
-    let result = polisher.polish_for(&raw, &app_name);
+    let result = polisher.polish_for(&raw, &app_name, take.context.as_deref());
     take.tier = result.tier.into(); // the tier that ran, not the configured one (#67)
     if cancelled.swap(false, Ordering::SeqCst) {
         emit_state(app, "cancelled");
@@ -3138,6 +3152,7 @@ mod tests {
             sent: 0,
             journal: vec![],
             training: None,
+            context: None,
         }
     }
 

@@ -97,24 +97,30 @@ impl Polisher {
     }
 
     /// Same as `polish`, but resolves a tone for `app` first: an exact
-    /// case-insensitive match in the per-app overrides wins, else the default
-    /// tone, else no tone at all. Used on the live delivery path, where the
-    /// focused app is known.
-    pub fn polish_for(&self, raw: &str, app: &str) -> PolishResult {
-        let tone = self.resolve_tone(app);
+    /// case-insensitive match in the per-app overrides wins, else the field's
+    /// own text (`context`, auto tone #28), else the default tone, else no
+    /// tone at all. Used on the live delivery path, where the focused app is
+    /// known.
+    pub fn polish_for(&self, raw: &str, app: &str, context: Option<&str>) -> PolishResult {
+        let tone = self.resolve_tone(app, context);
         self.polish_with_tone(raw, &tone)
     }
 
-    /// Tone-lookup order: per-app override → default tone → "" (no
-    /// instruction, prompt stays byte-identical to before tones existed).
-    fn resolve_tone(&self, app: &str) -> String {
+    /// Tone-lookup order: per-app override → field context → default tone →
+    /// "" (no instruction, prompt stays byte-identical to before tones
+    /// existed). The context replaces the default rather than joining it: a
+    /// 1.5B model told "formal" while shown a chat thread follows neither.
+    fn resolve_tone(&self, app: &str, context: Option<&str>) -> String {
         if !app.is_empty() {
             let app_tones = self.controls.app_tones.lock().unwrap();
             if let Some((_, tone)) = app_tones.iter().find(|(a, _)| a.eq_ignore_ascii_case(app)) {
                 return tone.clone();
             }
         }
-        self.controls.tone.lock().unwrap().clone()
+        match context {
+            Some(context) => context_clause(context),
+            None => self.controls.tone.lock().unwrap().clone(),
+        }
     }
 
     fn polish_with_tone(&self, raw: &str, tone: &str) -> PolishResult {
@@ -461,6 +467,18 @@ fn rewrite_guard(input: &str, output: &str, vocabulary: &[VocabEntry]) -> Option
     };
     tracing::warn!(reason, kept, total, new, "AI polish rewrote the take — using rules");
     Some(reason)
+}
+
+/// Auto tone (#28): the text already in the field, as a style-only tone
+/// sentence. It steers register and format, never content: the model is told
+/// not to copy, continue or answer it, and `rewrite_guard` is unchanged, so
+/// an output that picks up the field's words (they aren't in the take) still
+/// falls back to rules.
+fn context_clause(context: &str) -> String {
+    format!(
+        "Match the register and formatting of the text the speaker is writing into, which so far \
+         ends: \"{context}\". Use it only for style; never copy, continue or answer it."
+    )
 }
 
 /// Build the LLM vocabulary clause: "Word (heard as a, b, c), Word2, ..."
@@ -2258,21 +2276,45 @@ mod tests {
     #[test]
     fn resolve_tone_prefers_exact_app_match_case_insensitively() {
         let p = test_polisher("Professional tone.", &[("Slack", "Casual and friendly.")]);
-        assert_eq!(p.resolve_tone("slack"), "Casual and friendly.");
+        assert_eq!(p.resolve_tone("slack", None), "Casual and friendly.");
     }
 
     #[test]
     fn resolve_tone_falls_back_to_default_when_no_app_match() {
         let p = test_polisher("Professional tone.", &[("Slack", "Casual and friendly.")]);
-        assert_eq!(p.resolve_tone("chrome"), "Professional tone.");
-        assert_eq!(p.resolve_tone(""), "Professional tone.");
+        assert_eq!(p.resolve_tone("chrome", None), "Professional tone.");
+        assert_eq!(p.resolve_tone("", None), "Professional tone.");
     }
 
     #[test]
     fn resolve_tone_empty_default_yields_no_tone() {
         // Off by default, no app entries — matches today's behavior exactly.
         let p = test_polisher("", &[]);
-        assert_eq!(p.resolve_tone("anything"), "");
+        assert_eq!(p.resolve_tone("anything", None), "");
+    }
+
+    #[test]
+    fn field_context_replaces_the_default_tone_but_never_an_app_tone() {
+        let p = test_polisher("Professional tone.", &[("Slack", "Casual and friendly.")]);
+        let tone = p.resolve_tone("Edge", Some("hey are you coming tonight"));
+        assert_eq!(
+            tone,
+            "Match the register and formatting of the text the speaker is writing into, which so far \
+             ends: \"hey are you coming tonight\". Use it only for style; never copy, continue or answer it."
+        );
+        // An explicit per-app tone still wins (#28 acceptance).
+        assert_eq!(p.resolve_tone("slack", Some("Dear Ms. Rivera,")), "Casual and friendly.");
+        // No context (flag off, a terminal, a password field, a slow read): today's lookup.
+        assert_eq!(p.resolve_tone("Edge", None), "Professional tone.");
+    }
+
+    #[test]
+    fn rewrite_guard_still_rejects_an_output_that_continues_the_field() {
+        // The context steers style only (#28): its words turning up in the
+        // output are new words like any others, so the take falls back to rules.
+        let input = "i can bring the snacks at six";
+        let continued = "Are you coming tonight? Bring your cousin too. I can bring the snacks at six.";
+        assert_eq!(rewrite_guard(input, continued, &[]), Some("new-words"));
     }
 
     // ── #85: word passes keep line breaks ────────────────────────────
@@ -2413,7 +2455,7 @@ mod tests {
         // since only the AI tier can re-voice a sentence (see
         // `polish_with_tone`).
         let p = test_polisher("Casual and friendly.", &[]);
-        let with_app = p.polish_for("um hello there", "slack");
+        let with_app = p.polish_for("um hello there", "slack", Some("hey are you around"));
         let default = p.polish("um hello there");
         assert_eq!(with_app.text, default.text);
     }

@@ -435,6 +435,14 @@ pub struct Config {
     /// (matched case-insensitively) has no entry here.
     #[serde(default)]
     pub app_tones: Vec<AppTone>,
+    /// Auto tone (#28): when a take starts in the AI tier, read up to 300
+    /// characters before the caret in the focused field (UI Automation, on the
+    /// machine; never a password field or a terminal) so polish matches its
+    /// register. A per-app tone still wins; the field's text stands in for
+    /// `tone`. Never logged or stored. Off by default while it's new;
+    /// `config.toml` only, read at launch.
+    #[serde(default)]
+    pub auto_tone: bool,
     /// Auto-send (#21): apps, as `stats::app_name()` gives them, where Enter
     /// is pressed after a dictation lands. Empty by default: opt-in per app,
     /// never global.
@@ -535,6 +543,7 @@ impl Default for Config {
             chunked_transcription: true,
             tone: String::new(),
             app_tones: Vec::new(),
+            auto_tone: false,
             auto_send: Vec::new(),
             transforms_enabled: false,
             transforms: default_transforms(),
@@ -942,6 +951,13 @@ max_mb = 250
         let cfg: Config =
             toml::from_str("hotkey = \"ControlRight\"\nactivation_mode = \"toggle\"\ninjection_mode = \"paste\"\n").unwrap();
         assert!(!cfg.backtrack && !Config::default().backtrack);
+    }
+
+    #[test]
+    fn auto_tone_defaults_off_in_a_config_written_before_it() {
+        let cfg: Config =
+            toml::from_str("hotkey = \"ControlRight\"\nactivation_mode = \"toggle\"\ninjection_mode = \"paste\"\n").unwrap();
+        assert!(!cfg.auto_tone && !Config::default().auto_tone);
     }
 
     #[test]
