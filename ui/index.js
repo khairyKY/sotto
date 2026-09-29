@@ -45,6 +45,13 @@ const mock = {
     { name: "Prompt engineer", chord: "Ctrl+Alt+Digit2", prompt: "Turn it into a detailed prompt for an AI assistant, as four labelled lines: Goal, Context, Constraints, Output. Use only what the text says.", keep_words: false },
     { name: "بالمصري", chord: "Ctrl+Alt+Shift+KeyE", prompt: "اكتبها بالعامية المصرية وخلي الـ English terms زي ما هي.", keep_words: false },
   ],
+  // Trained words, invented. `?calibration` previews the Calibrate card (#22).
+  vocabulary: [
+    { word: "Claude", heardAs: ["clawed"], recent: [true, false, true, true] },
+    { word: "Gemini CLI", heardAs: [], recent: [false, true] },
+    { word: "كشري", heardAs: [], recent: [] },
+  ],
+  calibration: new URLSearchParams(location.search).has("calibration"),
   transformDefaults: [
     { name: "Polish", chord: "Ctrl+Alt+Digit1", prompt: "Tighten and clarify it without changing its meaning. Keep the writer's own words wherever you can, and keep I, me and my as they are.", keep_words: true },
     { name: "Prompt engineer", chord: "Ctrl+Alt+Digit2", prompt: "Turn it into a detailed prompt for an AI assistant, as four labelled lines: Goal, Context, Constraints, Output. Use only what the text says.", keep_words: false },
@@ -977,18 +984,22 @@ function renderHistoryPage(entries) {
   });
 }
 
+// `a` → `b` as struck and accent words: History's review (#25), Calibrate (#22).
+function diffHtml(a, b) {
+  return wordDiff(a, b).map((p) =>
+    p.op === "=" ? escapeHtml(p.w) : p.op === "-" ? `<del>${escapeHtml(p.w)}</del>` : `<ins>${escapeHtml(p.w)}</ins>`).join(" ");
+}
+
 // Review panel (#25): raw → delivered as struck/accent words, which tier ran,
 // and "Use what I said" (raw to the clipboard; see copy_original).
 function reviewPanel(e) {
   const panel = document.createElement("div");
   panel.className = "hist-review";
   panel.hidden = true;
-  const words = wordDiff(e.raw, e.text).map((p) =>
-    p.op === "=" ? escapeHtml(p.w) : p.op === "-" ? `<del>${escapeHtml(p.w)}</del>` : `<ins>${escapeHtml(p.w)}</ins>`);
   const tier = { ai: "AI polish", rules: "Rules", off: "No polish" }[e.tier] || e.tier;
   const note = e.fallback ? `${tier} · AI skipped: ${e.fallback}` : tier;
   const unchanged = e.raw.trim() === e.text.trim();
-  panel.innerHTML = `${unchanged ? "" : `<div class="hist-diff" dir="auto">${words.join(" ")}</div>`}
+  panel.innerHTML = `${unchanged ? "" : `<div class="hist-diff" dir="auto">${diffHtml(e.raw, e.text)}</div>`}
     <div class="hist-review-foot"><span class="hist-tier">${escapeHtml(unchanged ? note + " · no changes" : note)}</span>
     ${unchanged ? "" : '<button class="link-add use-raw">Use what I said</button>'}</div>`;
   panel.querySelector(".use-raw")?.addEventListener("click", () => invoke("copy_original", { raw: e.raw }));
@@ -1032,6 +1043,7 @@ function renderTrainedWords() {
 
 function loadPronunciation() {
   renderTrainedWords();
+  if (!$("cal-section").hidden) loadCalibration();
 }
 
 // Drives the whole listen/record/resolve flow. `word` only matters when
@@ -1076,10 +1088,11 @@ function pronSetState(state, word) {
 // cancelled, failed) sends no 'pronunciation-sample'. Without this the page
 // sat on "Listening" or "Checking…" with nothing left to come (#49). "done"
 // never lands here: the sample handler plays the matched/missed flash first.
+// Calibrate's takes (#22) end the same way; only one flow records at a time.
 function pronTakeEnded(state) {
-  if (pronState === "idle") return;
-  pronSetState("idle");
-  if (state !== "cancelled") $("pron-status").textContent = "Didn't catch that. Try again.";
+  const note = state === "cancelled" ? "" : "Didn't catch that. Try again.";
+  if (pronState !== "idle") { pronSetState("idle"); $("pron-status").textContent = note; }
+  if (calState !== "idle") { calSetState("idle"); $("cal-status").textContent = note; }
 }
 
 function pronAddSampleRow(word, heard, matched) {
@@ -1089,22 +1102,25 @@ function pronAddSampleRow(word, heard, matched) {
     row.innerHTML = `<span class="pron-sample-heard">Heard: <b dir="auto">${escapeHtml(heard)}</b></span><span class="pron-sample-match" title="Matched">&#10003;</span>`;
   } else {
     row.innerHTML = `<span class="pron-sample-heard">Heard: <b dir="auto">${escapeHtml(heard || "(nothing)")}</b></span><button class="btn btn-ghost" id="pron-add-correction">Add correction</button>`;
-    row.querySelector("#pron-add-correction").onclick = async () => {
-      await invoke("add_pronunciation_correction", { word, heard });
-      const s = await getSettings();
-      pronVocabulary = (s.vocabulary || []).map(v => ({ word: v.word, heardAs: v.heardAs || [], recent: v.recent || [] }));
-      renderTrainedWords();
-      document.querySelectorAll("#pron-trained-list .pron-trained-row").forEach(r => {
-        if (r.querySelector(".pron-trained-word")?.textContent === word) {
-          const ring = r.querySelector(".pron-strength");
-          ring?.classList.add("pron-level-up");
-          setTimeout(() => ring?.classList.remove("pron-level-up"), 500);
-        }
-      });
-      row.querySelector("#pron-add-correction").replaceWith(document.createTextNode(" — added"));
-    };
+    row.querySelector("#pron-add-correction").onclick = (ev) => pronAddCorrection(word, heard, ev.currentTarget);
   }
   $("pron-samples-list").prepend(row);
+}
+
+// "Add correction" (the trainer's and Calibrate's): the only thing that saves.
+async function pronAddCorrection(word, heard, btn) {
+  await invoke("add_pronunciation_correction", { word, heard });
+  const s = await getSettings();
+  pronVocabulary = (s.vocabulary || []).map(v => ({ word: v.word, heardAs: v.heardAs || [], recent: v.recent || [] }));
+  renderTrainedWords();
+  document.querySelectorAll("#pron-trained-list .pron-trained-row").forEach(r => {
+    if (r.querySelector(".pron-trained-word")?.textContent === word) {
+      const ring = r.querySelector(".pron-strength");
+      ring?.classList.add("pron-level-up");
+      setTimeout(() => ring?.classList.remove("pron-level-up"), 500);
+    }
+  });
+  btn.replaceWith(document.createTextNode(" — added"));
 }
 
 if ($("pron-listen-btn")) {
@@ -1115,7 +1131,7 @@ if ($("pron-listen-btn")) {
       return;
     }
     const word = $("pron-word-input").value.trim();
-    if (!word) return;
+    if (!word || calState !== "idle") return;
     // Armed before Start is sent: Start consumes the arm, so it must land first.
     await invoke("set_pronunciation_target", { word });
     if (await invoke("start_dictation") === false) {
@@ -1125,6 +1141,85 @@ if ($("pron-listen-btn")) {
       return;
     }
     pronSetState("listening", word);
+  };
+}
+
+// ── calibrate (#22) ──
+// Each sentence goes through the trainer's direct-record path (ADR 0001),
+// armed as a calibration target: the take comes back as a
+// 'pronunciation-sample' holding the raw transcript, and nothing is scored,
+// polished, typed or saved. Only an "Add correction" click saves.
+let calSentences = [], calIndex = 0, calState = "idle"; // calState: as pronState
+
+function loadCalibration() {
+  const next = calibrationSentences(pronVocabulary.map(v => v.word));
+  if (next.join("\n") !== calSentences.join("\n")) { calSentences = next; calIndex = 0; }
+  if (calState === "idle") calShow();
+}
+
+function calShow() {
+  const sentence = calSentences[calIndex];
+  $("cal-progress").textContent = sentence ? `Sentence ${calIndex + 1} of ${calSentences.length}`
+    : calSentences.length ? "" : "Train a word above first, and Calibrate reads it back in a sentence.";
+  $("cal-sentence").textContent = sentence || (calSentences.length ? "That's every trained word." : "");
+  $("cal-diff").hidden = true;
+  $("cal-pairs").innerHTML = "";
+  $("cal-next-btn").textContent = sentence || !calSentences.length ? "Skip" : "Start over";
+  calSetState("idle");
+}
+
+function calSetState(state) {
+  calState = state;
+  const status = $("cal-status");
+  $("cal-card").classList.toggle("is-listening", state === "listening");
+  $("cal-read-btn").textContent = state === "listening" ? "Stop" : "Read it";
+  $("cal-read-btn").disabled = state === "resolving" || !calSentences[calIndex];
+  $("cal-next-btn").disabled = state !== "idle" || !calSentences.length;
+  status.textContent = state === "listening" ? "Listening — read it out loud" : state === "resolving" ? "Checking…" : "";
+  status.classList.toggle("active", state === "listening");
+}
+
+// The sentence vs what was heard, then one row per trained word heard as
+// something else, each with its own "Add correction".
+function calResult(heard) {
+  const sentence = calSentences[calIndex];
+  const pairs = harvest(sentence, heard, pronVocabulary.map(v => v.word));
+  const exact = wordDiff(sentence, heard).every(p => p.op === "=");
+  calSetState("idle");
+  $("cal-diff").innerHTML = diffHtml(sentence, heard);
+  $("cal-diff").hidden = exact;
+  $("cal-status").textContent = exact ? "Heard it exactly ✓" : pairs.length ? "" : "Nothing to add for your trained words";
+  $("cal-next-btn").textContent = "Next";
+  $("cal-pairs").innerHTML = "";
+  pairs.forEach(([word, as]) => {
+    const row = document.createElement("div");
+    row.className = "pron-sample-row";
+    row.innerHTML = `<span class="pron-sample-heard">Heard <b dir="auto">${escapeHtml(as)}</b> for <b dir="auto">${escapeHtml(word)}</b></span><button class="btn btn-ghost">Add correction</button>`;
+    row.querySelector("button").onclick = (ev) => pronAddCorrection(word, as, ev.currentTarget);
+    $("cal-pairs").appendChild(row);
+  });
+}
+
+if ($("cal-read-btn")) {
+  $("cal-read-btn").onclick = async () => {
+    if (calState === "listening") {
+      invoke("stop_dictation");
+      calSetState("resolving");
+      return;
+    }
+    const sentence = calSentences[calIndex];
+    if (!sentence || pronState !== "idle") return;
+    await invoke("set_pronunciation_target", { word: sentence, calibration: true });
+    if (await invoke("start_dictation") === false) {
+      invoke("set_pronunciation_target", { word: null });
+      $("cal-status").textContent = "Dictation is paused. Resume it from the tray menu.";
+      return;
+    }
+    calSetState("listening");
+  };
+  $("cal-next-btn").onclick = () => {
+    calIndex = calIndex < calSentences.length ? calIndex + 1 : 0;
+    calShow();
   };
 }
 
@@ -1942,7 +2037,8 @@ async function boot() {
 
   // Pronunciation trainer data
   pronVocabulary = (s.vocabulary || []).map(v => ({ word: v.word, heardAs: v.heardAs || [], recent: v.recent || [] }));
-  renderTrainedWords();
+  $("cal-section").hidden = !s.calibration;
+  loadPronunciation();
 
   // Live event listeners
   if (hasTauri && T.event) {
@@ -1953,6 +2049,7 @@ async function boot() {
     });
     T.event.listen("pronunciation-sample", async (e) => {
       const { word, heard, matched } = e.payload || {};
+      if (calState !== "idle" && word === calSentences[calIndex]) return calResult(heard);
       if (!pronArmedWord || word !== pronArmedWord) return;
       const focusEl = $("pron-focus-word");
       focusEl.classList.add(matched ? "matched" : "missed");
@@ -2003,7 +2100,7 @@ async function boot() {
       renderTakeAlert(e.payload || null);
       // A take was stashed undelivered. Covers a trainer take whose error
       // state was held back because a newer take was already recording.
-      if (e.payload && pronState === "resolving") pronTakeEnded("error");
+      if (e.payload && (pronState === "resolving" || calState === "resolving")) pronTakeEnded("error");
     });
   }
 

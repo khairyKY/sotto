@@ -432,6 +432,11 @@ pub struct Config {
     /// Select-and-rewrite actions, each on its own chord.
     #[serde(default = "default_transforms")]
     pub transforms: Vec<Transform>,
+    /// The Pronunciation page's Calibrate card (#22): read sentences built
+    /// from your trained words, and each one Sotto heard differently can be
+    /// added as a correction. Off by default while it's new; config-only.
+    #[serde(default)]
+    pub calibration: bool,
     /// Start minimized to the tray (no window shown on launch).
     #[serde(default = "default_true")]
     pub start_hidden: bool,
@@ -515,6 +520,7 @@ impl Default for Config {
             app_tones: Vec::new(),
             transforms_enabled: false,
             transforms: default_transforms(),
+            calibration: false,
             start_hidden: true,
             stats_enabled: true,
             retention: RetentionConfig::default(),

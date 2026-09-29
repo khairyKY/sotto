@@ -116,7 +116,7 @@ pub struct Controls {
     /// take short-circuits in `process_take` before polish/injection: a
     /// training utterance is never meant to land in a real document, it's
     /// just "what did the engine hear", compared against this word.
-    pub training_word: Arc<Mutex<Option<String>>>,
+    pub training_word: Arc<Mutex<Option<Training>>>,
     /// Per-app tone overrides: (app name, tone instruction) pairs.
     pub app_tones: Arc<Mutex<Vec<(String, String)>>>,
     /// Transform chords (#18), read live by the hotkey listener — see
@@ -385,6 +385,8 @@ struct SettingsPayload {
     transforms_enabled: bool,
     transforms: Vec<config::Transform>,
     transform_defaults: Vec<config::Transform>,
+    /// Shows the Pronunciation page's Calibrate card (#22).
+    calibration: bool,
 }
 
 // ── commands ───────────────────────────────────────────────────────────
@@ -516,6 +518,7 @@ fn get_settings(state: tauri::State<'_, AppState>) -> SettingsPayload {
         transforms_enabled: c.transforms_enabled.load(Ordering::Relaxed),
         transforms: c.transforms.lock().unwrap().clone(),
         transform_defaults: config::default_transforms(),
+        calibration: cfg.calibration,
     }
 }
 
@@ -651,9 +654,12 @@ fn set_quote_style(style: String, state: tauri::State<'_, AppState>) {
 /// take's Start consumes the arm (`None` disarms), and that take short-circuits in
 /// `process_take` — see its training-word check — reporting what was heard
 /// instead of polishing/injecting it.
+/// With `calibration`, `word` is a whole Calibrate sentence (#22).
 #[tauri::command]
-fn set_pronunciation_target(word: Option<String>, state: tauri::State<'_, AppState>) {
-    *state.controls.training_word.lock().unwrap() = word.filter(|w| !w.trim().is_empty());
+fn set_pronunciation_target(word: Option<String>, calibration: Option<bool>, state: tauri::State<'_, AppState>) {
+    *state.controls.training_word.lock().unwrap() = word
+        .filter(|w| !w.trim().is_empty())
+        .map(|target| Training { target, calibration: calibration.unwrap_or(false) });
 }
 
 /// Pronunciation Trainer's "add this correction" action. Writes BOTH
@@ -1774,7 +1780,7 @@ fn spawn_pipeline(
         // Whether this take's audio goes to the crash journal (#44).
         let mut journaled = true;
         // The trainer word this take was started for, if any (#47).
-        let mut take_training: Option<String> = None;
+        let mut take_training: Option<Training> = None;
         // Pronunciation-Trainer detection peeks — last one's time, for cadence.
         let mut last_peek = std::time::Instant::now();
 
@@ -1832,7 +1838,8 @@ fn spawn_pipeline(
                 // not just mic level. peek_busy keeps peeks from piling up on
                 // the transcribe thread; a training take is short and otherwise
                 // leaves that thread idle, so one peek in flight is plenty.
-                if let Some(target) = take_training.clone() {
+                // A calibration sentence has no glow to light, so no peeks.
+                if let Some(target) = take_training.as_ref().filter(|t| !t.calibration).map(|t| t.target.clone()) {
                     if all.len() >= MIN_CLIP_SAMPLES
                         && last_peek.elapsed() >= Duration::from_millis(900)
                         && !peek_busy.swap(true, Ordering::Relaxed)
@@ -2162,7 +2169,7 @@ struct Take {
     /// take, not read from the live arm, so only the take the user started
     /// from the trainer is a sample, a Retry of it stays one, and every later
     /// hotkey take is a normal dictation (#47).
-    training: Option<String>,
+    training: Option<Training>,
 }
 
 /// Every way a take ends (delivered, dismissed, replaced in the stash, too
@@ -2191,7 +2198,7 @@ impl Take {
     /// `mode` is read from the shared atom rather than from the `Polisher`,
     /// which now lives on the transcribe thread and isn't reachable from the
     /// audio thread that builds takes.
-    fn new(samples: Vec<f32>, focus_target: isize, mode: PolishMode, journal: Vec<PathBuf>, training: Option<String>) -> Self {
+    fn new(samples: Vec<f32>, focus_target: isize, mode: PolishMode, journal: Vec<PathBuf>, training: Option<Training>) -> Self {
         // Recorder returns 16 kHz mono, so ms = samples / 16.
         let audio_ms = samples.len() as u64 * 1000 / 16_000;
         Take {
@@ -2296,6 +2303,15 @@ fn heard_word(text: &str, target: &str) -> bool {
     !target.is_empty() && text.windows(target.len()).any(|w| w == target)
 }
 
+/// What a trainer take is for: the word typed on the Pronunciation page, or
+/// a whole Calibrate sentence (#22). Both come back as a
+/// "pronunciation-sample"; only a word is scored.
+#[derive(Clone)]
+pub struct Training {
+    target: String,
+    calibration: bool,
+}
+
 /// Whether a peek's transcript should ignite the glow: the word was heard
 /// AND the peek belongs to the take being recorded now. A peek still in
 /// flight when the next take starts would otherwise glow and auto-stop the
@@ -2310,7 +2326,7 @@ fn peek_fires(text: &str, target: &str, peek_take: u64, live_take: u64) -> bool 
 /// UI that never sends `None`). The new take becomes a trainer take only if
 /// it really starts; a Start ignored because a take is already recording
 /// leaves that take a normal dictation.
-fn arm_take(armed: &mut Option<String>, recording: bool) -> Option<String> {
+fn arm_take<T>(armed: &mut Option<T>, recording: bool) -> Option<T> {
     let word = armed.take();
     if recording { None } else { word }
 }
@@ -2423,7 +2439,7 @@ fn process_take(
     // into the panel too — the user just tries again; not worth a second
     // short-circuit point for a case the overlay's error state already
     // covers.
-    if let Some(target) = take.training.clone() {
+    if let Some(Training { target, calibration }) = take.training.clone() {
         let heard = raw.trim().to_string();
         let matched = heard_word(&heard, &target);
         // Persist this attempt into the word's rolling success history —
@@ -2431,8 +2447,10 @@ fn process_take(
         // miss, "did this land" is its own signal. Mirrors
         // `add_pronunciation_correction`'s save-then-refresh-the-live-mirror
         // pattern, just reached via AppHandle since this runs on the worker
-        // thread rather than inside a #[tauri::command].
-        {
+        // thread rather than inside a #[tauri::command]. A calibration
+        // sentence isn't a word to score, and it saves nothing until the
+        // user confirms a correction (#22).
+        if !calibration {
             let app_state = app.state::<AppState>();
             let mut cfg = app_state.cfg.lock().unwrap();
             config::record_attempt(&mut cfg.polish.vocabulary, &target, matched);

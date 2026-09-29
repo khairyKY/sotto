@@ -1,5 +1,6 @@
 // Word-level diff of what the ASR heard vs what was delivered — History's
-// review panel (#25). Pure, so `node ui/diff.js` runs the self-check below.
+// review panel (#25) and Calibrate's harvest (#22). Pure, so `node ui/diff.js`
+// runs the self-check below.
 //
 // Words match on letters/digits only, ignoring case and punctuation: polish
 // re-cases and re-punctuates nearly every word, and striking all of them would
@@ -27,7 +28,9 @@ function wordDiff(raw, delivered) {
   return out;
 }
 
-if (typeof window === "undefined") {
+// Node: calibrate.js reuses it; the self-check runs only for `node ui/diff.js`.
+if (typeof window === "undefined") module.exports = { wordDiff };
+if (typeof window === "undefined" && require.main === module) {
   const assert = require("node:assert");
   const show = (r, d) => wordDiff(r, d).map((p) => (p.op === "=" ? p.w : p.op + p.w)).join(" ");
   assert.strictEqual(show("um the the plan", "The plan."), "-um The -the plan."); // the stutter's second copy struck

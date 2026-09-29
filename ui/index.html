@@ -317,6 +317,22 @@
               <div class="hist-empty">No words trained yet</div>
             </div>
           </div>
+
+          <!-- Calibrate (#22), behind the `calibration` config flag. -->
+          <div id="cal-section" hidden>
+            <div class="settings-section-title" style="margin-top:22px">Calibrate</div>
+            <div class="card-raised pron-listen-card" id="cal-card">
+              <span class="section-hint" id="cal-progress"></span>
+              <div class="cal-sentence" id="cal-sentence" dir="auto"></div>
+              <div class="hist-diff" id="cal-diff" dir="auto" hidden></div>
+              <div class="pron-listen-row">
+                <button class="btn btn-primary" id="cal-read-btn">Read it</button>
+                <button class="btn btn-ghost" id="cal-next-btn">Skip</button>
+                <span class="pron-status" id="cal-status"></span>
+              </div>
+            </div>
+            <div class="pron-samples-list" id="cal-pairs"></div>
+          </div>
         </section>
 
         <!-- ===================== TRANSFORMS (#18) =====================
@@ -773,6 +789,7 @@
     </div>
 
     <script src="./diff.js"></script>
+    <script src="./calibrate.js"></script>
     <script src="./index.js"></script>
   </body>
 </html>

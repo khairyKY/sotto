@@ -502,6 +502,9 @@ body {
 .pron-sample-heard b { color: var(--mm-text); }
 .pron-sample-match { color: var(--mm-accent-ink); flex: none; font-size: 15px; }
 .pron-trained-container { padding: 4px; }
+/* Calibrate (#22): the sentence to read, in the display face. */
+.cal-sentence { font: 500 21px/1.35 Newsreader; color: var(--mm-ink); margin: 6px 0 8px; }
+#cal-diff { margin-bottom: 4px; }
 .pron-trained-row {
   display: flex;
   align-items: center;
