@@ -49,19 +49,24 @@ const RECOVERED: &str = "Recovered after a restart";
 // Nothing below CHUNK_MIN_SAMPLES is ever cut, so a normal short dictation
 // never touches any of this and behaves exactly as it did before.
 //
-// ponytail: fixed thresholds, no adaptation to the room's noise floor. If a
-// noisy mic stops finding pauses, every take just falls back to cutting at
-// CHUNK_MAX_SAMPLES — degraded, not broken. Raise SILENCE_RMS if that happens.
+// ponytail: the pause finder's threshold is fixed, no adaptation to the room's
+// noise floor. If a noisy mic stops finding pauses, every take just falls back
+// to cutting at CHUNK_MAX_SAMPLES — degraded, not broken. Raise SILENCE_RMS if
+// that happens. (Speech detection is relative to the take: see `has_speech`.)
 const CHUNK_MIN_SAMPLES: usize = 16_000 * 10; // don't cut before 10s of audio
 const CHUNK_MAX_SAMPLES: usize = 16_000 * 24; // cut by 24s, pause or not
 const SILENCE_WIN: usize = 16_000 * 300 / 1000; // pause detector window, 300ms
 const SILENCE_STEP: usize = 16_000 * 50 / 1000; // scan stride, 50ms
-/// RMS below this counts as a pause rather than speech; a 30 ms frame above
-/// it counts as voiced (see `has_speech`).
+/// RMS below this counts as a pause a chunk may be cut in (see `chunk_cut`).
 const SILENCE_RMS: f32 = 0.015;
 const SPEECH_FRAME: usize = 16_000 * 30 / 1000; // speech detector frame, 30ms
 /// Voiced frames a stretch needs to hold speech: 150 ms, shorter than a word.
 const SPEECH_MIN_FRAMES: usize = 5;
+/// A voiced frame is this many times the take's noise floor (about 10 dB)...
+const SPEECH_OVER_FLOOR: f32 = 3.0;
+/// ...and never quieter than this (-60 dBFS), for a noise-gated mic whose
+/// pauses are digital zero.
+const SPEECH_MIN_RMS: f32 = 0.001;
 /// Each chunk after the first also re-hears this much audio before its cut,
 /// so a word the cut clipped is heard whole on one side (see `seam_start`).
 const CHUNK_OVERLAP: usize = 16_000; // 1s
@@ -1974,7 +1979,7 @@ fn spawn_pipeline(
                     // unchunked take with no speech in it: fed room tone the
                     // model invents a phrase, and it would be typed (#51).
                     // A chunked take is gated chunk by chunk instead.
-                    if all.len() < MIN_CLIP_SAMPLES || (sent == 0 && !has_speech(&all)) {
+                    if all.len() < MIN_CLIP_SAMPLES || (sent == 0 && !has_speech(&all, 0..all.len())) {
                         tracing::info!(
                             id = take_id,
                             secs = all.len() as f64 / 16_000.0,
@@ -2074,16 +2079,27 @@ fn rms(s: &[f32]) -> f32 {
     (s.iter().map(|v| v * v).sum::<f32>() / s.len() as f32).sqrt()
 }
 
-/// Whether `s` holds any speech: at least SPEECH_MIN_FRAMES 30 ms frames
-/// louder than SILENCE_RMS. Counted, not averaged: a whole-chunk mean let
-/// 10 s of quiet speech pass for silence (#64), and a share of frames would
-/// still drown one short word in a long chunk.
+/// Whether `take[part]` holds any speech: at least SPEECH_MIN_FRAMES 30 ms
+/// frames louder than SPEECH_OVER_FLOOR times the take's noise floor (its
+/// quietest 150 ms) and than SPEECH_MIN_RMS. One test for the chunk, seam,
+/// tail and short-take gates.
+///
+/// Counted, not averaged: a whole-chunk mean let 10 s of quiet speech pass
+/// for silence (#64), and a share of frames would still drown one short word
+/// in a long chunk. Relative, not a fixed bar: a clause 20 dB under the rest
+/// of the take fell under the old 0.015 and was dropped after the last cut
+/// (#100), while a fan above it passed for speech.
 ///
 /// ponytail: loudness only. Steady room tone stays under the bar, but a run
 /// of keyboard clatter can clear it and reach the model. The upgrade is a
-/// real VAD (Silero), which needs a model file: a Conductor call.
-fn has_speech(s: &[f32]) -> bool {
-    s.chunks(SPEECH_FRAME).filter(|f| rms(f) > SILENCE_RMS).count() >= SPEECH_MIN_FRAMES
+/// real VAD (Silero), which needs a model file: a Conductor call. The floor
+/// is the quietest stretch, not a percentile, so continuous speech is never
+/// its own floor; a device that opens on 150 ms of digital silence drops the
+/// bar to SPEECH_MIN_RMS for that take.
+fn has_speech(take: &[f32], part: std::ops::Range<usize>) -> bool {
+    let floor = take.chunks_exact(SPEECH_FRAME * SPEECH_MIN_FRAMES).map(rms).reduce(f32::min).unwrap_or(0.0);
+    let bar = (floor * SPEECH_OVER_FLOOR).max(SPEECH_MIN_RMS);
+    take[part].chunks(SPEECH_FRAME).filter(|f| rms(f) > bar).count() >= SPEECH_MIN_FRAMES
 }
 
 /// Where the audio after a cut at `cut` starts when it's handed to the model:
@@ -2093,7 +2109,7 @@ fn has_speech(s: &[f32]) -> bool {
 /// `join_text` to drop the words both sides heard.
 fn seam_start(all: &[f32], cut: usize) -> usize {
     let from = cut.saturating_sub(CHUNK_OVERLAP);
-    if has_speech(&all[from..cut]) { from } else { cut }
+    if has_speech(all, from..cut) { from } else { cut }
 }
 
 /// The next chunk due out of `all` (the take so far) once `sent` samples of it
@@ -2103,7 +2119,7 @@ fn seam_start(all: &[f32], cut: usize) -> usize {
 fn next_chunk(all: &[f32], sent: usize) -> Option<(usize, usize, bool)> {
     let end = sent + chunk_cut(&all[sent..])?;
     let from = seam_start(all, sent);
-    let speech = has_speech(&all[sent..end]);
+    let speech = has_speech(all, sent..end);
     // The seams, for auditing lost words against the audio.
     tracing::debug!(from, sent, end, speech, "chunk boundary");
     Some((from, end, speech))
@@ -2391,8 +2407,10 @@ fn process_take(
         let from = seam_start(&take.samples, sent);
         // Releasing the key just after a chunk cut leaves a tail with nothing
         // in it. Handed that, the model invents a word to tack onto the end,
-        // so a tail with no speech is treated as the silence it is.
-        let tail_text = if sent > 0 && !has_speech(&take.samples[sent..]) {
+        // so a tail with no speech is treated as the silence it is. It's
+        // judged against the whole take's floor, so a softer last clause
+        // still counts (#100).
+        let tail_text = if sent > 0 && !has_speech(&take.samples, sent..take.samples.len()) {
             Ok(String::new())
         } else {
             asr.transcribe(&take.samples[from..])
@@ -3010,7 +3028,7 @@ fn run_transcribe_once(path: &str) -> anyhow::Result<()> {
             }
         }
         let from = seam_start(&samples, sent);
-        if sent == 0 || has_speech(&samples[sent..]) {
+        if sent == 0 || has_speech(&samples, sent..samples.len()) {
             text = join_text(&text, &asr.transcribe(&samples[from..])?, from < sent);
         }
         println!("chunked => {text:?}");
@@ -3267,20 +3285,33 @@ mod tests {
             })
             .collect()
     }
+    /// `v` played over room tone at `level` RMS.
+    fn on_bed(v: Vec<f32>, level: f32) -> Vec<f32> {
+        v.iter().zip(room_tone(v.len(), level)).map(|(a, b)| a + b).collect()
+    }
+    /// A whole short take or chunk judged on its own.
+    fn any_speech(s: &[f32]) -> bool {
+        has_speech(s, 0..s.len())
+    }
 
     #[test]
     fn silence_is_recognised_as_silence() {
         // The guard that stops pure room tone from being handed to the model,
         // which answers it with an invented phrase — a whole chunk (#64) or
         // a whole short take (#51) of it.
-        assert!(!has_speech(&quiet(CHUNK_MAX_SAMPLES)));
+        assert!(!any_speech(&quiet(CHUNK_MAX_SAMPLES)));
         let mut tone = room_tone(CHUNK_MAX_SAMPLES, 0.004);
         // A few clicks (a desk knock, a key) are not speech either.
         for at in [16_000, 16_000 * 7, 16_000 * 20] {
             tone[at] = 0.5;
         }
-        assert!(!has_speech(&tone));
-        assert!(!has_speech(&room_tone(16_000 * 3, 0.004)), "a silent short take must not reach the model");
+        assert!(!any_speech(&tone));
+        assert!(!any_speech(&room_tone(16_000 * 3, 0.004)), "a silent short take must not reach the model");
+        // #100: a fan louder than the old fixed bar is room tone all the same.
+        let fan = room_tone(CHUNK_MAX_SAMPLES, 0.03);
+        assert!(rms(&fan) > SILENCE_RMS, "the old fixed bar took this for speech");
+        assert!(!any_speech(&fan));
+        assert!(!any_speech(&room_tone(16_000 * 3, 0.03)));
     }
 
     #[test]
@@ -3289,16 +3320,52 @@ mod tests {
         // thrown away whole. The mean was the wrong question; this is speech.
         let quiet_speech = bursts(CHUNK_MIN_SAMPLES, 0.03);
         assert!(rms(&quiet_speech) < SILENCE_RMS, "the old whole-chunk mean called this silence");
-        assert!(has_speech(&quiet_speech));
+        assert!(any_speech(&quiet_speech));
+        // A whole take at mean RMS ~0.01, in a room with some hiss.
+        let quieter = on_bed(bursts(CHUNK_MIN_SAMPLES, 0.022), 0.001);
+        assert!((rms(&quieter) - 0.01).abs() < 0.001);
+        assert!(any_speech(&quieter));
         // One short word in a long quiet chunk survives too: counting voiced
         // frames, not their share, keeps it from drowning.
         let mut one_word = room_tone(CHUNK_MAX_SAMPLES, 0.003);
         one_word.extend(bursts(16_000 * 3 / 10, 0.05));
-        assert!(has_speech(&one_word));
+        assert!(any_speech(&one_word));
         // #51: a short take that is mostly quiet with one spoken second.
         let mut short = quiet(16_000 * 2);
         short.extend(bursts(16_000, 0.03));
-        assert!(has_speech(&short), "a spoken second inside a quiet take must survive");
+        assert!(any_speech(&short), "a spoken second inside a quiet take must survive");
+    }
+
+    #[test]
+    fn a_quiet_last_clause_after_the_cut_is_kept() {
+        // #100: speech, a pause the last cut lands in, then a clause said 20 dB
+        // under the rest. Every frame of it sat under the old fixed bar, so the
+        // tail was called silence and dropped.
+        // Cut the way the live loop does, as soon as the pause is heard.
+        let heard = CHUNK_MIN_SAMPLES + 16_000;
+        let take = on_bed([bursts(CHUNK_MIN_SAMPLES, 0.1), quiet(16_000 * 2), bursts(16_000 * 2, 0.01)].concat(), 0.001);
+        let (_, cut, _) = next_chunk(&take[..heard], 0).expect("the pause should produce a cut");
+        assert!(take[cut..].chunks(SPEECH_FRAME).all(|f| rms(f) < SILENCE_RMS), "the old bar called this silence");
+        assert!(has_speech(&take, cut..take.len()));
+        // The same on a quiet speaker (mean RMS 0.012) whose mic gates its
+        // pauses to digital zero: the clause is 20 dB under even that.
+        let soft = [bursts(CHUNK_MIN_SAMPLES, 0.027), quiet(16_000 * 2), bursts(16_000 * 2, 0.0027)].concat();
+        assert!((rms(&soft[..CHUNK_MIN_SAMPLES]) - 0.012).abs() < 0.001);
+        let (_, cut, _) = next_chunk(&soft[..heard], 0).expect("the pause should produce a cut");
+        assert!(has_speech(&soft, cut..soft.len()));
+    }
+
+    #[test]
+    fn a_room_tone_tail_is_still_dropped() {
+        // #64's protection stays: the key released a while after the last
+        // word leaves a tail of room tone, which the model would answer with
+        // an invented word. Quiet room, hissy room, a fan above the old bar.
+        for level in [0.0, 0.001, 0.004, 0.03] {
+            let take = on_bed([bursts(CHUNK_MIN_SAMPLES, 0.3), quiet(16_000 * 3)].concat(), level);
+            let cut = CHUNK_MIN_SAMPLES + 16_000;
+            assert!(has_speech(&take, 0..cut), "speech over room tone at {level}");
+            assert!(!has_speech(&take, cut..take.len()), "a room-tone tail at {level}");
+        }
     }
 
     #[test]
