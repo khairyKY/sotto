@@ -22,11 +22,13 @@ const mock = {
   appTones: [],
   history: [
     // Arabic-first and code-switched samples keep bidi rendering (#42) checkable in the preview.
-    { time: "2:31 PM", text: "افتح الـ terminal وشغّل الـ build" },
-    { time: "2:20 PM", text: "الاجتماع الساعة اتناشر ونص" },
-    { time: "2:14 PM", text: "Let's ship the overlay states first." },
-    { time: "1:58 PM", text: "you@example.com" },
-    { time: "11:02 AM", text: "Refactor the polish tier." },
+    // raw/tier/fallback exist for this session's rows only (#25); the last two stand in for rows reloaded from history.jsonl.
+    { time: "2:31 PM", text: "افتح الـ terminal وشغّل الـ build", raw: "يعني افتح ال terminal و شغّل ال build", tier: "ai", fallback: "" },
+    { time: "2:20 PM", text: "الاجتماع الساعة اتناشر ونص", raw: "الاجتماع الساعة اتناشر ونص", tier: "rules", fallback: "short" },
+    { time: "2:14 PM", text: "Let's ship the overlay states first.", raw: "um so let's let's ship the overlay states first", tier: "ai", fallback: "" },
+    { time: "1:58 PM", text: "you@example.com", raw: "my main email", tier: "rules", fallback: "llm-error" },
+    { time: "Sep 27", text: "Refactor the polish tier." },
+    { time: "Sep 27", text: "Move the standup to Thursday at ten." },
   ],
   models: [
     { id: "parakeet-v3", name: "Parakeet v3", variant: "· English", meta: "NVIDIA · int8 quantized", state: "installed", size: "639 MB", selected: true },
@@ -946,7 +948,9 @@ function renderHistoryPage(entries) {
   entries.forEach((e, i) => {
     const row = document.createElement("div");
     row.className = "hist-row";
-    row.innerHTML = `<span class="time">${e.time}</span><span class="txt" dir="auto">${escapeHtml(e.text)}</span><span class="copy" title="Copy">⧉</span><span class="retry" title="Re-polish &amp; copy">↻</span><span class="flag" title="Flag as wrong / not working">⚑</span>`;
+    // ± only when this session kept the raw transcript (#25); reloaded rows have none.
+    const diffBtn = e.raw ? '<span class="diff-toggle" title="What changed">±</span>' : "";
+    row.innerHTML = `<span class="time">${e.time}</span><span class="txt" dir="auto">${escapeHtml(e.text)}</span>${diffBtn}<span class="copy" title="Copy">⧉</span><span class="retry" title="Re-polish &amp; copy">↻</span><span class="flag" title="Flag as wrong / not working">⚑</span>`;
     row.querySelector(".copy").onclick = (ev) => { ev.stopPropagation(); copyText(e.text); };
     row.querySelector(".retry").onclick = (ev) => { ev.stopPropagation(); invoke("repolish_copy", { text: e.text }); };
     const flagEl = row.querySelector(".flag");
@@ -959,7 +963,30 @@ function renderHistoryPage(entries) {
     };
     row.onclick = () => copyText(e.text);
     host.appendChild(row);
+    if (e.raw) {
+      const panel = reviewPanel(e);
+      host.appendChild(panel);
+      row.querySelector(".diff-toggle").onclick = (ev) => { ev.stopPropagation(); panel.hidden = !panel.hidden; };
+    }
   });
+}
+
+// Review panel (#25): raw → delivered as struck/accent words, which tier ran,
+// and "Use what I said" (raw to the clipboard; see copy_original).
+function reviewPanel(e) {
+  const panel = document.createElement("div");
+  panel.className = "hist-review";
+  panel.hidden = true;
+  const words = wordDiff(e.raw, e.text).map((p) =>
+    p.op === "=" ? escapeHtml(p.w) : p.op === "-" ? `<del>${escapeHtml(p.w)}</del>` : `<ins>${escapeHtml(p.w)}</ins>`);
+  const tier = { ai: "AI polish", rules: "Rules", off: "No polish" }[e.tier] || e.tier;
+  const note = e.fallback ? `${tier} · AI skipped: ${e.fallback}` : tier;
+  const unchanged = e.raw.trim() === e.text.trim();
+  panel.innerHTML = `${unchanged ? "" : `<div class="hist-diff" dir="auto">${words.join(" ")}</div>`}
+    <div class="hist-review-foot"><span class="hist-tier">${escapeHtml(unchanged ? note + " · no changes" : note)}</span>
+    ${unchanged ? "" : '<button class="link-add use-raw">Use what I said</button>'}</div>`;
+  panel.querySelector(".use-raw")?.addEventListener("click", () => invoke("copy_original", { raw: e.raw }));
+  return panel;
 }
 function loadHistory() { renderHistoryPage(historyEntries); }
 

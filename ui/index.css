@@ -597,6 +597,17 @@ body {
 .hist-row .flag { color: var(--mm-muted-2); flex: none; font-size: 12px; cursor: pointer; }
 .hist-row .flag:hover { color: var(--mm-accent-ink); }
 .hist-row .flag.flagged { color: var(--mm-accent); cursor: default; }
+.hist-row .diff-toggle { color: var(--mm-muted-2); flex: none; font-size: 12px; cursor: pointer; }
+.hist-row .diff-toggle:hover { color: var(--mm-accent-ink); }
+/* Review panel (#25): indented under the row's text (14 pad + 58 time + 12 gap). */
+.hist-review { padding: 0 14px 11px 84px; }
+.hist-review[hidden] { display: none; }
+.hist-diff { font: 400 12.5px/1.6 "Hanken Grotesk"; color: var(--mm-text-secondary); }
+.hist-diff del { color: var(--mm-muted-2); text-decoration: line-through; }
+.hist-diff ins { color: var(--mm-accent-ink); text-decoration: none; }
+.hist-review-foot { display: flex; align-items: center; gap: 12px; margin-top: 4px; }
+.hist-tier { font: 400 10.5px "Hanken Grotesk"; color: var(--mm-muted-3); }
+.hist-review-foot .link-add { font-size: 11.5px; }
 
 /* ── settings ──────────────────────────────── */
 .settings-section { margin-bottom: 20px; }
