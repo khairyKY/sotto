@@ -5,7 +5,8 @@ use windows::Win32::Foundation::HWND;
 use windows::Win32::System::Threading::{AttachThreadInput, GetCurrentThreadId};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     GetAsyncKeyState, SendInput, VIRTUAL_KEY, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT,
-    KEYEVENTF_KEYUP, KEYEVENTF_UNICODE, VK_C, VK_CONTROL, VK_LWIN, VK_MENU, VK_RWIN, VK_SHIFT, VK_V,
+    KEYEVENTF_EXTENDEDKEY, KEYEVENTF_KEYUP, KEYEVENTF_UNICODE, VK_C, VK_CONTROL, VK_INSERT, VK_LEFT,
+    VK_LWIN, VK_MENU, VK_RIGHT, VK_RWIN, VK_SHIFT, VK_V,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     GetForegroundWindow, GetWindowThreadProcessId, IsWindow, SetForegroundWindow,
@@ -202,28 +203,69 @@ pub fn send_ctrl_c() -> anyhow::Result<()> {
     send_ctrl(VK_C)
 }
 
+/// Ctrl+Insert: a copy that is never an interrupt. A voice correction's (#20)
+/// check of what `select_back` grabbed, where Ctrl+C would stop whatever a
+/// terminal is running.
+pub fn send_ctrl_insert() -> anyhow::Result<()> {
+    send_ctrl(VK_INSERT)
+}
+
+/// Shift+Left × `n`: select the `n` characters before the caret, a voice
+/// correction's re-grab of the last injection. One key per `SendInput` with
+/// a 1ms gap, for the same reason as `inject_unicode`.
+pub fn select_back(n: usize) -> anyhow::Result<()> {
+    send(&[vk_input(VK_SHIFT, false)])?;
+    let walked = press(VK_LEFT, n);
+    send(&[vk_input(VK_SHIFT, true)])?;
+    walked
+}
+
+/// Right × `n`: collapse a selection to its end (1), or walk the caret back
+/// after a `select_back` that moved it without selecting.
+pub fn press_right(n: usize) -> anyhow::Result<()> {
+    press(VK_RIGHT, n)
+}
+
+fn press(key: VIRTUAL_KEY, n: usize) -> anyhow::Result<()> {
+    for _ in 0..n {
+        send(&[vk_input(key, false), vk_input(key, true)])?;
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    Ok(())
+}
+
 fn send_ctrl(key: VIRTUAL_KEY) -> anyhow::Result<()> {
-    let events = [
+    send(&[
         vk_input(VK_CONTROL, false),
         vk_input(key, false),
         vk_input(key, true),
         vk_input(VK_CONTROL, true),
-    ];
-    let sent = unsafe { SendInput(&events, size_of::<INPUT>() as i32) };
+    ])
+}
+
+fn send(events: &[INPUT]) -> anyhow::Result<()> {
+    let sent = unsafe { SendInput(events, size_of::<INPUT>() as i32) };
     if sent as usize != events.len() {
-        anyhow::bail!("SendInput (ctrl+{key:?}) only accepted {sent}/{}", events.len());
+        anyhow::bail!("SendInput only accepted {sent}/{}", events.len());
     }
     Ok(())
 }
 
 fn vk_input(vk: VIRTUAL_KEY, key_up: bool) -> INPUT {
+    let mut flags = if key_up { KEYEVENTF_KEYUP } else { Default::default() };
+    // Arrows and Insert live on the extended keypad. Without the flag they
+    // arrive as their number-pad twins, which NumLock can turn into digits
+    // and a held Shift into plain arrows.
+    if matches!(vk, VK_LEFT | VK_RIGHT | VK_INSERT) {
+        flags |= KEYEVENTF_EXTENDEDKEY;
+    }
     INPUT {
         r#type: INPUT_KEYBOARD,
         Anonymous: INPUT_0 {
             ki: KEYBDINPUT {
                 wVk: vk,
                 wScan: 0,
-                dwFlags: if key_up { KEYEVENTF_KEYUP } else { Default::default() },
+                dwFlags: flags,
                 time: 0,
                 dwExtraInfo: 0,
             },

@@ -12,6 +12,7 @@ mod assets;
 mod audio;
 mod bug_reports;
 mod config;
+mod correction;
 mod history;
 mod hotkey;
 mod inject;
@@ -2467,6 +2468,14 @@ fn process_take(
     // lookup key below and the stats line further down, so one syscall covers
     // both instead of querying Windows twice.
     let app_name = stats::app_name(take.focus_target);
+    // Voice correction (#20): "correction: Claude, not clawed" fixes the last
+    // dictation instead of being typed. Not a dictation itself: no history,
+    // no stats.
+    let voice_correction = app.state::<AppState>().cfg.lock().unwrap().voice_correction;
+    if let Some((right, wrong)) = correction::parse(&raw).filter(|_| voice_correction) {
+        run_correction(app, &right, &wrong, take.focus_target, &app_name, suppressed, listening, injection_mode);
+        return;
+    }
     if polisher.uses_ai_tier(&raw) {
         emit_state(app, "polishing");
     }
@@ -2505,6 +2514,7 @@ fn process_take(
             if let Ok(mut cb) = arboard::Clipboard::new() {
                 let _ = cb.set_text(result.text.clone());
             }
+            correction::remember(&result.text, take.focus_target);
             history.push(raw.clone(), result.text.clone(), result.tier, result.fallback);
             emit_state(app, "done");
             // "Something smart just happened": when a phonetic correction fired
@@ -2650,6 +2660,91 @@ fn run_transform(
         transform::Outcome::NothingSelected => "noselection",
         transform::Outcome::Kept => "kept",
     });
+}
+
+/// Voice correction (#20): swap `wrong` for `right` in the last dictation,
+/// teach the pair, and type the fixed text back over the old one. The retype
+/// needs the command to come from the window that dictation went to, and a
+/// copy of the re-selected span to prove it's still there, unchanged. Any
+/// other case leaves the document alone and puts the fix on the clipboard.
+#[allow(clippy::too_many_arguments)]
+fn run_correction(
+    app: &tauri::AppHandle,
+    right: &str,
+    wrong: &str,
+    focus: isize,
+    app_name: &str,
+    suppressed: &Arc<AtomicBool>,
+    listening: &Arc<AtomicBool>,
+    injection_mode: InjectionMode,
+) {
+    // Same rule as process_take: never pull the pill off a live take.
+    let quiet = || listening.load(Ordering::Relaxed);
+    let found = correction::last()
+        .and_then(|(old, hwnd)| Some((correction::replace_word(&old, wrong, right)?, old, hwnd)));
+    let Some((fixed, old, hwnd)) = found else {
+        // Counts and flags only, here and below: the words are the user's (#48).
+        tracing::info!("voice correction: the word isn't in the last dictation");
+        if !quiet() {
+            let _ = app.emit("overlay-note", wrong);
+            emit_state(app, "notfound");
+        }
+        return;
+    };
+    let taught = correction::harvests(right, wrong);
+    if taught {
+        add_pronunciation_correction(right.to_string(), wrong.to_string(), app.state::<AppState>());
+    }
+    let retyped =
+        hwnd == focus && !correction::is_terminal(app_name) && retype(&old, &fixed, hwnd, suppressed, injection_mode);
+    tracing::info!(retyped, taught, chars = fixed.chars().count(), "voice correction");
+    // The fix is now the last dictation (a second correction builds on it)
+    // and the clipboard's safety net, as after any delivery.
+    correction::remember(&fixed, hwnd);
+    copy_text(fixed);
+    if quiet() {
+        return;
+    }
+    if retyped {
+        emit_state(app, "done");
+        let _ = app.emit("overlay-flyout", FlyoutDto { heard: wrong.to_string(), corrected: right.to_string(), more: 0 });
+    } else {
+        emit_state(app, "fixcopied");
+    }
+}
+
+/// Re-select the last dictation (Shift+Left × its length), copy it with
+/// Ctrl+Insert, and type `fixed` over it only if the copy is that dictation.
+/// `transform::run` owns the clipboard around the copy.
+fn retype(old: &str, fixed: &str, hwnd: isize, suppressed: &Arc<AtomicBool>, injection_mode: InjectionMode) -> bool {
+    let Ok(mut clip) = transform::SystemClipboard::new() else {
+        return false;
+    };
+    inject::restore_focus(hwnd);
+    // A modifier still down turns Shift+Left into Ctrl+Shift+Left (a word).
+    // Waited out before suppressing, so the listener sees the user's releases.
+    if !inject::wait_for_modifiers_released(Duration::from_secs(2)) {
+        return false;
+    }
+    let n = old.chars().count();
+    suppressed.store(true, Ordering::SeqCst);
+    let outcome = transform::run(
+        &mut clip,
+        || inject::select_back(n).and_then(|()| inject::send_ctrl_insert()),
+        |copied| correction::same_text(copied, old).then(|| fixed.to_string()),
+        |out| inject::inject_text(out, injection_mode),
+    );
+    // Leave the caret where it was: collapse a selection that wasn't the
+    // dictation to its end, or walk back a Shift+Left that only moved it
+    // (a terminal's line editor).
+    let _ = match outcome {
+        transform::Outcome::Replaced => Ok(()),
+        transform::Outcome::Kept => inject::press_right(1),
+        transform::Outcome::NothingSelected => inject::press_right(n),
+    };
+    std::thread::sleep(Duration::from_millis(30)); // our own keys pass the hook while suppressed
+    suppressed.store(false, Ordering::SeqCst);
+    outcome == transform::Outcome::Replaced
 }
 
 fn emit_state(app: &tauri::AppHandle, s: &str) {

@@ -400,6 +400,11 @@ pub struct Config {
     /// `apply_phonetic_corrections`.
     #[serde(default = "default_true")]
     pub phonetic_correction: bool,
+    /// Voice correction (#20): "correction: Claude, not clawed" right after a
+    /// dictation fixes that dictation instead of being typed. Off by default
+    /// while it's new, and `config.toml` only: no Settings row yet.
+    #[serde(default)]
+    pub voice_correction: bool,
     /// Glyphs spoken quote commands ("open quote"/"quote ... unquote")
     /// produce: "straight" (default — safe in code editors and terminals)
     /// or "curly". Shares `formatting_commands`'s toggle, not its own.
@@ -514,6 +519,7 @@ impl Default for Config {
             formatting_commands: true,
             number_formatting: true,
             phonetic_correction: true,
+            voice_correction: false,
             quote_style: default_quote_style(),
             chunked_transcription: true,
             tone: String::new(),
@@ -903,6 +909,13 @@ max_mb = 250
         assert_eq!(names, ["Polish", "Prompt engineer"]);
         // Polish is the one that must keep the writer's words (#65).
         assert!(cfg.transforms[0].keep_words && !cfg.transforms[1].keep_words);
+    }
+
+    #[test]
+    fn voice_correction_defaults_off_in_a_config_written_before_it() {
+        let cfg: Config =
+            toml::from_str("hotkey = \"ControlRight\"\nactivation_mode = \"toggle\"\ninjection_mode = \"paste\"\n").unwrap();
+        assert!(!cfg.voice_correction && !Config::default().voice_correction);
     }
 
     #[test]

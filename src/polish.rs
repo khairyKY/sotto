@@ -1339,7 +1339,7 @@ const SPAN_SLIP_CODE: usize = 7;
 /// slide a match across ordinary sentence glue. A span holding one never
 /// matches, unless the target itself contains that word. Compared with the
 /// apostrophe removed ("it's" -> "its").
-const FUNCTION_WORDS: &[&str] = &[
+pub(crate) const FUNCTION_WORDS: &[&str] = &[
     "a", "an", "the", "and", "or", "but", "nor", "so", "if", "as", "at", "by", "for", "from", "in", "into", "of",
     "off", "on", "onto", "out", "over", "to", "up", "with", "is", "am", "are", "was", "were", "be", "been", "do",
     "does", "did", "has", "have", "had", "i", "me", "my", "we", "us", "our", "you", "your", "he", "him", "his",
