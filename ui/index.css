@@ -462,6 +462,9 @@ body {
   80% { transform: translateX(4px); }
 }
 .pron-listen-row { display: flex; align-items: center; gap: 12px; margin-top: 12px; }
+/* Only the status text gives way at 760px; buttons and the switch keep their shape. */
+.pron-listen-row .btn { flex: none; }
+.pron-say-first { display: flex; align-items: center; gap: 9px; margin-left: auto; flex: none; white-space: nowrap; }
 .pron-status { font: 500 12px "Hanken Grotesk"; color: var(--mm-muted-3); display: flex; align-items: center; gap: 8px; }
 .pron-status.active { color: var(--mm-accent-ink); }
 .pron-status.active::before {
