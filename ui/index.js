@@ -65,6 +65,8 @@ async function invoke(cmd, args) {
   if (cmd === "download_assets") mockDownload();
   if (cmd === "set_transforms") mock.transforms = args.transforms;
   if (cmd === "set_transforms_enabled") mock.transformsEnabled = args.enabled;
+  // Stands in for Harper's real-word check (#94), enough to preview both notes.
+  if (cmd === "add_pronunciation_correction") return !/\b(cloud|clawed|code)\b/i.test(args.heard);
   // `?firstrun` previews a fresh install: nothing on disk yet (#54).
   if (cmd === "assets_status") return MOCK_FIRST_RUN
     ? { ready: false, missing: ["Parakeet v3 (speech-to-text)", "Qwen2.5 1.5B (AI polish)", "llama.cpp runtime"] }
@@ -1101,15 +1103,17 @@ function pronAddSampleRow(word, heard, matched) {
   if (matched) {
     row.innerHTML = `<span class="pron-sample-heard">Heard: <b dir="auto">${escapeHtml(heard)}</b></span><span class="pron-sample-match" title="Matched">&#10003;</span>`;
   } else {
-    row.innerHTML = `<span class="pron-sample-heard">Heard: <b dir="auto">${escapeHtml(heard || "(nothing)")}</b></span><button class="btn btn-ghost" id="pron-add-correction">Add correction</button>`;
-    row.querySelector("#pron-add-correction").onclick = (ev) => pronAddCorrection(word, heard, ev.currentTarget);
+    // Nothing heard, nothing to learn: add_pronunciation_correction would save nothing.
+    row.innerHTML = `<span class="pron-sample-heard">Heard: <b dir="auto">${escapeHtml(heard || "(nothing)")}</b></span>${heard ? '<button class="btn btn-ghost">Add correction</button>' : ""}`;
+    row.querySelector("button")?.addEventListener("click", (ev) => pronAddCorrection(word, heard, ev.currentTarget));
   }
   $("pron-samples-list").prepend(row);
 }
 
 // "Add correction" (the trainer's and Calibrate's): the only thing that saves.
+// A real-word mishearing is kept as a hint only, never a dictionary entry (#94).
 async function pronAddCorrection(word, heard, btn) {
-  await invoke("add_pronunciation_correction", { word, heard });
+  const exact = await invoke("add_pronunciation_correction", { word, heard });
   const s = await getSettings();
   pronVocabulary = (s.vocabulary || []).map(v => ({ word: v.word, heardAs: v.heardAs || [], recent: v.recent || [] }));
   renderTrainedWords();
@@ -1120,7 +1124,11 @@ async function pronAddCorrection(word, heard, btn) {
       setTimeout(() => ring?.classList.remove("pron-level-up"), 500);
     }
   });
-  btn.replaceWith(document.createTextNode(" — added"));
+  const note = document.createElement("span");
+  note.className = "pron-learned";
+  note.textContent = exact ? "Learned" : `Learned (hint only — ${heard.includes(" ") ? "has a real word" : "real word"})`;
+  if (!exact) note.title = `A dictionary entry would change every “${heard}” you say, so it's kept as a hint.`;
+  btn.replaceWith(note);
 }
 
 if ($("pron-listen-btn")) {
