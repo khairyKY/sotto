@@ -10,7 +10,7 @@ cp "$(dirname "$0")/../nsis/hooks.nsi" "$S/"
 mk() { mkdir -p "$(dirname "$1")"; echo x > "$1"; }
 for d in shared own; do
   mk "$S/$d/onnxruntime.dll"; mk "$S/$d/models/qwen2.5-1.5b-instruct-q4_k_m.gguf"
-  mk "$S/$d/models/ggml-large-v3-turbo-q5_0.bin.part"
+  mk "$S/$d/models/ggml-large-v3-turbo-q5_0.bin.part"; mk "$S/$d/models/ggml-large-v3-turbo-q5_0.bin.0123456789abcdef.part"
   mk "$S/$d/models/parakeet-tdt-0.6b-v3-int8/encoder-model.int8.onnx"
   mk "$S/$d/runtime/llama/llama-server.exe"
   mk "$S/$d/recordings/index.jsonl"; mk "$S/$d/recordings/1790000000.wav"

@@ -43,17 +43,18 @@
 ; Its own macro so nsis-check can run it against a sandbox folder.
 !macro SOTTO_DELETE_ASSETS
     ; Delete ONLY what Sotto itself put there, by exact name (src/assets.rs,
-    ; recordings.rs), plus each file's download leftover. The user may have
+    ; recordings.rs), plus each file's download leftovers (`<file>.part`, and
+    ; `<file>.<url hash>.part` since #76). The user may have
     ; pointed assets_dir at a shared folder (say D:\AI) holding other apps'
     ; models; none of that may go.
     Delete "$0\onnxruntime.dll"
-    Delete "$0\onnxruntime.dll.part"
+    Delete "$0\onnxruntime.dll*.part"
     Delete "$0\models\qwen2.5-1.5b-instruct-q4_k_m.gguf"
-    Delete "$0\models\qwen2.5-1.5b-instruct-q4_k_m.gguf.part"
+    Delete "$0\models\qwen2.5-1.5b-instruct-q4_k_m.gguf*.part"
     Delete "$0\models\ggml-large-v3-turbo-q5_0.bin"
-    Delete "$0\models\ggml-large-v3-turbo-q5_0.bin.part"
+    Delete "$0\models\ggml-large-v3-turbo-q5_0.bin*.part"
     Delete "$0\models\ggml-egyptian-codeswitch-small.bin"
-    Delete "$0\models\ggml-egyptian-codeswitch-small.bin.part"
+    Delete "$0\models\ggml-egyptian-codeswitch-small.bin*.part"
     ; Sotto-named subfolders (zip extraction targets) are wholly Sotto's.
     RMDir /r "$0\models\parakeet-tdt-0.6b-v3-int8"
     RMDir /r "$0\runtime\llama"
