@@ -8,9 +8,9 @@
 //! independently of the app (see `ASSET_BASE`), so shipping a new app version
 //! never touches them.
 //!
-//! Correctness note: each file streams to a `<dest>.part` and is atomically
-//! renamed only after a complete download, so an interrupted run never leaves a
-//! half-written model that would later be mistaken for "installed".
+//! Correctness note: each file streams to a `<dest>.<url hash>.part` and is
+//! atomically renamed only after a complete download, so an interrupted run
+//! never leaves a half-written model that would later be mistaken for "installed".
 
 use crate::config;
 use anyhow::{Context, Result};
@@ -183,8 +183,8 @@ pub fn spawn_provision_if_missing(app: AppHandle) {
         }
         let names: Vec<&str> = missing.iter().map(|a| a.name).collect();
         tracing::info!(?names, "provisioning missing assets from GitHub");
-        // Leftover `<dest>.part` files from an interrupted run are kept on
-        // purpose: `download_to` resumes them with a Range request (#52).
+        // Leftover `.part` files from an interrupted run are kept on purpose:
+        // `download_to` resumes them with a Range request (#52).
         let result = provision(&app, &missing);
         IN_PROGRESS.store(false, Ordering::SeqCst);
         match result {
@@ -253,6 +253,34 @@ fn parse_content_range(s: &str) -> Option<(u64, u64, u64)> {
     Some((start.parse().ok()?, end.parse().ok()?, total.parse().ok()?))
 }
 
+/// `<dest>.<url hash>.part`. A partial download only ever resumes against
+/// the URL it came from (#76): a new asset tag changes the URL, and resuming
+/// the old tag's bytes against the new file would splice old prefix + new
+/// tail into a corrupt model of exactly the right length.
+fn part_path(dest: &Path, url: &str) -> PathBuf {
+    // FNV-1a, not std's DefaultHasher: its output may change between Rust
+    // releases, which would orphan every `.part` on an app update.
+    let h = url.bytes().fold(0xcbf2_9ce4_8422_2325_u64, |h, b| (h ^ b as u64).wrapping_mul(0x100_0000_01b3));
+    PathBuf::from(format!("{}.{h:016x}.part", dest.display()))
+}
+
+/// Delete `dest`'s partial downloads other than `keep`: other URLs' keyed
+/// `.part`s and the unkeyed `<dest>.part` from before #76, whose URL is unknown.
+fn remove_stale_parts(dest: &Path, keep: &Path) {
+    let (Some(dir), Some(name)) = (dest.parent(), dest.file_name().and_then(|n| n.to_str())) else { return };
+    let Ok(entries) = fs::read_dir(dir) else { return };
+    for p in entries.flatten().map(|e| e.path()).filter(|p| p.file_name() != keep.file_name()) {
+        let key = p.file_name().and_then(|n| n.to_str()?.strip_prefix(name)?.strip_suffix(".part"));
+        let ours = key.is_some_and(|k| {
+            k.is_empty() || k.strip_prefix('.').is_some_and(|h| h.len() == 16 && h.bytes().all(|b| b.is_ascii_hexdigit()))
+        });
+        if ours {
+            tracing::info!(part = %p.display(), "deleting a partial download from another URL");
+            let _ = fs::remove_file(&p);
+        }
+    }
+}
+
 /// Stream `url` to `dest` via a `.part` sibling, renaming only on success. If
 /// `.part` already has bytes from an interrupted run, resumes with an HTTP
 /// `Range` request instead of restarting the file from zero — the difference
@@ -261,7 +289,8 @@ fn download_to(url: &str, dest: &Path, progress: &dyn Fn(u64, u64)) -> Result<()
     if let Some(parent) = dest.parent() {
         fs::create_dir_all(parent)?;
     }
-    let part = PathBuf::from(format!("{}.part", dest.display()));
+    let part = part_path(dest, url);
+    remove_stale_parts(dest, &part);
     let part_len = fs::metadata(&part).map(|m| m.len()).unwrap_or(0);
 
     let ranged_resp = if part_len > 0 {
@@ -478,9 +507,10 @@ mod tests {
 
     /// Minimal HTTP/1.1 server for one fake file with `Range` support — the
     /// download tests run against this on 127.0.0.1, never the real release.
-    /// `cut` drops every connection once the file offset reaches that byte.
+    /// `cut` drops the first connection once the file offset reaches that
+    /// byte; later ones (the resume, at the same URL) get the rest.
     /// Each request's `Range` start (None = no header) is sent on the channel.
-    fn serve(body: Vec<u8>, cut: Option<usize>) -> (String, std::sync::mpsc::Receiver<Option<usize>>) {
+    fn serve(body: Vec<u8>, mut cut: Option<usize>) -> (String, std::sync::mpsc::Receiver<Option<usize>>) {
         let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let url = format!("http://{}/asset.bin", l.local_addr().unwrap());
         let (tx, rx) = std::sync::mpsc::channel();
@@ -503,7 +533,7 @@ mod tests {
                     Some(n) => (format!("206 Partial Content\r\nContent-Range: bytes {n}-{}/{len}\r\nContent-Length: {}", len - 1, len - n), n),
                     None => (format!("200 OK\r\nContent-Length: {len}"), 0),
                 };
-                let end = cut.map_or(len, |c| c.min(len)).max(from);
+                let end = cut.take().map_or(len, |c| c.min(len)).max(from);
                 let _ = s.write_all(format!("HTTP/1.1 {head}\r\nConnection: close\r\n\r\n").as_bytes());
                 let _ = s.write_all(&body[from..end]);
             }
@@ -522,24 +552,20 @@ mod tests {
         d.join("model.bin")
     }
 
-    fn part_of(dest: &Path) -> PathBuf {
-        PathBuf::from(format!("{}.part", dest.display()))
-    }
-
     #[test]
     fn dropped_stream_keeps_part_then_next_run_resumes() {
         let body = fake_body();
         let dest = scratch("resume");
 
         // Connection drops at byte 20 000: error, nothing renamed into place.
-        let (url, _) = serve(body.clone(), Some(20_000));
+        let (url, rx) = serve(body.clone(), Some(20_000));
         assert!(download_to(&url, &dest, &|_, _| {}).is_err());
         assert!(!dest.exists(), "a short stream must never be renamed into place");
-        let kept = fs::metadata(part_of(&dest)).unwrap().len();
+        let kept = fs::metadata(part_path(&dest, &url)).unwrap().len();
         assert!(kept > 0 && kept <= 20_000, "kept {kept}");
+        assert_eq!(rx.recv().unwrap(), None);
 
         // The next run asks for the tail only and ends with the exact file (#52).
-        let (url, rx) = serve(body.clone(), None);
         let last = std::cell::Cell::new(0);
         download_to(&url, &dest, &|r, t| {
             assert_eq!(t, body.len() as u64);
@@ -549,15 +575,38 @@ mod tests {
         assert_eq!(rx.recv().unwrap(), Some(kept as usize));
         assert_eq!(last.get(), body.len() as u64);
         assert_eq!(fs::read(&dest).unwrap(), body);
-        assert!(!part_of(&dest).exists());
+        assert!(!part_path(&dest, &url).exists());
+    }
+
+    #[test]
+    fn a_part_from_another_url_is_never_resumed() {
+        // Same file name, new tag, new bytes of the same length (#76).
+        let old = fake_body();
+        let new: Vec<u8> = old.iter().map(|b| !b).collect();
+        let dest = scratch("newtag");
+        let (old_url, _) = serve(old, Some(20_000));
+        assert!(download_to(&old_url, &dest, &|_, _| {}).is_err());
+        assert!(part_path(&dest, &old_url).exists());
+        // An unkeyed `.part` from before #76: its URL is unknown, so it goes too.
+        fs::write(format!("{}.part", dest.display()), b"legacy").unwrap();
+        // Not a download leftover of ours (assets_dir may be a shared folder).
+        fs::write(format!("{}.notes.part", dest.display()), b"keep").unwrap();
+
+        let (new_url, rx) = serve(new.clone(), None);
+        download_to(&new_url, &dest, &|_, _| {}).unwrap();
+        assert_eq!(rx.recv().unwrap(), None, "a plain GET, no Range");
+        assert_eq!(fs::read(&dest).unwrap(), new, "no old prefix spliced in");
+        let mut left: Vec<_> = fs::read_dir(dest.parent().unwrap()).unwrap().map(|e| e.unwrap().file_name()).collect();
+        left.sort();
+        assert_eq!(left, ["model.bin", "model.bin.notes.part"], "stale .part files deleted");
     }
 
     #[test]
     fn oversized_part_restarts_clean_after_416() {
         let body = fake_body();
         let dest = scratch("oversized");
-        fs::write(part_of(&dest), vec![7u8; 60_000]).unwrap();
         let (url, rx) = serve(body.clone(), None);
+        fs::write(part_path(&dest, &url), vec![7u8; 60_000]).unwrap();
         download_to(&url, &dest, &|_, _| {}).unwrap();
         assert_eq!(rx.recv().unwrap(), Some(60_000));
         assert_eq!(rx.recv().unwrap(), None, "the retry is a plain full GET");
@@ -568,8 +617,8 @@ mod tests {
     fn empty_part_is_a_plain_download() {
         let body = fake_body();
         let dest = scratch("empty");
-        fs::write(part_of(&dest), b"").unwrap();
         let (url, rx) = serve(body.clone(), None);
+        fs::write(part_path(&dest, &url), b"").unwrap();
         download_to(&url, &dest, &|_, _| {}).unwrap();
         assert_eq!(rx.recv().unwrap(), None);
         assert_eq!(fs::read(&dest).unwrap(), body);
