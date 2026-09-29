@@ -2280,19 +2280,20 @@ fn config_for_log(cfg: &Config) -> Config {
     safe
 }
 
-/// True if `text` contains `target` — as a whole word (case-insensitive,
-/// punctuation-stripped) for a single-word target, or as a substring for a
-/// multi-word one. The trainer's peek detection.
+/// True if `text` says `target`: its words appear in `text` in a row, whole
+/// words only, ignoring case and the punctuation around each word. The
+/// trainer's one match rule (#49): the peek's glow and the sample's
+/// hit/miss both ask this, so "Claude." can't light "Got it" and then count
+/// as a miss.
 fn heard_word(text: &str, target: &str) -> bool {
-    let target = target.trim();
-    if target.is_empty() {
-        return false;
-    }
-    if target.split_whitespace().count() > 1 {
-        return text.to_lowercase().contains(&target.to_lowercase());
-    }
-    text.split_whitespace()
-        .any(|w| w.trim_matches(|c: char| !c.is_alphanumeric()).eq_ignore_ascii_case(target))
+    let words = |s: &str| -> Vec<String> {
+        s.split_whitespace()
+            .map(|w| w.trim_matches(|c: char| !c.is_alphanumeric()).to_lowercase())
+            .filter(|w| !w.is_empty())
+            .collect()
+    };
+    let (text, target) = (words(text), words(target));
+    !target.is_empty() && text.windows(target.len()).any(|w| w == target)
 }
 
 /// Whether a peek's transcript should ignite the glow: the word was heard
@@ -2424,7 +2425,7 @@ fn process_take(
     // covers.
     if let Some(target) = take.training.clone() {
         let heard = raw.trim().to_string();
-        let matched = heard.eq_ignore_ascii_case(target.trim());
+        let matched = heard_word(&heard, &target);
         // Persist this attempt into the word's rolling success history —
         // regardless of whether the user goes on to log a correction for a
         // miss, "did this land" is its own signal. Mirrors
@@ -3005,9 +3006,26 @@ mod tests {
         // Not a substring of a bigger word.
         assert!(!heard_word("the clauded output", "claude"));
         assert!(!heard_word("nothing relevant here", "Claude"));
-        // Multi-word target falls back to substring.
+        // Multi-word target: its words in a row, same rules.
         assert!(heard_word("open kai's flow now", "Kai's Flow"));
+        assert!(heard_word("Try the Gemini CLI.", "gemini cli"));
+        assert!(!heard_word("the gemini clip", "Gemini CLI"));
+        assert!(!heard_word("gemini and the cli", "Gemini CLI"));
         assert!(!heard_word("", "Claude"));
+        assert!(!heard_word("Claude", "  "));
+    }
+
+    #[test]
+    fn glow_and_sample_agree_on_trailing_punctuation() {
+        // #49: the whole transcript of a trainer take is "Claude." The peek
+        // glows on it, so the sample must count it as a match too.
+        assert!(peek_fires("Claude.", "Claude", 1, 1));
+        assert!(heard_word("Claude.", "Claude"));
+        assert!(heard_word("\"Claude?\"", "claude"));
+        assert!(heard_word("Kai's Flow!", "Kai's Flow"));
+        // Arabic has no case; its words still match whole.
+        assert!(heard_word("قول كشري.", "كشري"));
+        assert!(!heard_word("كشريات", "كشري"));
     }
 
     #[test]

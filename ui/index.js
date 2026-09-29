@@ -1072,6 +1072,16 @@ function pronSetState(state, word) {
   }
 }
 
+// A trainer take that ends without a sample (too short, no speech,
+// cancelled, failed) sends no 'pronunciation-sample'. Without this the page
+// sat on "Listening" or "Checking…" with nothing left to come (#49). "done"
+// never lands here: the sample handler plays the matched/missed flash first.
+function pronTakeEnded(state) {
+  if (pronState === "idle") return;
+  pronSetState("idle");
+  if (state !== "cancelled") $("pron-status").textContent = "Didn't catch that. Try again.";
+}
+
 function pronAddSampleRow(word, heard, matched) {
   const row = document.createElement("div");
   row.className = matched ? "pron-sample-row matched" : "pron-sample-row";
@@ -1979,14 +1989,8 @@ async function boot() {
         }
       }, 700);
     });
-    // A trainer take that ends without a sample (too short, no speech,
-    // cancelled, failed) sends no 'pronunciation-sample', so without this the
-    // page would sit on "Checking…" with Listen disabled. "done" is left to
-    // the sample handler, which plays the matched/missed flash first.
     T.event.listen("overlay-state", (e) => {
-      if (pronState === "resolving" && ["idle", "error", "cancelled", "nomodel"].includes(e.payload)) {
-        pronSetState("idle");
-      }
+      if (["idle", "error", "cancelled", "nomodel"].includes(e.payload)) pronTakeEnded(e.payload);
     });
     T.event.listen("paused-changed", () => loadHome());
     T.event.listen("navigate", (e) => {
@@ -1995,7 +1999,12 @@ async function boot() {
     });
     // Fires on every worker outcome — null once a take is delivered, retried,
     // or dismissed, which is what actually takes the card off the screen.
-    T.event.listen("take-changed", (e) => renderTakeAlert(e.payload || null));
+    T.event.listen("take-changed", (e) => {
+      renderTakeAlert(e.payload || null);
+      // A take was stashed undelivered. Covers a trainer take whose error
+      // state was held back because a newer take was already recording.
+      if (e.payload && pronState === "resolving") pronTakeEnded("error");
+    });
   }
 
   initUpdates();
