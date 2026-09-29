@@ -67,6 +67,8 @@ const SPEECH_OVER_FLOOR: f32 = 3.0;
 /// ...and never quieter than this (-60 dBFS), for a noise-gated mic whose
 /// pauses are digital zero.
 const SPEECH_MIN_RMS: f32 = 0.001;
+/// Start-of-take audio left out of the noise-floor estimate (device warm-up).
+const FLOOR_SKIP: usize = 16_000 / 5; // 200 ms
 /// Each chunk after the first also re-hears this much audio before its cut,
 /// so a word the cut clipped is heard whole on one side (see `seam_start`).
 const CHUNK_OVERLAP: usize = 16_000; // 1s
@@ -2094,10 +2096,15 @@ fn rms(s: &[f32]) -> f32 {
 /// of keyboard clatter can clear it and reach the model. The upgrade is a
 /// real VAD (Silero), which needs a model file: a Conductor call. The floor
 /// is the quietest stretch, not a percentile, so continuous speech is never
-/// its own floor; a device that opens on 150 ms of digital silence drops the
-/// bar to SPEECH_MIN_RMS for that take.
+/// its own floor. A device that goes silent for 150 ms mid-take (a dropout,
+/// past FLOOR_SKIP) still drops the bar to SPEECH_MIN_RMS for that take.
 fn has_speech(take: &[f32], part: std::ops::Range<usize>) -> bool {
-    let floor = take.chunks_exact(SPEECH_FRAME * SPEECH_MIN_FRAMES).map(rms).reduce(f32::min).unwrap_or(0.0);
+    // The first FLOOR_SKIP of a take don't count toward its floor: many devices
+    // open on a few frames of exact zero, which on an ungated mic would drop the
+    // bar to SPEECH_MIN_RMS and let room tone through. A gated mic still finds
+    // its zero floor in the take's later pauses.
+    let settled = take.get(FLOOR_SKIP..).filter(|s| s.len() >= SPEECH_FRAME * SPEECH_MIN_FRAMES).unwrap_or(take);
+    let floor = settled.chunks_exact(SPEECH_FRAME * SPEECH_MIN_FRAMES).map(rms).reduce(f32::min).unwrap_or(0.0);
     let bar = (floor * SPEECH_OVER_FLOOR).max(SPEECH_MIN_RMS);
     take[part].chunks(SPEECH_FRAME).filter(|f| rms(f) > bar).count() >= SPEECH_MIN_FRAMES
 }
@@ -3353,6 +3360,25 @@ mod tests {
         assert!((rms(&soft[..CHUNK_MIN_SAMPLES]) - 0.012).abs() < 0.001);
         let (_, cut, _) = next_chunk(&soft[..heard], 0).expect("the pause should produce a cut");
         assert!(has_speech(&soft, cut..soft.len()));
+    }
+
+    #[test]
+    fn a_device_that_opens_on_digital_silence_doesnt_lower_the_bar() {
+        // Many capture devices open on a few frames of exact zero. Counted in
+        // the floor, those drop the bar to SPEECH_MIN_RMS on an ungated mic,
+        // and ordinary room tone passes for speech: the model then gets it and
+        // invents a phrase (what #64's silent-chunk rule exists to stop).
+        let mut take = vec![0.0; 16_000 / 5];
+        take.extend(room_tone(16_000 * 3, 0.004));
+        let n = take.len();
+        assert!(!has_speech(&take, 0..n), "startup zeros turned room tone into speech");
+        // A gated mic's pauses are zero later in the take too: its floor stays
+        // zero and quiet speech still counts.
+        let mut gated = vec![0.0; 16_000];
+        gated.extend(bursts(16_000 * 2, 0.01));
+        gated.extend(vec![0.0; 16_000]);
+        let m = gated.len();
+        assert!(has_speech(&gated, 0..m));
     }
 
     #[test]
