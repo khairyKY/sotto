@@ -109,6 +109,12 @@ fn vocab_prompt(vocab: &[VocabEntry]) -> Option<String> {
 /// transcribe-rs's `SpeechModel` impl for Whisper has no prompt, so wrap the
 /// engine and go through `transcribe_with`, which has one. Everything else
 /// is `WhisperInferenceParams::default()`, i.e. what the plain impl sends.
+///
+/// Don't reach for `no_speech_thold` when Whisper drops a quiet clause (#69):
+/// this whisper.cpp reads the no-speech probability after the last prompt
+/// token instead of at SOT, so it measured 0.000 on every window, digital
+/// silence included, and 0.2 / 0.6 / 1.0 decode identically. The drop is the
+/// beam-3 decode itself; `suppress_blank` and `suppress_nst` don't move it.
 struct PromptedWhisper {
     engine: WhisperEngine,
     prompt: Option<String>,
