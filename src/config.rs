@@ -405,6 +405,11 @@ pub struct Config {
     /// while it's new, and `config.toml` only: no Settings row yet.
     #[serde(default)]
     pub voice_correction: bool,
+    /// Backtrack (#26): a take that is only "scratch that", "undo that" or
+    /// "delete that" deletes the last dictation instead of being typed. Off
+    /// by default while it's new; `config.toml` only.
+    #[serde(default)]
+    pub backtrack: bool,
     /// Glyphs spoken quote commands ("open quote"/"quote ... unquote")
     /// produce: "straight" (default — safe in code editors and terminals)
     /// or "curly". Shares `formatting_commands`'s toggle, not its own.
@@ -525,6 +530,7 @@ impl Default for Config {
             number_formatting: true,
             phonetic_correction: true,
             voice_correction: false,
+            backtrack: false,
             quote_style: default_quote_style(),
             chunked_transcription: true,
             tone: String::new(),
@@ -929,6 +935,13 @@ max_mb = 250
         let cfg: Config =
             toml::from_str("hotkey = \"ControlRight\"\nactivation_mode = \"toggle\"\ninjection_mode = \"paste\"\n").unwrap();
         assert!(cfg.auto_send.is_empty() && Config::default().auto_send.is_empty());
+    }
+
+    #[test]
+    fn backtrack_defaults_off_in_a_config_written_before_it() {
+        let cfg: Config =
+            toml::from_str("hotkey = \"ControlRight\"\nactivation_mode = \"toggle\"\ninjection_mode = \"paste\"\n").unwrap();
+        assert!(!cfg.backtrack && !Config::default().backtrack);
     }
 
     #[test]

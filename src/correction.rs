@@ -8,6 +8,9 @@
 //! only retypes after a copy of the re-selected span proves it is that
 //! dictation, unchanged (`same_text`); anything else leaves the document
 //! alone and puts the fix on the clipboard.
+//!
+//! Backtrack (#26) shares the memory and the guard: "scratch that" deletes
+//! the last dictation, once the same copy proves it's still there.
 
 use harper_core::spell::{Dictionary, FstDictionary};
 use std::sync::Mutex;
@@ -21,6 +24,11 @@ pub fn remember(text: &str, hwnd: isize) {
 
 pub fn last() -> Option<(String, isize)> {
     LAST.lock().unwrap().clone()
+}
+
+/// A backtrack deleted it: nothing is left to correct or undo.
+pub fn forget() {
+    *LAST.lock().unwrap() = None;
 }
 
 /// `(right, wrong)` when the whole take is "correction: X, not Y", however
@@ -50,6 +58,29 @@ pub fn parse(take: &str) -> Option<(String, String)> {
         return None;
     }
     Some((right, wrong))
+}
+
+/// Backtrack (#26): whether the whole take is "scratch that", "undo that" or
+/// "delete that", however the ASR punctuated or cased it. Only the whole
+/// take, like `parse`: "Scratch that idea." stays a dictation.
+pub fn is_backtrack(take: &str) -> bool {
+    const COMMANDS: [&str; 3] = ["scratch that", "undo that", "delete that"];
+    let said: Vec<String> = take
+        .split_whitespace()
+        .map(|w| w.trim_matches(|c: char| !c.is_alphanumeric()).to_lowercase())
+        .filter(|w| !w.is_empty())
+        .collect();
+    COMMANDS.contains(&said.join(" ").as_str())
+}
+
+/// Backtrack (#26): the dictation "scratch that" said in window `focus` may
+/// delete, or the pill state that says why not. Only the last one, only in
+/// the window it went to, and never in a terminal (see `is_terminal`).
+pub fn undo_target(last: Option<(String, isize)>, focus: isize, app_name: &str) -> Result<String, &'static str> {
+    match last {
+        Some((text, hwnd)) if hwnd == focus => if is_terminal(app_name) { Err("undoterminal") } else { Ok(text) },
+        _ => Err("nothingtoundo"),
+    }
 }
 
 /// Polish's list of sentence-glue words, which it compares apostrophe-free.
@@ -188,6 +219,35 @@ mod tests {
         ] {
             assert_eq!(parse(take), None, "{take:?}");
         }
+    }
+
+    #[test]
+    fn backtrack_is_only_the_whole_take_being_the_command() {
+        for take in ["Scratch that.", "scratch that", "Undo that!", "DELETE THAT", "  Scratch, that.  ", "Scratch. That."] {
+            assert!(is_backtrack(take), "{take:?}");
+        }
+        for take in [
+            "Scratch that idea.",
+            "Please delete that.",
+            "Delete that file.",
+            "Scratch that, scratch that.",
+            "Undo.",
+            "Scratch this.",
+            "Scratch-that.",
+            "امسح ده",
+            "",
+        ] {
+            assert!(!is_backtrack(take), "{take:?}");
+        }
+    }
+
+    #[test]
+    fn backtrack_undoes_only_the_last_dictation_in_its_own_window_and_never_in_a_terminal() {
+        let last = || Some(("I asked clawed to help.".to_string(), 7));
+        assert_eq!(undo_target(last(), 7, "Notepad"), Ok("I asked clawed to help.".to_string()));
+        assert_eq!(undo_target(None, 7, "Notepad"), Err("nothingtoundo"), "nothing dictated, or already undone");
+        assert_eq!(undo_target(last(), 8, "Notepad"), Err("nothingtoundo"), "said in another window");
+        assert_eq!(undo_target(last(), 7, "Terminal"), Err("undoterminal"));
     }
 
     #[test]

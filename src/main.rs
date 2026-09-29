@@ -2499,6 +2499,13 @@ fn process_take(
         run_correction(app, &right, &wrong, take.focus_target, &app_name, suppressed, listening, injection_mode);
         return;
     }
+    // Backtrack (#26): "scratch that" deletes the last dictation instead of
+    // being typed. Not a dictation either: no history, no stats.
+    let backtrack = app.state::<AppState>().cfg.lock().unwrap().backtrack;
+    if backtrack && correction::is_backtrack(&raw) {
+        run_backtrack(app, take.focus_target, &app_name, suppressed, listening, injection_mode);
+        return;
+    }
     if polisher.uses_ai_tier(&raw) {
         emit_state(app, "polishing");
     }
@@ -2746,6 +2753,35 @@ fn run_correction(
     }
 }
 
+/// Backtrack (#26): delete the last dictation, under a voice correction's
+/// guard: said in the window it went to, not a terminal, and a copy of the
+/// re-selected span proves it's still there, unchanged. Anything else leaves
+/// the document alone. One level: a deleted dictation is forgotten, so a
+/// second "scratch that" has nothing to undo.
+fn run_backtrack(
+    app: &tauri::AppHandle,
+    focus: isize,
+    app_name: &str,
+    suppressed: &Arc<AtomicBool>,
+    listening: &Arc<AtomicBool>,
+    injection_mode: InjectionMode,
+) {
+    let state = match correction::undo_target(correction::last(), focus, app_name) {
+        Ok(old) if retype(&old, "", focus, suppressed, injection_mode) => {
+            correction::forget();
+            "done"
+        }
+        Ok(_) => "notundone",
+        Err(state) => state,
+    };
+    // The outcome only: the words are the user's (#48).
+    tracing::info!(state, "backtrack");
+    // Same rule as process_take: never pull the pill off a live take.
+    if !listening.load(Ordering::Relaxed) {
+        emit_state(app, state);
+    }
+}
+
 /// Re-select the last dictation (Shift+Left × its length), copy it with
 /// Ctrl+Insert, and type `fixed` over it only if the copy is that dictation.
 /// `transform::run` owns the clipboard around the copy.
@@ -2765,7 +2801,8 @@ fn retype(old: &str, fixed: &str, hwnd: isize, suppressed: &Arc<AtomicBool>, inj
         &mut clip,
         || inject::select_back(n).and_then(|()| inject::send_ctrl_insert()),
         |copied| correction::same_text(copied, old).then(|| fixed.to_string()),
-        |out| inject::inject_text(out, injection_mode),
+        // An empty `fixed` is a backtrack (#26): delete the selection.
+        |out| if out.is_empty() { inject::press_backspace() } else { inject::inject_text(out, injection_mode) },
     );
     // Leave the caret where it was.
     let _ = inject::press_right(correction::caret_back(&outcome));

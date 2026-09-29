@@ -584,8 +584,10 @@ function drawState(x, y, w, h, now, radius, shadowScale, baseAlpha) {
     // (#25) put the raw transcript on the clipboard (neutral, accent tick).
     // Voice correction (#20): 'fixcopied', the fix couldn't be typed in place
     // and waits on the clipboard (accent tick); 'notfound', the last dictation
-    // doesn't hold the word (neutral).
-    const gx = contentL + 8, kept = name === 'kept';
+    // doesn't hold the word (neutral). Backtrack (#26): 'notundone', the
+    // dictation wasn't there unchanged, so nothing was deleted (blush, like
+    // 'kept'); 'nothingtoundo' and 'undoterminal' (neutral).
+    const gx = contentL + 8, kept = name === 'kept' || name === 'notundone';
     const tick = name === 'copied' || name === 'fixcopied';
     ctx.save();
     ctx.globalAlpha = alpha * (kept ? 0.2 : 1);
@@ -606,6 +608,7 @@ function drawState(x, y, w, h, now, radius, shadowScale, baseAlpha) {
     let text = {
       kept: 'Kept your text', copied: 'Copied original', noselection: 'Select text first',
       fixcopied: 'Corrected text copied',
+      notundone: "Couldn't undo — text changed", nothingtoundo: 'Nothing to undo', undoterminal: "Can't undo in a terminal",
     }[name];
     if (name === 'notfound') {
       // A long word is cut to fit the pill, keeping its closing quote.
@@ -671,12 +674,14 @@ function pillWidthFor(name) {
   if (name === 'nomodel') return 248;
   if (name === 'smart') return 264; // "heard -> corrected" flyout
   if (name === 'fixcopied' || name === 'notfound') return 200; // #20's notes, a longer label
+  if (name === 'notundone') return 232; // #26's notes
+  if (name === 'undoterminal') return 200;
   if (isNote(name)) return 164; // notes, no button
   return PW;
 }
 
 function isNote(name) {
-  return ['kept', 'noselection', 'copied', 'fixcopied', 'notfound'].includes(name);
+  return ['kept', 'noselection', 'copied', 'fixcopied', 'notfound', 'notundone', 'nothingtoundo', 'undoterminal'].includes(name);
 }
 
 function frame(now) {
