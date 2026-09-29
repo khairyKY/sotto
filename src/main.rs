@@ -2736,14 +2736,8 @@ fn retype(old: &str, fixed: &str, hwnd: isize, suppressed: &Arc<AtomicBool>, inj
         |copied| correction::same_text(copied, old).then(|| fixed.to_string()),
         |out| inject::inject_text(out, injection_mode),
     );
-    // Leave the caret where it was: collapse a selection that wasn't the
-    // dictation to its end, or walk back a Shift+Left that only moved it
-    // (a terminal's line editor).
-    let _ = match outcome {
-        transform::Outcome::Replaced => Ok(()),
-        transform::Outcome::Kept => inject::press_right(1),
-        transform::Outcome::NothingSelected => inject::press_right(n),
-    };
+    // Leave the caret where it was.
+    let _ = inject::press_right(correction::caret_back(&outcome));
     std::thread::sleep(Duration::from_millis(30)); // our own keys pass the hook while suppressed
     suppressed.store(false, Ordering::SeqCst);
     outcome == transform::Outcome::Replaced

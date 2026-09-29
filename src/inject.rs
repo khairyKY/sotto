@@ -220,8 +220,7 @@ pub fn select_back(n: usize) -> anyhow::Result<()> {
     walked
 }
 
-/// Right × `n`: collapse a selection to its end (1), or walk the caret back
-/// after a `select_back` that moved it without selecting.
+/// Right × `n`: 1 collapses a selection to its end.
 pub fn press_right(n: usize) -> anyhow::Result<()> {
     press(VK_RIGHT, n)
 }
