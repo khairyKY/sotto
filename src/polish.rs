@@ -999,15 +999,11 @@ fn replace_and_trim_before(hay: &str, needle: &str, rep: &str) -> String {
 fn find_whole_ci(hay: &str, needle: &str) -> Option<(usize, usize)> {
     let hay_lc = hay.to_ascii_lowercase();
     let needle_lc = needle.to_ascii_lowercase();
-    let hb = hay_lc.as_bytes();
-    let is_word = |b: u8| b.is_ascii_alphanumeric();
     let mut i = 0;
     while i <= hay_lc.len() {
         let start = i + hay_lc[i..].find(&needle_lc)?;
         let end = start + needle_lc.len();
-        let left_ok = start == 0 || !is_word(hb[start - 1]);
-        let right_ok = end == hb.len() || !is_word(hb[end]);
-        if left_ok && right_ok {
+        if is_edge(&hay[..start], &hay[end..]) {
             return Some((start, end));
         }
         let ch_len = hay[start..].chars().next().map_or(1, |c| c.len_utf8());
@@ -1523,8 +1519,6 @@ fn apply_dictionary(text: &str, dict: &[(Vec<String>, String, EntryKind)], only:
 fn replace_whole_ci(hay: &str, needle: &str, rep: &str) -> (String, usize) {
     let hay_lc = hay.to_ascii_lowercase();
     let needle_lc = needle.to_ascii_lowercase();
-    let hb = hay_lc.as_bytes();
-    let is_word = |b: u8| b.is_ascii_alphanumeric();
 
     let mut out = String::with_capacity(hay.len());
     let mut count = 0;
@@ -1534,9 +1528,7 @@ fn replace_whole_ci(hay: &str, needle: &str, rep: &str) -> (String, usize) {
             Some(rel) => {
                 let start = i + rel;
                 let end = start + needle_lc.len();
-                let left_ok = start == 0 || !is_word(hb[start - 1]);
-                let right_ok = end == hb.len() || !is_word(hb[end]);
-                if left_ok && right_ok {
+                if is_edge(&hay[..start], &hay[end..]) {
                     out.push_str(&hay[i..start]);
                     out.push_str(rep);
                     count += 1;
@@ -1555,6 +1547,15 @@ fn replace_whole_ci(hay: &str, needle: &str, rep: &str) -> (String, usize) {
         }
     }
     (out, count)
+}
+
+/// A match between `before` and `after` is a whole word: no letter or digit
+/// of any script touches it. ASCII-only letters let an Arabic entry fire
+/// inside a longer Arabic word (#98). ASCII lowering keeps the offsets valid
+/// in the original text.
+fn is_edge(before: &str, after: &str) -> bool {
+    let word = |c: Option<char>| c.is_some_and(char::is_alphanumeric);
+    !word(before.chars().next_back()) && !word(after.chars().next())
 }
 
 #[cfg(test)]
@@ -2144,6 +2145,22 @@ mod tests {
         assert_eq!(apply_dictionary("two arrows here", &dict, EntryKind::Word), ("two arrows here".into(), 0));
         // No entries → untouched.
         assert_eq!(apply_dictionary("nothing", &[], EntryKind::Word), ("nothing".into(), 0));
+    }
+
+    #[test]
+    fn dictionary_whole_words_hold_in_any_script() {
+        let dict = vec![
+            (vec!["نور".to_string()], "Nour".to_string(), EntryKind::Word),
+            (vec!["sotto".to_string()], "Sotto".to_string(), EntryKind::Word),
+            (vec!["ren".to_string()], "Wren".to_string(), EntryKind::Word),
+        ];
+        let fix = |t: &str| apply_dictionary(t, &dict, EntryKind::Word);
+        // The standalone Arabic word, not the same letters inside "النور"/"منور" (#98).
+        assert_eq!(fix("صباح النور يا نور، البيت منور"), ("صباح النور يا Nour، البيت منور".into(), 1));
+        // Code-switched, either way round.
+        assert_eq!(fix("كلمت نور about sotto النهارده"), ("كلمت Nour about Sotto النهارده".into(), 2));
+        // Accented Latin letters are word letters too.
+        assert_eq!(fix("René met ren."), ("René met Wren.".into(), 1));
     }
 
     #[test]

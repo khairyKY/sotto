@@ -119,6 +119,23 @@ pub fn same_text(copied: &str, injected: &str) -> bool {
     copied.replace('\r', "") == injected.replace('\r', "")
 }
 
+/// Right presses that put the caret back after a retype that didn't happen
+/// (#96). One collapses whatever Shift+Left selected to its end, which is
+/// where the caret was: a span that isn't the dictation (`Kept`), and one the
+/// copy came back empty from (`NothingSelected`, an app without Ctrl+Insert or
+/// a slow clipboard). Shift+Left selects in every text field, and the console
+/// line editors where it only moves the caret skip the key path
+/// (`is_terminal`). ponytail: an unknown field that ignores Shift is left
+/// with the caret n-1 back; walking it back × n would instead push every
+/// Ctrl+Insert failure n-1 past the caret, and Shift+Right × n can leave a
+/// live selection the next dictation types over.
+pub fn caret_back(outcome: &crate::transform::Outcome) -> usize {
+    match outcome {
+        crate::transform::Outcome::Replaced => 0,
+        crate::transform::Outcome::Kept | crate::transform::Outcome::NothingSelected => 1,
+    }
+}
+
 /// Console hosts where Shift+Left is a screen selection, not an edit: typing
 /// there appends instead of replacing. Names as `stats::app_name` gives them.
 /// ponytail: known hosts only; any other terminal gets the key path, where
@@ -205,5 +222,14 @@ mod tests {
         assert!(same_text("First line.\r\nSecond.", "First line.\nSecond."));
         assert!(!same_text("I asked clawed to help. More", "I asked clawed to help."));
         assert!(!same_text("", "I asked clawed to help."));
+    }
+
+    #[test]
+    fn a_retype_that_didnt_happen_collapses_the_selection_to_the_caret() {
+        use crate::transform::Outcome;
+        assert_eq!(caret_back(&Outcome::Replaced), 0);
+        assert_eq!(caret_back(&Outcome::Kept), 1);
+        // Shift+Left selected, the copy came back empty: one Right, not × n (#96).
+        assert_eq!(caret_back(&Outcome::NothingSelected), 1);
     }
 }
