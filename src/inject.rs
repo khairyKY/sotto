@@ -5,8 +5,8 @@ use windows::Win32::Foundation::HWND;
 use windows::Win32::System::Threading::{AttachThreadInput, GetCurrentThreadId};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     GetAsyncKeyState, SendInput, VIRTUAL_KEY, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT,
-    KEYEVENTF_EXTENDEDKEY, KEYEVENTF_KEYUP, KEYEVENTF_UNICODE, VK_C, VK_CONTROL, VK_INSERT, VK_LEFT,
-    VK_LWIN, VK_MENU, VK_RIGHT, VK_RWIN, VK_SHIFT, VK_V,
+    KEYEVENTF_EXTENDEDKEY, KEYEVENTF_KEYUP, KEYEVENTF_UNICODE, VK_BACK, VK_C, VK_CONTROL, VK_INSERT, VK_LEFT,
+    VK_LWIN, VK_MENU, VK_RETURN, VK_RIGHT, VK_RWIN, VK_SHIFT, VK_V,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     GetForegroundWindow, GetWindowThreadProcessId, IsWindow, SetForegroundWindow,
@@ -223,6 +223,16 @@ pub fn select_back(n: usize) -> anyhow::Result<()> {
 /// Right × `n`: 1 collapses a selection to its end.
 pub fn press_right(n: usize) -> anyhow::Result<()> {
     press(VK_RIGHT, n)
+}
+
+/// Enter: an auto-send (#21) after a dictation lands.
+pub fn press_enter() -> anyhow::Result<()> {
+    press(VK_RETURN, 1)
+}
+
+/// Backspace: a backtrack (#26) deleting the re-selected dictation.
+pub fn press_backspace() -> anyhow::Result<()> {
+    press(VK_BACK, 1)
 }
 
 fn press(key: VIRTUAL_KEY, n: usize) -> anyhow::Result<()> {

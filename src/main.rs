@@ -343,6 +343,8 @@ struct SettingsPayload {
     /// Default tone instruction; "" = off.
     tone: String,
     app_tones: Vec<AppToneDto>,
+    /// Apps that get an Enter after a dictation lands (#21).
+    auto_send: Vec<String>,
     history: Vec<HistoryDto>,
     models: Vec<ModelDto>,
     hotkey_options: Vec<HotkeyOption>,
@@ -473,6 +475,7 @@ fn get_settings(state: tauri::State<'_, AppState>) -> SettingsPayload {
             .collect(),
         tone: c.tone.lock().unwrap().clone(),
         app_tones: c.app_tones.lock().unwrap().iter().map(|(a, t)| AppToneDto { app: a.clone(), tone: t.clone() }).collect(),
+        auto_send: cfg.auto_send.clone(),
         history: c.history.snapshot().into_iter().map(HistoryDto::from).collect(),
         models: vec![
             ModelDto {
@@ -747,6 +750,14 @@ fn set_app_tones(tones: Vec<AppToneDto>, state: tauri::State<'_, AppState>) {
     *state.controls.app_tones.lock().unwrap() = pairs.clone();
     let mut cfg = state.cfg.lock().unwrap();
     cfg.app_tones = pairs.into_iter().map(|(app, tone)| AppTone { app, tone }).collect();
+    let _ = cfg.save();
+}
+/// The apps that get an Enter after a dictation (#21). Read at each
+/// delivery, so no live mirror.
+#[tauri::command]
+fn set_auto_send(apps: Vec<String>, state: tauri::State<'_, AppState>) {
+    let mut cfg = state.cfg.lock().unwrap();
+    cfg.auto_send = apps.into_iter().map(|a| a.trim().to_string()).filter(|a| !a.is_empty()).collect();
     let _ = cfg.save();
 }
 /// The Transforms page's list (#18). Nameless entries are dropped; a chord
@@ -1155,7 +1166,7 @@ fn main() -> anyhow::Result<()> {
         .manage(state)
         .invoke_handler(tauri::generate_handler![
             get_settings, set_hotkey, set_activation, set_polish, set_threshold,
-            set_dictionary, set_tone, set_app_tones, set_transforms, set_transforms_enabled, set_launch_login, set_start_hidden, set_theme, copy_text,
+            set_dictionary, set_tone, set_app_tones, set_auto_send, set_transforms, set_transforms_enabled, set_launch_login, set_start_hidden, set_theme, copy_text,
             set_overlay_position, set_overlay_always_visible, get_overlay_settings, start_dictation, stop_dictation, mark_overlay_idle,
             set_asr_model, set_asr_language,
             open_url, check_update, install_update, retry_last, cancel_dictation, dismiss_take,
@@ -2366,6 +2377,16 @@ fn journals_take(training_armed: bool) -> bool {
     !training_armed
 }
 
+/// Auto-send (#21): press Enter after this dictation? Only into an app on the
+/// list, by exact name (no wildcard: never global), and only once the whole
+/// text `landed` in the window it was spoken into. An Enter after a failed,
+/// partial or misdirected injection would send something else. Only
+/// `process_take`'s delivery asks: a voice correction or a Transform edits
+/// text already there and never sends it.
+fn auto_sends(apps: &[String], app_name: &str, landed: bool) -> bool {
+    landed && !app_name.is_empty() && apps.iter().any(|a| a.eq_ignore_ascii_case(app_name))
+}
+
 /// Record a non-delivered outcome (cancelled/error) — words=0, no fixes.
 fn record_outcome(take: &Take, stats_enabled: &Arc<AtomicBool>, outcome: &str) {
     if !stats_enabled.load(Ordering::Relaxed) {
@@ -2503,6 +2524,13 @@ fn process_take(
         run_correction(app, &right, &wrong, take.focus_target, &app_name, suppressed, listening, injection_mode);
         return;
     }
+    // Backtrack (#26): "scratch that" deletes the last dictation instead of
+    // being typed. Not a dictation either: no history, no stats.
+    let backtrack = app.state::<AppState>().cfg.lock().unwrap().backtrack;
+    if backtrack && correction::is_backtrack(&raw) {
+        run_backtrack(app, take.focus_target, &app_name, suppressed, listening, injection_mode);
+        return;
+    }
     if polisher.uses_ai_tier(&raw) {
         emit_state(app, "polishing");
     }
@@ -2534,6 +2562,16 @@ fn process_take(
     inject::restore_focus(take.focus_target);
     suppressed.store(true, Ordering::SeqCst);
     let injected = inject::inject_text(&result.text, injection_mode);
+    // Auto-send (#21). The settle lets the app take the text in first (a
+    // terminal's paste is async), and a modifier still down would make the
+    // Enter a Ctrl+Enter or Shift+Enter. ponytail: one fixed settle; make it
+    // per app if one ever needs longer.
+    let landed = injected.is_ok() && inject::capture_focus() == take.focus_target;
+    let auto_send = auto_sends(&app.state::<AppState>().cfg.lock().unwrap().auto_send, &app_name, landed);
+    let auto_sent = auto_send && {
+        std::thread::sleep(Duration::from_millis(100));
+        inject::wait_for_modifiers_released(Duration::from_millis(500)) && inject::press_enter().is_ok()
+    };
     suppressed.store(false, Ordering::SeqCst);
     match injected {
         Ok(()) => {
@@ -2597,7 +2635,7 @@ fn process_take(
             if !stash.as_ref().is_some_and(|t| t.reason == RECOVERED) {
                 *stash = None;
             }
-            tracing::info!(chars = result.text.chars().count(), "injected");
+            tracing::info!(chars = result.text.chars().count(), auto_sent, "injected");
         }
         Err(err) => {
             tracing::error!(?err, "injection failed");
@@ -2740,6 +2778,35 @@ fn run_correction(
     }
 }
 
+/// Backtrack (#26): delete the last dictation, under a voice correction's
+/// guard: said in the window it went to, not a terminal, and a copy of the
+/// re-selected span proves it's still there, unchanged. Anything else leaves
+/// the document alone. One level: a deleted dictation is forgotten, so a
+/// second "scratch that" has nothing to undo.
+fn run_backtrack(
+    app: &tauri::AppHandle,
+    focus: isize,
+    app_name: &str,
+    suppressed: &Arc<AtomicBool>,
+    listening: &Arc<AtomicBool>,
+    injection_mode: InjectionMode,
+) {
+    let state = match correction::undo_target(correction::last(), focus, app_name) {
+        Ok(old) if retype(&old, "", focus, suppressed, injection_mode) => {
+            correction::forget();
+            "done"
+        }
+        Ok(_) => "notundone",
+        Err(state) => state,
+    };
+    // The outcome only: the words are the user's (#48).
+    tracing::info!(state, "backtrack");
+    // Same rule as process_take: never pull the pill off a live take.
+    if !listening.load(Ordering::Relaxed) {
+        emit_state(app, state);
+    }
+}
+
 /// Re-select the last dictation (Shift+Left × its length), copy it with
 /// Ctrl+Insert, and type `fixed` over it only if the copy is that dictation.
 /// `transform::run` owns the clipboard around the copy.
@@ -2759,7 +2826,8 @@ fn retype(old: &str, fixed: &str, hwnd: isize, suppressed: &Arc<AtomicBool>, inj
         &mut clip,
         || inject::select_back(n).and_then(|()| inject::send_ctrl_insert()),
         |copied| correction::same_text(copied, old).then(|| fixed.to_string()),
-        |out| inject::inject_text(out, injection_mode),
+        // An empty `fixed` is a backtrack (#26): delete the selection.
+        |out| if out.is_empty() { inject::press_backspace() } else { inject::inject_text(out, injection_mode) },
     );
     // Leave the caret where it was.
     let _ = inject::press_right(correction::caret_back(&outcome));
@@ -3130,6 +3198,19 @@ mod tests {
     fn trainer_takes_are_not_journaled() {
         assert!(journals_take(false), "a normal take is crash-journaled");
         assert!(!journals_take(true), "a trainer take must never come back as a dictation");
+    }
+
+    #[test]
+    fn auto_send_only_for_a_listed_app_and_a_whole_landed_injection() {
+        let apps = vec!["Slack".to_string(), "Terminal".to_string()];
+        assert!(auto_sends(&apps, "slack", true), "matched like app_tones, ignoring case");
+        assert!(auto_sends(&apps, "Terminal", true), "Windows Terminal, as app_name names it");
+        assert!(!auto_sends(&apps, "Slack", false), "a failed, partial or misdirected injection never sends");
+        assert!(!auto_sends(&apps, "notepad", true), "an app not on the list");
+        assert!(!auto_sends(&[], "Slack", true), "off by default");
+        // Never global: no wildcard, and an unknown app matches nothing.
+        assert!(!auto_sends(&["*".to_string()], "Slack", true));
+        assert!(!auto_sends(&[String::new()], "", true));
     }
 
     #[test]

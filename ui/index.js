@@ -20,6 +20,7 @@ const mock = {
   formattingCommands: true,
   tone: "",
   appTones: [],
+  autoSend: ["Slack", "Terminal"],
   history: [
     // Arabic-first and code-switched samples keep bidi rendering (#42) checkable in the preview.
     // raw/tier/fallback exist for this session's rows only (#25); the last two stand in for rows reloaded from history.jsonl.
@@ -65,6 +66,7 @@ async function invoke(cmd, args) {
   if (cmd === "download_assets") mockDownload();
   if (cmd === "set_transforms") mock.transforms = args.transforms;
   if (cmd === "set_transforms_enabled") mock.transformsEnabled = args.enabled;
+  if (cmd === "set_auto_send") mock.autoSend = args.apps;
   // Stands in for Harper's real-word check (#94), enough to preview both notes.
   if (cmd === "add_pronunciation_correction") return !/\b(cloud|clawed|code)\b/i.test(args.heard);
   // `?firstrun` previews a fresh install: nothing on disk yet (#54).
@@ -950,6 +952,60 @@ function initToneUI(s) {
   renderToneAppsPage(appTones);
   populateToneAppDatalist();
 }
+
+// ── auto-send (#21) ──
+// Apps that get an Enter after a dictation lands. The Dictionary's row
+// markup with one field: a row is an app name and a remove button, and "" is
+// the row being added (it suggests from the per-app tones' app datalist).
+let autoSend = [];
+function renderAutoSend() {
+  const host = $("auto-send-list");
+  if (!host) return;
+  host.innerHTML = autoSend.length ? "" : '<div style="padding:14px 16px;font-size:12.5px;color:var(--mm-muted-3)">No apps yet</div>';
+  autoSend.forEach((app, i) => {
+    const row = document.createElement("div");
+    row.className = "dict-row-view";
+    if (app === "") {
+      row.classList.add("editing");
+      row.innerHTML = `
+        <div class="dict-edit-fields">
+          <input class="dict-edit-input spoken" list="tone-app-datalist" placeholder="app (e.g. Slack)" />
+          <div class="dict-edit-actions">
+            <span class="action-btn save-btn" title="Save">
+              <svg viewBox="0 0 20 20" width="15" height="15"><path d="M4 10.5 L8 14.5 L16 5.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            </span>
+            <span class="action-btn cancel-btn" title="Cancel">
+              <svg viewBox="0 0 20 20" width="15" height="15"><path d="M5 5 L15 15 M15 5 L5 15" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+            </span>
+          </div>
+        </div>
+      `;
+      row.querySelector(".save-btn").onclick = () => { autoSend[i] = row.querySelector("input").value.trim(); saveAutoSend(); };
+      row.querySelector(".cancel-btn").onclick = () => { autoSend.splice(i, 1); renderAutoSend(); };
+    } else {
+      row.innerHTML = `
+        <span class="term">${escapeHtml(app)}</span>
+        <div class="actions">
+          <span class="action-btn del-btn" title="Remove">
+            <svg viewBox="0 0 20 20" width="15" height="15"><path d="M5 5 L15 15 M15 5 L5 15" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+          </span>
+        </div>
+      `;
+      row.querySelector(".del-btn").onclick = () => { autoSend.splice(i, 1); saveAutoSend(); };
+    }
+    host.appendChild(row);
+  });
+  host.querySelector("input")?.focus();
+}
+function saveAutoSend() {
+  autoSend = autoSend.filter(a => a !== "");
+  invoke("set_auto_send", { apps: autoSend });
+  renderAutoSend();
+}
+if ($("auto-send-add")) $("auto-send-add").onclick = () => {
+  if (!autoSend.includes("")) autoSend.push("");
+  renderAutoSend();
+};
 
 // ── history page ──
 let historyEntries = [];
@@ -1937,6 +1993,8 @@ async function boot() {
   if ($("theme")) selectSegment($("theme"), s.theme || "system");
   setThresholdUI(s.threshold);
   initToneUI(s);
+  autoSend = [...(s.autoSend || [])];
+  renderAutoSend();
   renderModels(s.models || []);
   if ($("asr-language-select")) {
     $("asr-language-select").value = s.asrLanguage || "auto";

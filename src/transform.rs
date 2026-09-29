@@ -327,6 +327,16 @@ mod tests {
     }
 
     #[test]
+    fn an_empty_replacement_still_reaches_the_paste() {
+        // A backtrack (#26) replaces the verified dictation with nothing; its
+        // paste is a Backspace. (A Transform's `accept` never returns "".)
+        let b = board(Some("earlier copy"));
+        let (outcome, pasted) = transform(&b, Some("Scratch me."), Some(""), false);
+        assert_eq!((outcome, pasted.as_deref()), (Outcome::Replaced, Some("")));
+        assert_eq!(b.into_inner().text.as_deref(), Some("earlier copy"));
+    }
+
+    #[test]
     fn a_failed_paste_or_copy_still_restores_the_clipboard() {
         let b = board(Some("earlier copy"));
         assert_eq!(transform(&b, Some("some text"), Some("Some text."), true).0, Outcome::Kept);
