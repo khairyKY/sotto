@@ -1026,21 +1026,24 @@ fn clear_history(app: tauri::AppHandle, state: tauri::State<'_, AppState>) {
 ///
 /// Two files, no rotation crate: the current run and the previous one. The
 /// interesting failure is often the run *before* the user thought to complain.
-fn init_logging() {
+///
+/// `cli` (--transcribe/--polish/--replay-flags) logs to stderr only: those
+/// runs often happen while the app is up, and rotating here would split the
+/// live app's log and drop its previous run (#82).
+fn init_logging(cli: bool) {
     // ORT's info-level logging is ~345 lines per launch of internal graph
     // detail, which buries the handful of lines that actually explain a
     // failure. Keep its warnings and errors, drop the narration.
     // `SOTTO_LOG=debug` (or `ort::logging=info`) brings it all back.
     let filter = std::env::var("SOTTO_LOG").unwrap_or_else(|_| "info,ort::logging=warn".into());
     let dir = config::data_dir().join("logs");
-    let file = std::fs::create_dir_all(&dir).ok().and_then(|_| {
+    let file = (!cli).then(|| std::fs::create_dir_all(&dir).ok()).flatten().and_then(|_| {
         let path = dir.join("sotto.log");
         let _ = std::fs::rename(&path, dir.join("sotto.log.1"));
         std::fs::File::create(&path).ok()
     });
     match file {
-        // Tee: the file is for users, stdout still works under `cargo run` and
-        // for the --transcribe/--polish CLI paths.
+        // Tee: the file is for users, stdout still works under `cargo run`.
         Some(f) => tracing_subscriber::fmt()
             .with_env_filter(filter)
             // No ANSI escapes — this file gets opened in Notepad and pasted
@@ -1048,8 +1051,9 @@ fn init_logging() {
             .with_ansi(false)
             .with_writer(std::io::stdout.and(std::sync::Arc::new(f)))
             .init(),
-        // Couldn't open the log (read-only dir, disk full). Still run.
-        None => tracing_subscriber::fmt().with_env_filter(filter).init(),
+        // CLI mode, or couldn't open the log (read-only dir, disk full). Still
+        // run. stderr keeps a CLI's stdout just its result.
+        None => tracing_subscriber::fmt().with_env_filter(filter).with_writer(std::io::stderr).init(),
     }
 
     // A panic is exactly the case where the log has to survive, and the default
@@ -1070,7 +1074,8 @@ fn init_logging() {
 
 // ── main ───────────────────────────────────────────────────────────────
 fn main() -> anyhow::Result<()> {
-    init_logging();
+    let cli = std::env::args().any(|a| ["--transcribe", "--polish", "--replay-flags"].contains(&a.as_str()));
+    init_logging(cli);
     init_ort();
 
     if let Some(path) = arg_value("--transcribe") {
@@ -1153,7 +1158,9 @@ fn main() -> anyhow::Result<()> {
                 if (cfg.zoom - 1.0).abs() > f64::EPSILON {
                     let _ = w.set_zoom(cfg.zoom.clamp(ZOOM_MIN, ZOOM_MAX));
                 }
-                if !cfg.start_hidden {
+                // First run (#54): a hidden window would hide the download
+                // progress too, so show it until every asset is on disk.
+                if !cfg.start_hidden || !assets::assets_status().ready {
                     let _ = w.show();
                 }
             }
@@ -1532,7 +1539,11 @@ fn spawn_pipeline(
     // thread can hand over finished chunks *during* recording, so the wait
     // after release is the tail of the take instead of all of it.
     let injection_mode = cfg.injection_mode;
-    let polisher = polish::Polisher::new(controls.clone(), cfg.llm.clone());
+    let mut polisher = polish::Polisher::new(controls.clone(), cfg.llm.clone());
+    // The polisher decides at build time whether AI is available, so on a
+    // first run it's rebuilt once the LLM finishes downloading (#54).
+    let mut ai_ready = llm::Llm::is_available();
+    let (polisher_controls, llm_cfg) = (controls.clone(), cfg.llm.clone());
     let history = controls.history.clone();
     let listening = controls.listening.clone();
     let level = controls.level.clone();
@@ -1614,6 +1625,11 @@ fn spawn_pipeline(
                 // through one engine.
                 if partials.is_empty() {
                     asr.sync(&app.state::<AppState>().cfg.lock().unwrap());
+                }
+                if !ai_ready && llm::Llm::is_available() {
+                    tracing::info!("AI polish assets landed, picking them up without a restart");
+                    polisher = polish::Polisher::new(polisher_controls.clone(), llm_cfg.clone());
+                    ai_ready = true;
                 }
                 match work {
                     // An empty chunk is a silent one — register the take as
