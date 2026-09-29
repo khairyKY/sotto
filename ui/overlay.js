@@ -342,7 +342,7 @@ function drawState(x, y, w, h, now, radius, shadowScale, baseAlpha) {
     if (sincePhase > 5400) { const f = Math.min(1, (sincePhase - 5400) / 300); alpha *= 1 - f; dy += f * 4; }
     if (sincePhase >= 5700) { setState('idle'); return; }
   }
-  if (name === 'smart' || name === 'kept' || name === 'noselection') {
+  if (name === 'smart' || name === 'kept' || name === 'noselection' || name === 'copied') {
     // A beat longer than 'done' (1s) so the correction is readable, but still
     // a glance, not a nag. The Transform notes (#18) share it: no button.
     if (sincePhase > 2600) { const f = Math.min(1, (sincePhase - 2600) / 400); alpha *= 1 - f; dy += f * 4; }
@@ -573,11 +573,12 @@ function drawState(x, y, w, h, now, radius, shadowScale, baseAlpha) {
     retryBtn(xr, yc, btnR, alpha, dark);
     activeBtn = { x: xr, y: yc, r: btnR, action: 'retry' };
     countdownBar(x, y, w, h, Math.max(0, 1 - sincePhase / 6000), dark);
-  } else if (name === 'kept' || name === 'noselection') {
+  } else if (name === 'kept' || name === 'noselection' || name === 'copied') {
     // Transforms (#18). 'kept': the rewrite was refused or failed and the
     // selection stays as it was (restrained blush, like 'error'). 'noselection':
     // the chord found nothing selected (neutral, like 'cancelled'). No button:
-    // the chord itself is the retry.
+    // the chord itself is the retry. 'copied': History's "Use what I said"
+    // (#25) put the raw transcript on the clipboard (neutral, accent tick).
     const gx = contentL + 8, kept = name === 'kept';
     ctx.save();
     ctx.globalAlpha = alpha * (kept ? 0.2 : 1);
@@ -587,15 +588,15 @@ function drawState(x, y, w, h, now, radius, shadowScale, baseAlpha) {
     ctx.fill();
     ctx.restore();
     ctx.globalAlpha = alpha;
-    ctx.fillStyle = kept ? blushTxt : muted;
+    ctx.fillStyle = kept ? blushTxt : name === 'copied' ? accent : muted;
     ctx.font = '700 11px "Hanken Grotesk", system-ui, sans-serif';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    ctx.fillText(kept ? '!' : 'i', gx + 8, yc);
+    ctx.fillText(kept ? '!' : name === 'copied' ? '✓' : 'i', gx + 8, yc);
     ctx.font = '500 12px "Hanken Grotesk", system-ui, sans-serif';
     ctx.textAlign = 'left';
     ctx.fillStyle = txt;
-    ctx.fillText(kept ? 'Kept your text' : 'Select text first', gx + 20, yc);
+    ctx.fillText(kept ? 'Kept your text' : name === 'copied' ? 'Copied original' : 'Select text first', gx + 20, yc);
   } else if (name === 'smart') {
     // "Something smart just happened": a correction toward a trained word.
     // Sparkle + "heard -> corrected", no button — a glance, then it fades.
@@ -648,7 +649,7 @@ function pillWidthFor(name) {
   if (name === 'cancelled') return 220;
   if (name === 'nomodel') return 248;
   if (name === 'smart') return 264; // "heard -> corrected" flyout
-  if (name === 'kept' || name === 'noselection') return 164; // Transform notes, no button
+  if (name === 'kept' || name === 'noselection' || name === 'copied') return 164; // notes, no button
   return PW;
 }
 

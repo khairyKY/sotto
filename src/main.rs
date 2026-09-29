@@ -251,6 +251,16 @@ struct AppToneDto {
 struct HistoryDto {
     time: String,
     text: String,
+    /// What the ASR heard, for History's review diff (#25). This session's
+    /// rows only ("" after a reload); IPC to our own window, never logged.
+    raw: String,
+    tier: String,
+    fallback: String,
+}
+impl From<history::HistoryEntry> for HistoryDto {
+    fn from(e: history::HistoryEntry) -> Self {
+        Self { time: e.time, text: e.text, raw: e.raw, tier: e.tier, fallback: e.fallback }
+    }
 }
 /// One Pronunciation Trainer attempt, emitted as a "pronunciation-sample"
 /// event — see `process_take`'s training short-circuit.
@@ -453,7 +463,7 @@ fn get_settings(state: tauri::State<'_, AppState>) -> SettingsPayload {
             .collect(),
         tone: c.tone.lock().unwrap().clone(),
         app_tones: c.app_tones.lock().unwrap().iter().map(|(a, t)| AppToneDto { app: a.clone(), tone: t.clone() }).collect(),
-        history: c.history.snapshot().into_iter().map(|e| HistoryDto { time: e.time, text: e.text }).collect(),
+        history: c.history.snapshot().into_iter().map(HistoryDto::from).collect(),
         models: vec![
             ModelDto {
                 id: "parakeet-v3".into(),
@@ -939,6 +949,16 @@ fn repolish_copy(text: String, state: tauri::State<'_, AppState>) {
     let _ = state.tx.send(DictationEvent::Repolish(text));
 }
 
+/// A history row's "Use what I said" (#25): the raw transcript onto the
+/// clipboard + a "Copied original" pill. ponytail: copy, not an in-place
+/// swap — by now focus is on Sotto's own window, and re-selecting the last
+/// injection in another app isn't something we can do cleanly.
+#[tauri::command]
+fn copy_original(raw: String, app: tauri::AppHandle) {
+    copy_text(raw);
+    emit_state(&app, "copied");
+}
+
 /// A history row's flag — "this came out wrong," logged locally to
 /// `bug_reports::record` with whatever config context was live at the
 /// moment, for Kai to review and file a real GitHub issue from by hand.
@@ -1124,7 +1144,7 @@ fn main() -> anyhow::Result<()> {
             set_asr_model, set_asr_language,
             open_url, check_update, install_update, retry_last, cancel_dictation, dismiss_take,
             repolish_copy, flag_transcription,
-            get_stats, clear_stats, set_stats_enabled, set_retention_enabled, clear_recordings, set_history_persist, clear_history,
+            copy_original, get_stats, clear_stats, set_stats_enabled, set_retention_enabled, clear_recordings, set_history_persist, clear_history,
             set_microphone, set_sound_enabled, set_zoom,
             set_replacements_enabled,
             set_formatting_commands, set_number_formatting, set_phonetic_correction, set_quote_style, set_pronunciation_target, add_pronunciation_correction,
@@ -2466,7 +2486,7 @@ fn process_take(
             if let Ok(mut cb) = arboard::Clipboard::new() {
                 let _ = cb.set_text(result.text.clone());
             }
-            history.push(raw.clone(), result.text.clone());
+            history.push(raw.clone(), result.text.clone(), result.tier, result.fallback);
             emit_state(app, "done");
             // "Something smart just happened": when a phonetic correction fired
             // this take, the overlay swaps its plain done checkmark for a flyout
@@ -2793,7 +2813,7 @@ fn harden_utility_window(w: &tauri::WebviewWindow, no_activate: bool) {
 }
 
 fn emit_history(app: &tauri::AppHandle, history: &history::History) {
-    let dto: Vec<HistoryDto> = history.snapshot().into_iter().map(|e| HistoryDto { time: e.time, text: e.text }).collect();
+    let dto: Vec<HistoryDto> = history.snapshot().into_iter().map(HistoryDto::from).collect();
     let _ = app.emit("history-updated", dto);
 }
 
