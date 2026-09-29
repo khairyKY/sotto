@@ -26,6 +26,8 @@ pub enum DictationEvent {
     /// A Transform chord fired (#18): rewrite the focused app's selection.
     /// Travels the same channel so it queues behind any take being delivered.
     Transform(Transform),
+    /// The Scratchpad (#19): its chord, or a row's "inject" from the page.
+    Scratchpad(crate::scratchpad::Action),
 }
 
 /// A hotkey binding source — either a keyboard key or a mouse button. The
@@ -360,6 +362,7 @@ pub fn run_listener(
     let mut is_held = false;
     let mut toggle = ToggleKey::default();
     let mut chord_key = ChordKey::default();
+    let mut pad_key = ChordKey::default();
 
     let callback = move |event: rdev::Event| {
         if suppressed.load(Ordering::SeqCst) {
@@ -386,15 +389,29 @@ pub fn run_listener(
         let idx = hotkey_idx.load(Ordering::Relaxed).min(SUPPORTED_HOTKEYS.len() - 1);
         let bound = SUPPORTED_HOTKEYS[idx].2;
 
-        // Transform chords (#18) first: a chord's own key press/release is
+        let key_event = match event.event_type {
+            EventType::KeyPress(k) => Some((k, true)),
+            EventType::KeyRelease(k) => Some((k, false)),
+            _ => None,
+        };
+
+        // The Scratchpad chord (#19), by a Transform chord's rules. Not
+        // blocked mid-take: a take lands where it was spoken, pad or not.
+        if let Some((key, pressed)) = key_event {
+            let chord = [crate::scratchpad::chord()];
+            let (consumed, fire) = pad_key.on_key(key, pressed, || held_mods(bound), &chord, false);
+            if fire.is_some() {
+                let _ = tx.send(DictationEvent::Scratchpad(crate::scratchpad::Action::Toggle));
+            }
+            if consumed {
+                return;
+            }
+        }
+
+        // Then Transform chords (#18): a chord's own key press/release is
         // theirs, never also the dictation hotkey's. Never fires mid-take.
         // ponytail: chords re-parsed per key event; a handful of short strings.
         if transforms_enabled.load(Ordering::Relaxed) {
-            let key_event = match event.event_type {
-                EventType::KeyPress(k) => Some((k, true)),
-                EventType::KeyRelease(k) => Some((k, false)),
-                _ => None,
-            };
             if let Some((key, pressed)) = key_event {
                 let list = transforms.lock().unwrap();
                 let chords: Vec<Option<Chord>> = list.iter().map(|t| parse_chord(&t.chord)).collect();

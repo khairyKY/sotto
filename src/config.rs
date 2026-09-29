@@ -460,6 +460,18 @@ pub struct Config {
     /// added as a correction. Off by default while it's new; config-only.
     #[serde(default)]
     pub calibration: bool,
+    /// Scratchpad (#19): a private pad page in the main window. A take spoken
+    /// into it lands there instead of being typed. Off by default while it's
+    /// new; `config.toml` only.
+    #[serde(default)]
+    pub scratchpad: bool,
+    /// The chord that opens and closes the pad, parsed like a Transform's.
+    #[serde(default = "default_scratchpad_chord")]
+    pub scratchpad_chord: String,
+    /// A markdown file a pad row's "Park" appends a timestamped line to.
+    /// Empty = no Park button.
+    #[serde(default)]
+    pub scratchpad_park_file: String,
     /// Start minimized to the tray (no window shown on launch).
     #[serde(default = "default_true")]
     pub start_hidden: bool,
@@ -517,6 +529,12 @@ fn default_quote_style() -> String {
     "straight".to_string()
 }
 
+/// Clear of the default Transforms (Ctrl+Alt+1/2) and of every single-key
+/// dictation hotkey.
+pub fn default_scratchpad_chord() -> String {
+    "Ctrl+Alt+Space".to_string()
+}
+
 fn default_true() -> bool {
     true
 }
@@ -548,6 +566,9 @@ impl Default for Config {
             transforms_enabled: false,
             transforms: default_transforms(),
             calibration: false,
+            scratchpad: false,
+            scratchpad_chord: default_scratchpad_chord(),
+            scratchpad_park_file: String::new(),
             start_hidden: true,
             stats_enabled: true,
             retention: RetentionConfig::default(),
@@ -958,6 +979,15 @@ max_mb = 250
         let cfg: Config =
             toml::from_str("hotkey = \"ControlRight\"\nactivation_mode = \"toggle\"\ninjection_mode = \"paste\"\n").unwrap();
         assert!(!cfg.auto_tone && !Config::default().auto_tone);
+    }
+
+    #[test]
+    fn scratchpad_defaults_off_in_a_config_written_before_it() {
+        let cfg: Config =
+            toml::from_str("hotkey = \"ControlRight\"\nactivation_mode = \"toggle\"\ninjection_mode = \"paste\"\n").unwrap();
+        assert!(!cfg.scratchpad && !Config::default().scratchpad);
+        assert_eq!(cfg.scratchpad_chord, "Ctrl+Alt+Space");
+        assert!(cfg.scratchpad_park_file.is_empty());
     }
 
     #[test]

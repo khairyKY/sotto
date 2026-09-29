@@ -53,6 +53,19 @@ const mock = {
     { word: "كشري", heardAs: [], recent: [] },
   ],
   calibration: new URLSearchParams(location.search).has("calibration"),
+  // Scratchpad (#19), invented rows. `?scratchpad` turns the page on, as the config flag does.
+  pad: {
+    enabled: new URLSearchParams(location.search).has("scratchpad"),
+    chord: "Ctrl+Alt+Space",
+    canPark: true,
+    targetApp: "Notepad",
+    rows: [
+      { id: Date.now() - 2 * 86400000, text: "Ask the landlord about the heater before Friday." },
+      { id: Date.now() - 3600000, text: "افتكر أجيب عيش وجبنة وأنا راجع" },
+      { id: Date.now() - 600000, text: "Launch checklist:\nship the overlay states first\nthen the icon set" },
+      { id: Date.now() - 60000, text: "الـ demo بكرة الساعة عشرة، جهز الـ slides" },
+    ],
+  },
   transformDefaults: [
     { name: "Polish", chord: "Ctrl+Alt+Digit1", prompt: "Tighten and clarify it without changing its meaning. Keep the writer's own words wherever you can, and keep I, me and my as they are.", keep_words: true },
     { name: "Prompt engineer", chord: "Ctrl+Alt+Digit2", prompt: "Turn it into a detailed prompt for an AI assistant, as four labelled lines: Goal, Context, Constraints, Output. Use only what the text says.", keep_words: false },
@@ -67,6 +80,8 @@ async function invoke(cmd, args) {
   if (cmd === "set_transforms") mock.transforms = args.transforms;
   if (cmd === "set_transforms_enabled") mock.transformsEnabled = args.enabled;
   if (cmd === "set_auto_send") mock.autoSend = args.apps;
+  if (cmd === "scratchpad_state") return mock.pad;
+  if (cmd === "scratchpad_delete") return (mock.pad.rows = mock.pad.rows.filter(r => r.id !== args.id));
   // Stands in for Harper's real-word check (#94), enough to preview both notes.
   if (cmd === "add_pronunciation_correction") return !/\b(cloud|clawed|code)\b/i.test(args.heard);
   // `?firstrun` previews a fresh install: nothing on disk yet (#54).
@@ -91,10 +106,12 @@ const $ = (id) => document.getElementById(id);
 function openSettings() {
   $("settings-scrim").hidden = false;
   document.querySelector('.nav-item[data-page="settings"]')?.classList.add("active");
+  syncPad();
 }
 function closeSettings() {
   $("settings-scrim").hidden = true;
   document.querySelector('.nav-item[data-page="settings"]')?.classList.remove("active");
+  syncPad();
 }
 const settingsOpen = () => !$("settings-scrim").hidden;
 
@@ -111,10 +128,12 @@ function navigate(page) {
   if (page === 'insights') loadInsights();
   if (page === 'history') loadHistory();
   if (page === 'home') loadHome();
+  if (page === 'scratchpad') loadScratchpad();
   if (page === 'pronunciation') loadPronunciation();
   // The trainer is only armed while its page is open (ADR 0001). The backend
   // also drops the arm at the next Start, so this is the belt to its braces.
   else invoke("set_pronunciation_target", { word: null });
+  syncPad();
 }
 document.querySelectorAll('.nav-item').forEach(item => {
   item.onclick = (e) => { e.preventDefault(); navigate(item.dataset.page); };
@@ -1064,6 +1083,54 @@ function reviewPanel(e) {
   return panel;
 }
 function loadHistory() { renderHistoryPage(historyEntries); }
+
+// ── scratchpad (#19) ──
+let pad = { enabled: false, chord: "", canPark: false, targetApp: "", rows: [] }; // rows oldest first
+async function loadScratchpad() {
+  pad = (await invoke("scratchpad_state")) || pad;
+  $("nav-scratchpad").hidden = !pad.enabled;
+  renderPad();
+}
+// A take lands in the pad only while it's the page in front: tell the backend.
+function syncPad() {
+  if (pad.enabled) invoke("scratchpad_page", { open: $("page-scratchpad").classList.contains("active") && !settingsOpen() });
+}
+function padTime(ms) {
+  const d = new Date(ms);
+  return d.toDateString() === new Date().toDateString() ? formatTime(d) : d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+}
+function renderPad() {
+  $("pad-chord").innerHTML = pad.chord ? `${chordKeysHtml(pad.chord)} opens and closes it` : "";
+  const host = $("pad-list");
+  host.innerHTML = "";
+  if (!pad.rows.length) {
+    host.innerHTML = `<div class="hist-empty">No notes yet. ${escapeHtml($("hint-verb").textContent)} ${escapeHtml($("keycap-display").textContent)} and think out loud.</div>`;
+    return;
+  }
+  const into = escapeHtml(`Type into ${pad.targetApp}`);
+  pad.rows.slice().reverse().forEach((r) => {
+    const row = document.createElement("div");
+    row.className = "hist-row pad-row";
+    row.innerHTML = `<span class="time">${padTime(r.id)}</span><span class="txt" dir="auto">${escapeHtml(r.text)}</span>
+      <button class="act" data-a="copy" title="Copy" aria-label="Copy">⧉</button>
+      <button class="act" data-a="inject" title="${into}" aria-label="${into}"${pad.targetApp ? "" : " hidden"}>↵</button>
+      <button class="act" data-a="park" title="Park to file" aria-label="Park to file"${pad.canPark ? "" : " hidden"}>⇲</button>
+      <button class="act" data-a="delete" title="Delete" aria-label="Delete">✕</button>`;
+    row.onclick = () => copyText(r.text);
+    row.querySelectorAll(".act").forEach((b) => b.onclick = async (ev) => {
+      ev.stopPropagation();
+      const a = b.dataset.a;
+      if (a === "copy") copyText(r.text);
+      if (a === "inject") invoke("scratchpad_inject", { text: r.text });
+      if (a === "delete") { pad.rows = await invoke("scratchpad_delete", { id: r.id }); renderPad(); }
+      if (a === "park") {
+        try { await invoke("scratchpad_park", { text: r.text }); b.textContent = "✓"; b.title = "Parked"; }
+        catch (err) { b.textContent = "!"; b.title = `Couldn't park it: ${err}`; }
+      }
+    });
+    host.appendChild(row);
+  });
+}
 
 // ── pronunciation trainer ──
 let pronVocabulary = []; // [{word, heardAs: [...], recent: [bool...]}] from settings
@@ -2143,6 +2210,7 @@ async function boot() {
   renderDictPage(dictEntries);
   renderSnipPage(snipEntries);
   initTransforms(s);
+  loadScratchpad();
 
   // History data
   historyEntries = s.history || [];
@@ -2203,6 +2271,7 @@ async function boot() {
       if (["idle", "error", "cancelled", "nomodel"].includes(e.payload)) pronTakeEnded(e.payload);
     });
     T.event.listen("paused-changed", () => loadHome());
+    T.event.listen("scratchpad-updated", (e) => { pad.rows = e.payload || []; renderPad(); });
     T.event.listen("navigate", (e) => {
       const page = e.payload;
       if (page && document.querySelector(`.nav-item[data-page="${page}"]`)) navigate(page);

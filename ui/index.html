@@ -58,9 +58,11 @@
             <svg viewBox="0 0 20 20" width="17" height="17"><path d="M8 4 H5 A1 1 0 0 0 4 5 V15 A1 1 0 0 0 5 16 H8 M12 7 L15.5 10 L12 13 M15.5 10 H7.5" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>
             <span>Transforms</span>
           </a>
-          <!-- Scratchpad is a phase-2 feature: its page was a static mockup,
-               and the design doc's sidebar doesn't include it. Removed from
-               the shipped nav until it's real. -->
+          <!-- Scratchpad (#19), behind the `scratchpad` config flag. -->
+          <a class="nav-item" data-page="scratchpad" href="#" id="nav-scratchpad" hidden>
+            <svg viewBox="0 0 20 20" width="17" height="17"><path d="M4 4 H16 V16 H4 Z M7 8 H13 M7 11 H11" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            <span>Scratchpad</span>
+          </a>
         </nav>
         <nav class="nav nav-bottom">
           <div class="nav-divider"></div>
@@ -362,6 +364,29 @@
             <button class="btn btn-ghost" id="transforms-reset" style="padding-left:0;font-weight:500">Reset to defaults</button>
             <div style="flex:1"></div>
             <span class="btn-add-header" id="transforms-add">+ Create new</span>
+          </div>
+        </section>
+
+        <!-- ===================== SCRATCHPAD (#19) =====================
+             v1 is History's rows; the Marshmallow two-pane look waits on
+             docs/design-prompts/04-scratchpad.md (Phase C). -->
+        <section class="page" id="page-scratchpad">
+          <div class="page-head-row" style="margin-bottom:14px;flex-wrap:wrap;gap:6px 12px">
+            <div style="display:flex;align-items:center;gap:10px">
+              <h1 class="page-title" style="margin:0">Scratchpad</h1>
+              <span class="badge-beta">BETA</span>
+            </div>
+            <span class="section-hint" id="pad-chord"></span>
+          </div>
+          <p class="page-sub">For thoughts you want to come back to. Dictate while this page is in front and it lands here, not in an app.</p>
+
+          <div class="card-recessed history-entries-container">
+            <div class="history-list" id="pad-list"></div>
+          </div>
+
+          <div class="history-footnote">
+            <svg viewBox="0 0 20 20" width="13" height="13"><rect x="4.5" y="8.5" width="11" height="7.5" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M7 8.5 V6.3 A3 3 0 0 1 13 6.3 V8.5" fill="none" stroke="currentColor" stroke-width="1.5"/></svg>
+            <span>The pad stays on this device, in <code>scratchpad.jsonl</code>, and keeps the last 200 lines. Nothing is ever sent anywhere.</span>
           </div>
         </section>
 

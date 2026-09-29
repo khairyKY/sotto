@@ -87,6 +87,7 @@ body {
   position: relative;
 }
 .nav-item svg { flex: none; }
+.nav-item[hidden] { display: none; } /* Scratchpad's, while its flag is off */
 
 /* ── content area ──────────────────────────── */
 .content {
@@ -607,6 +608,11 @@ body {
 .hist-row .flag.flagged { color: var(--mm-accent); cursor: default; }
 .hist-row .diff-toggle { color: var(--mm-muted-2); flex: none; font-size: 12px; cursor: pointer; }
 .hist-row .diff-toggle:hover { color: var(--mm-accent-ink); }
+/* Scratchpad rows (#19): History's rows, with real buttons for the actions. */
+.pad-row .txt { white-space: pre-wrap; }
+.pad-row .act { background: none; border: 0; padding: 0; font: 12px "Hanken Grotesk"; color: var(--mm-muted-2); flex: none; cursor: pointer; }
+.pad-row .act:hover, .pad-row .act:focus-visible { color: var(--mm-accent-ink); }
+.pad-row .act[hidden] { display: none; }
 /* Review panel (#25): indented under the row's text (14 pad + 58 time + 12 gap). */
 .hist-review { padding: 0 14px 11px 84px; }
 .hist-review[hidden] { display: none; }

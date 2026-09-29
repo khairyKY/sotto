@@ -21,6 +21,7 @@ mod journal;
 mod llm;
 mod polish;
 mod recordings;
+mod scratchpad;
 mod single_instance;
 mod sounds;
 mod startup;
@@ -1157,6 +1158,7 @@ fn main() -> anyhow::Result<()> {
         "loaded config"
     );
     let controls = Controls::from_config(&cfg);
+    scratchpad::init(&cfg);
 
     // The worker's event channel is created here so both the pipeline and the
     // Tauri commands / tray (via AppState.tx) can drive it — e.g. Retry.
@@ -1177,7 +1179,9 @@ fn main() -> anyhow::Result<()> {
             set_replacements_enabled,
             set_formatting_commands, set_number_formatting, set_phonetic_correction, set_quote_style, set_pronunciation_target, add_pronunciation_correction,
             menu_action,
-            assets::assets_status, assets::download_assets
+            assets::assets_status, assets::download_assets,
+            scratchpad::scratchpad_state, scratchpad::scratchpad_page, scratchpad::scratchpad_delete,
+            scratchpad::scratchpad_park, scratchpad::scratchpad_inject
         ])
         .setup(move |app| {
             build_tray(app)?;
@@ -1784,6 +1788,7 @@ fn spawn_pipeline(
                     Work::Transform(t) => {
                         run_transform(&app, &polisher, &suppressed, &cancelled, &listening, injection_mode, &t)
                     }
+                    Work::Scratchpad(a) => scratchpad::run(&app, a, &suppressed, injection_mode),
                 }
             }
         });
@@ -2043,6 +2048,9 @@ fn spawn_pipeline(
                 DictationEvent::Transform(t) => {
                     let _ = work_tx.send(Work::Transform(t));
                 }
+                DictationEvent::Scratchpad(a) => {
+                    let _ = work_tx.send(Work::Scratchpad(a));
+                }
             }
         }
     });
@@ -2062,6 +2070,8 @@ enum Work {
     Repolish(String),
     /// A Transform chord fired (#18): rewrite the focused app's selection.
     Transform(config::Transform),
+    /// The Scratchpad's chord or a row's inject (#19).
+    Scratchpad(scratchpad::Action),
     /// Spin the LLM sidecar up while the user is still speaking.
     Prewarm,
     /// Pronunciation Trainer: transcribe the take-so-far mid-recording and,
@@ -2571,6 +2581,20 @@ fn process_take(
     // retention keeps the same pair in recordings/index.jsonl.
     tracing::debug!(raw = %raw, polished = %result.text, "transcript");
     tracing::info!(raw_chars = raw.chars().count(), chars = result.text.chars().count(), "transcript");
+
+    // Scratchpad (#19): a take spoken into the pad is kept there, not typed.
+    // No history, stats or clipboard: the pad is its own private list.
+    if scratchpad::catches(app, take.focus_target) {
+        let saved = scratchpad::land(app, &result.text);
+        emit_state(app, if saved { "done" } else { "error" });
+        if !saved {
+            take.reason = "Couldn't save it to the Scratchpad";
+            *stash = Some(take);
+        } else if !stash.as_ref().is_some_and(|t| t.reason == RECOVERED) {
+            *stash = None;
+        }
+        return;
+    }
 
     // Stage 3 — inject into the original window.
     inject::restore_focus(take.focus_target);
