@@ -1304,10 +1304,8 @@ fn apply_phonetic_corrections(text: &str, targets: &[String]) -> (String, Vec<(S
             if coded.iter().any(|(t, _)| t.eq_ignore_ascii_case(core)) {
                 return tok.to_string();
             }
-            // A real English word is what the speaker said, not a mishearing
-            // — common ("said", "called") or not ("culled", "trie"). Only
-            // non-words ("clode") and names ("Soto") are fair game.
-            if english.get_word_metadata_str(core).is_some_and(|m| m.common || !m.is_proper_noun()) {
+            // A real English word is what the speaker said, not a mishearing.
+            if is_real_word(&english, core) {
                 return tok.to_string();
             }
             let tc = soundex(core);
@@ -1324,6 +1322,31 @@ fn apply_phonetic_corrections(text: &str, targets: &[String]) -> (String, Vec<(S
         .collect()
     });
     (out, fired)
+}
+
+/// Harper's curated dictionary knows `word` as real English: common ("said",
+/// "called") or not ("culled", "trie"). Non-words ("clode") and names
+/// ("Soto") aren't.
+fn is_real_word(english: &FstDictionary, word: &str) -> bool {
+    english.get_word_metadata_str(word).is_some_and(|m| m.common || !m.is_proper_noun())
+}
+
+/// May a trainer correction also write an exact dictionary entry (#94)?
+/// An entry rewrites its phrase everywhere, in every polish mode, so it may
+/// only key on something the user never says. "clode" -> yes. "cloud" -> no:
+/// an entry would rewrite every "cloud" (#63's failure again), so it stays a
+/// `heard_as` hint, which the Whisper prompt and the AI polish use in context.
+///
+/// A phrase gets an entry only if NONE of its words is real. ASR hears an
+/// unknown name as real words ("cloud code", "adding gravity"), and those
+/// are phrases the user can say. Mixed ones ("clode code") stay hints too:
+/// Harper's "not a word" also means "a word Harper lacks" (Egyptian
+/// transliterations, jargon), so one unknown word among real ones is weak
+/// proof the phrase can't be real speech. A deliberate entry is still one
+/// click away on the Dictionary page.
+pub fn dictionary_safe(heard: &str) -> bool {
+    let english = FstDictionary::curated();
+    heard.split_whitespace().all(|tok| !is_real_word(&english, split_affixes(tok).1))
 }
 
 /// A span's code must be at least this long (onset letter + 5 consonant
@@ -1983,6 +2006,19 @@ mod tests {
             let (out, fired) = apply_phonetic_corrections(s, &targets);
             assert_eq!(out, s);
             assert!(fired.is_empty(), "{s}: {fired:?}");
+        }
+    }
+
+    #[test]
+    fn trainer_corrections_write_dictionary_entries_for_non_words_only() {
+        // #94: non-words and names get an exact entry (plus the hint). Arabic
+        // isn't English, so Harper can't vouch for it: it keeps today's entry.
+        for heard in ["clode", "Clode", "soto.", "clode soto", "كوشري"] {
+            assert!(dictionary_safe(heard), "{heard}");
+        }
+        // ...a real word, or a phrase holding one, stays a hint.
+        for heard in ["cloud", "Cloud,", "clawed", "culled", "cloud code", "adding gravity", "clode code", "the German ICLI"] {
+            assert!(!dictionary_safe(heard), "{heard}");
         }
     }
 

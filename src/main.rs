@@ -663,22 +663,22 @@ fn set_pronunciation_target(word: Option<String>, calibration: Option<bool>, sta
         .map(|target| Training { target, calibration: calibration.unwrap_or(false) });
 }
 
-/// Pronunciation Trainer's "add this correction" action. Writes BOTH
-/// layers this session's own testing showed are needed: `heard` joins
-/// `word`'s AI-polish vocabulary hint (works when the mishearing is close
-/// enough for the model to bridge, e.g. "clawed" -> "Claude"), AND becomes
-/// a deterministic Word-kind dictionary entry (works regardless of polish
-/// mode, and is the only reliable fix for a mishearing too far from the
-/// target for the LLM layer — e.g. "the German ICLI" -> "the Gemini CLI",
-/// confirmed in this same session). Skips the dictionary entry if an
-/// existing one already covers this exact phrase, so retraining the same
-/// mishearing twice doesn't pile up duplicates.
+/// Pronunciation Trainer's (and Calibrate's) "add this correction" action.
+/// `heard` always joins `word`'s vocabulary hint (Whisper prompt + AI
+/// polish; works when the mishearing is close enough for the model to
+/// bridge, e.g. "clawed" -> "Claude"). It also becomes a deterministic
+/// Word-kind dictionary entry (works in every polish mode) only when it's
+/// no real English word (`polish::dictionary_safe`, #94): an entry for
+/// "cloud" would rewrite every "cloud". Skips the entry if an existing one
+/// already covers this exact phrase, so retraining the same mishearing
+/// twice doesn't pile up duplicates. Returns whether it's an entry, so the
+/// page can say which happened.
 #[tauri::command]
-fn add_pronunciation_correction(word: String, heard: String, state: tauri::State<'_, AppState>) {
+fn add_pronunciation_correction(word: String, heard: String, state: tauri::State<'_, AppState>) -> bool {
     let word = word.trim().to_string();
     let heard = heard.trim().to_string();
     if word.is_empty() || heard.is_empty() {
-        return;
+        return false;
     }
     let mut cfg = state.cfg.lock().unwrap();
 
@@ -692,9 +692,10 @@ fn add_pronunciation_correction(word: String, heard: String, state: tauri::State
     }
     *state.controls.vocabulary.lock().unwrap() = cfg.polish.vocabulary.clone();
 
+    let exact = polish::dictionary_safe(&heard);
     let already_covered =
         cfg.dictionary.iter().any(|e| e.enabled && e.phrases().iter().any(|p| p.eq_ignore_ascii_case(&heard)));
-    if !already_covered {
+    if exact && !already_covered {
         cfg.dictionary.push(DictEntry {
             spoken: heard,
             replacement: word,
@@ -706,6 +707,7 @@ fn add_pronunciation_correction(word: String, heard: String, state: tauri::State
     }
 
     let _ = cfg.save();
+    exact
 }
 
 /// Config entries -> the shape the polisher iterates: enabled ones only, each

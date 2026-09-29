@@ -65,6 +65,8 @@ async function invoke(cmd, args) {
   if (cmd === "download_assets") mockDownload();
   if (cmd === "set_transforms") mock.transforms = args.transforms;
   if (cmd === "set_transforms_enabled") mock.transformsEnabled = args.enabled;
+  // Stands in for Harper's real-word check (#94), enough to preview both notes.
+  if (cmd === "add_pronunciation_correction") return !/\b(cloud|clawed|code)\b/i.test(args.heard);
   // `?firstrun` previews a fresh install: nothing on disk yet (#54).
   if (cmd === "assets_status") return MOCK_FIRST_RUN
     ? { ready: false, missing: ["Parakeet v3 (speech-to-text)", "Qwen2.5 1.5B (AI polish)", "llama.cpp runtime"] }
@@ -1009,7 +1011,7 @@ function loadHistory() { renderHistoryPage(historyEntries); }
 
 // ── pronunciation trainer ──
 let pronVocabulary = []; // [{word, heardAs: [...], recent: [bool...]}] from settings
-let pronState = "idle"; // "idle" | "listening" | "resolving"
+let pronState = "idle"; // "idle" | "speaking" (#36) | "listening" | "resolving"
 let pronArmedWord = null; // the word the backend is currently armed for -- also what an incoming 'pronunciation-sample' must match
 
 // Strength is the fraction of the last few attempts that matched -- see
@@ -1091,7 +1093,8 @@ function pronSetState(state, word) {
 // Calibrate's takes (#22) end the same way; only one flow records at a time.
 function pronTakeEnded(state) {
   const note = state === "cancelled" ? "" : "Didn't catch that. Try again.";
-  if (pronState !== "idle") { pronSetState("idle"); $("pron-status").textContent = note; }
+  // "speaking" (#36) has no take yet: a late event from the last one isn't its end.
+  if (pronState === "listening" || pronState === "resolving") { pronSetState("idle"); $("pron-status").textContent = note; }
   if (calState !== "idle") { calSetState("idle"); $("cal-status").textContent = note; }
 }
 
@@ -1101,15 +1104,17 @@ function pronAddSampleRow(word, heard, matched) {
   if (matched) {
     row.innerHTML = `<span class="pron-sample-heard">Heard: <b dir="auto">${escapeHtml(heard)}</b></span><span class="pron-sample-match" title="Matched">&#10003;</span>`;
   } else {
-    row.innerHTML = `<span class="pron-sample-heard">Heard: <b dir="auto">${escapeHtml(heard || "(nothing)")}</b></span><button class="btn btn-ghost" id="pron-add-correction">Add correction</button>`;
-    row.querySelector("#pron-add-correction").onclick = (ev) => pronAddCorrection(word, heard, ev.currentTarget);
+    // Nothing heard, nothing to learn: add_pronunciation_correction would save nothing.
+    row.innerHTML = `<span class="pron-sample-heard">Heard: <b dir="auto">${escapeHtml(heard || "(nothing)")}</b></span>${heard ? '<button class="btn btn-ghost">Add correction</button>' : ""}`;
+    row.querySelector("button")?.addEventListener("click", (ev) => pronAddCorrection(word, heard, ev.currentTarget));
   }
   $("pron-samples-list").prepend(row);
 }
 
 // "Add correction" (the trainer's and Calibrate's): the only thing that saves.
+// A real-word mishearing is kept as a hint only, never a dictionary entry (#94).
 async function pronAddCorrection(word, heard, btn) {
-  await invoke("add_pronunciation_correction", { word, heard });
+  const exact = await invoke("add_pronunciation_correction", { word, heard });
   const s = await getSettings();
   pronVocabulary = (s.vocabulary || []).map(v => ({ word: v.word, heardAs: v.heardAs || [], recent: v.recent || [] }));
   renderTrainedWords();
@@ -1120,7 +1125,49 @@ async function pronAddCorrection(word, heard, btn) {
       setTimeout(() => ring?.classList.remove("pron-level-up"), 500);
     }
   });
-  btn.replaceWith(document.createTextNode(" — added"));
+  const note = document.createElement("span");
+  note.className = "pron-learned";
+  note.textContent = exact ? "Learned" : `Learned (hint only — ${heard.includes(" ") ? "has a real word" : "real word"})`;
+  if (!exact) note.title = `A dictionary entry would change every “${heard}” you say, so it's kept as a hint.`;
+  btn.replaceWith(note);
+}
+
+// "Say it first" (#36): the trainer says the word before a take, through
+// the WebView's speechSynthesis (Windows' own voices). Off by default; the
+// choice lives in localStorage, which can throw.
+let pronSayFirst = false;
+try { pronSayFirst = localStorage.getItem("pron-say-first") === "true"; } catch {}
+// ponytail: fixed guesses. TIMEOUT covers a voice that never fires onend (a
+// word takes ~1 s); SETTLE lets the speaker's tail die before the mic opens.
+const SAY_TIMEOUT_MS = 3000, SAY_SETTLE_MS = 200;
+
+// Resolves once the word has been said, at once if no voice fits it: an
+// English one for Latin script, an Arabic one for Arabic. Local voices
+// only: an online one would send the word off the machine. The take starts
+// after this, so the spoken word can't leak into it and score a match.
+function sayWord(word) {
+  const synth = window.speechSynthesis;
+  const lang = /\p{Script=Arabic}/u.test(word) ? "ar" : /\p{Script=Latin}/u.test(word) ? "en" : null;
+  const voice = lang && synth?.getVoices().find(v => v.localService && v.lang.toLowerCase().startsWith(lang));
+  if (!voice) return Promise.resolve();
+  return new Promise((done) => {
+    const u = new SpeechSynthesisUtterance(word);
+    u.voice = voice;
+    u.lang = voice.lang;
+    const timer = setTimeout(() => { synth.cancel(); done(); }, SAY_TIMEOUT_MS);
+    u.onend = u.onerror = () => { clearTimeout(timer); setTimeout(done, SAY_SETTLE_MS); };
+    synth.cancel(); // a stuck earlier utterance would hold this one in the queue
+    synth.speak(u);
+  });
+}
+
+if ($("pron-say-first")) {
+  $("pron-say-first").setAttribute("aria-checked", String(pronSayFirst));
+  initSwitch($("pron-say-first"), (on) => {
+    pronSayFirst = on;
+    try { localStorage.setItem("pron-say-first", String(on)); } catch {}
+  });
+  window.speechSynthesis?.getVoices(); // the WebView loads its voice list on first ask
 }
 
 if ($("pron-listen-btn")) {
@@ -1131,12 +1178,20 @@ if ($("pron-listen-btn")) {
       return;
     }
     const word = $("pron-word-input").value.trim();
-    if (!word || calState !== "idle") return;
+    if (!word || pronState !== "idle" || calState !== "idle") return;
+    if (pronSayFirst) {
+      pronState = "speaking"; // holds off a second click and Calibrate
+      $("pron-listen-btn").disabled = true;
+      await sayWord(word);
+      // Left the page while it spoke: the trainer isn't armed elsewhere (ADR 0001).
+      if (!$("page-pronunciation").classList.contains("active")) return pronSetState("idle");
+    }
     // Armed before Start is sent: Start consumes the arm, so it must land first.
     await invoke("set_pronunciation_target", { word });
     if (await invoke("start_dictation") === false) {
       // Paused from the tray: no take will come, so don't sit on "Listening".
       invoke("set_pronunciation_target", { word: null });
+      pronSetState("idle");
       $("pron-status").textContent = "Dictation is paused. Resume it from the tray menu.";
       return;
     }
@@ -1149,7 +1204,7 @@ if ($("pron-listen-btn")) {
 // armed as a calibration target: the take comes back as a
 // 'pronunciation-sample' holding the raw transcript, and nothing is scored,
 // polished, typed or saved. Only an "Add correction" click saves.
-let calSentences = [], calIndex = 0, calState = "idle"; // calState: as pronState
+let calSentences = [], calIndex = 0, calState = "idle"; // calState: as pronState, never "speaking"
 
 function loadCalibration() {
   const next = calibrationSentences(pronVocabulary.map(v => v.word));
