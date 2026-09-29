@@ -1074,7 +1074,7 @@ fn init_logging(cli: bool) {
 
 // ── main ───────────────────────────────────────────────────────────────
 fn main() -> anyhow::Result<()> {
-    let cli = std::env::args().any(|a| ["--transcribe", "--polish", "--replay-flags"].contains(&a.as_str()));
+    let cli = std::env::args().any(|a| ["--transcribe", "--polish", "--replay-flags", "--transform"].contains(&a.as_str()));
     init_logging(cli);
     init_ort();
 
