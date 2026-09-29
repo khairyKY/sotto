@@ -1122,7 +1122,9 @@ fn main() -> anyhow::Result<()> {
                 if (cfg.zoom - 1.0).abs() > f64::EPSILON {
                     let _ = w.set_zoom(cfg.zoom.clamp(ZOOM_MIN, ZOOM_MAX));
                 }
-                if !cfg.start_hidden {
+                // First run (#54): a hidden window would hide the download
+                // progress too, so show it until every asset is on disk.
+                if !cfg.start_hidden || !assets::assets_status().ready {
                     let _ = w.show();
                 }
             }
@@ -1497,7 +1499,11 @@ fn spawn_pipeline(
     // thread can hand over finished chunks *during* recording, so the wait
     // after release is the tail of the take instead of all of it.
     let injection_mode = cfg.injection_mode;
-    let polisher = polish::Polisher::new(controls.clone(), cfg.llm.clone());
+    let mut polisher = polish::Polisher::new(controls.clone(), cfg.llm.clone());
+    // The polisher decides at build time whether AI is available, so on a
+    // first run it's rebuilt once the LLM finishes downloading (#54).
+    let mut ai_ready = llm::Llm::is_available();
+    let (polisher_controls, llm_cfg) = (controls.clone(), cfg.llm.clone());
     let history = controls.history.clone();
     let listening = controls.listening.clone();
     let level = controls.level.clone();
@@ -1579,6 +1585,11 @@ fn spawn_pipeline(
                 // through one engine.
                 if partials.is_empty() {
                     asr.sync(&app.state::<AppState>().cfg.lock().unwrap());
+                }
+                if !ai_ready && llm::Llm::is_available() {
+                    tracing::info!("AI polish assets landed, picking them up without a restart");
+                    polisher = polish::Polisher::new(polisher_controls.clone(), llm_cfg.clone());
+                    ai_ready = true;
                 }
                 match work {
                     // An empty chunk is a silent one — register the take as

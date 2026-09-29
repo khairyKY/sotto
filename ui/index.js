@@ -43,7 +43,12 @@ async function invoke(cmd, args) {
   console.log("[mock invoke]", cmd, args || "");
   if (cmd === "set_asr_model") mock.models.forEach(m => { m.selected = m.id === args.model; });
   if (cmd === "download_assets") mockDownload();
+  // `?firstrun` previews a fresh install: nothing on disk yet (#54).
+  if (cmd === "assets_status") return MOCK_FIRST_RUN
+    ? { ready: false, missing: ["Parakeet v3 (speech-to-text)", "Qwen2.5 1.5B (AI polish)", "llama.cpp runtime"] }
+    : { ready: true, missing: [] };
 }
+const MOCK_FIRST_RUN = !hasTauri && new URLSearchParams(location.search).has("firstrun");
 async function getSettings() {
   if (hasTauri) return T.core.invoke("get_settings");
   return mock;
@@ -194,7 +199,8 @@ function updateStatusBar(s) {
   // nothing else in the app shows it — this is the state that actually cost
   // Khairy a long stretch of "why does polish feel broken". A warning chip
   // instead of plain text so it can't be skimmed past like the rest of the line.
-  if (s?.polish === "ai") parts.push("AI polish on");
+  // Until its model lands, AI mode runs as rules — say so rather than claim it's on (#54).
+  if (s?.polish === "ai") parts.push(aiWaiting ? "AI polish after download" : "AI polish on");
   else if (s?.polish === "rules") parts.push("rules polish");
   else parts.push('<span class="status-warn">polish off</span>');
   parts.push("mic: " + escapeHtml(s?.microphone || "system default"));
@@ -1410,6 +1416,8 @@ async function initUpdates() {
 // Handlers for the backend's asset-* events, keyed by event name so the
 // browser preview's mockDownload() can drive the very same UI.
 let assetEvents = {};
+// The AI tier's files are still missing, so AI mode polishes with rules for now.
+let aiWaiting = false;
 
 // Browser preview only: fakes the selected model's download, dropping at 40%
 // on the first try so progress, error, resume (Retry) and done are all visible.
@@ -1437,11 +1445,13 @@ async function initAssets() {
   const banner = $("assets-banner");
   const fill = $("assets-fill");
   const text = $("assets-text");
+  const dot = banner.querySelector(".banner-dot");
   banner.hidden = true;
  
   assetEvents = {
     "asset-progress": (p) => {
       p = p || {};
+      dot.classList.add("amber");
       const pct = p.total ? Math.round((p.received / p.total) * 100) : 0;
       const mbNow = (p.received / 1048576).toFixed(0);
       const mbAll = p.total ? (p.total / 1048576).toFixed(0) : "?";
@@ -1458,8 +1468,11 @@ async function initAssets() {
     },
     "assets-ready": async () => {
       fill.style.width = "100%";
-      text.textContent = "All models ready.";
-      setTimeout(() => { banner.hidden = true; }, 1500);
+      dot.classList.remove("amber");
+      text.textContent = "All models ready. Hold your hotkey and speak.";
+      // First run: the banner is the only "you're done" signal, so it stays a while.
+      setTimeout(() => { banner.hidden = true; }, aiWaiting ? 8000 : 1500);
+      if (aiWaiting) { aiWaiting = false; loadHome(); } // AI tier is live now, no restart
       if (downloadingModelId) {
         downloadingModelId = null;
         downloadProgress = null;
@@ -1487,6 +1500,11 @@ async function initAssets() {
   banner.hidden = false;
   const missing = (status.missing || []).join(", ");
   text.textContent = `Downloading ${missing || "voice models"}…`;
+  // First run: the progress banner lives in Settings, so open it (#54, README).
+  openSettings();
+  aiWaiting = (status.missing || []).some(n => /AI polish|llama/.test(n));
+  loadHome();
+  if (MOCK_FIRST_RUN) { mockDropped = true; mockDownload(); } // the backend auto-starts; the mock must too
 }
 
 // ── alert card ──
