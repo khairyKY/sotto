@@ -108,6 +108,21 @@
             </div>
           </div>
 
+          <!-- Lecture capture (#23), shown while `lecture_mode` is on -->
+          <div class="alert-card" id="lecture-card" hidden>
+            <span class="alert-icon lecture-icon" id="lecture-icon">
+              <svg viewBox="0 0 20 20" width="15" height="15"><path d="M5 5.5 H15 M5 10 H15 M5 14.5 H11" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>
+            </span>
+            <div class="alert-body">
+              <div class="alert-title" id="lecture-title">Lecture capture</div>
+              <div class="alert-sub" id="lecture-sub">Writes a timestamped transcript to a file. Nothing is typed.</div>
+            </div>
+            <div class="alert-actions">
+              <button class="btn btn-ghost" id="lecture-folder" hidden>Open folder</button>
+              <button class="btn btn-primary" id="lecture-toggle">Start</button>
+            </div>
+          </div>
+
           <div class="section-label">Recent</div>
           <div class="recent-list" id="recent-list">
             <div class="recent-empty">Nothing dictated yet this session</div>

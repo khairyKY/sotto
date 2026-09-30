@@ -13,12 +13,15 @@ function applyTheme(theme) {
   }
 }
 
+// A lecture being captured (#23) outranks "Paused" in the header: the
+// microphone is open either way.
+let lectureOn = false;
 function setPauseUI(paused) {
   document.getElementById("pause-item").classList.toggle("checked", paused);
   document.getElementById("pause-label").textContent = paused ? "Resume dictation" : "Pause dictation";
-  document.getElementById("status-text").textContent = paused ? "Paused" : "Ready";
+  document.getElementById("status-text").textContent = lectureOn ? "Capturing" : paused ? "Paused" : "Ready";
   // Green reads as "live"; muted while paused, same as Home's status dot.
-  document.querySelector(".status-dot").style.background = paused ? "var(--mm-muted-2)" : "";
+  document.querySelector(".status-dot").style.background = paused && !lectureOn ? "var(--mm-muted-2)" : "";
 }
 
 // Pull live state (theme, paused, retry availability). The menu window
@@ -35,6 +38,11 @@ async function refreshState() {
     const retry = document.getElementById("retry-item");
     retry.classList.toggle("disabled", !s.hasTake);
     document.getElementById("retry-meta").textContent = s.hasTake ? "ready" : "none yet";
+    lectureOn = !!s.lecture;
+    const lecture = document.getElementById("lecture-item");
+    lecture.hidden = !s.lectureMode;
+    lecture.classList.toggle("checked", lectureOn);
+    document.getElementById("lecture-label").textContent = lectureOn ? "Stop lecture capture" : "Start lecture capture";
     setPauseUI(!!s.paused);
   } catch (err) {
     console.error("Failed to load Sotto settings:", err);

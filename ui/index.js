@@ -69,6 +69,10 @@ const mock = {
       { id: Date.now() - 60000, text: "الـ demo بكرة الساعة عشرة، جهز الـ slides" },
     ],
   },
+  // Lecture mode (#23). `?lecture` shows Home's card, as the config flag does.
+  lectureMode: new URLSearchParams(location.search).has("lecture"),
+  lecture: false,
+  lecturesDir: "",
   transformDefaults: [
     { name: "Polish", chord: "Ctrl+Alt+Digit1", prompt: "Tighten and clarify it without changing its meaning. Keep the writer's own words wherever you can, and keep I, me and my as they are.", keep_words: true },
     { name: "Prompt engineer", chord: "Ctrl+Alt+Digit2", prompt: "Turn it into a detailed prompt for an AI assistant, as four labelled lines: Goal, Context, Constraints, Output. Use only what the text says.", keep_words: false },
@@ -86,6 +90,7 @@ async function invoke(cmd, args) {
   if (cmd === "scratchpad_state") return mock.pad;
   if (cmd === "scratchpad_delete") return (mock.pad.rows = mock.pad.rows.filter(r => r.id !== args.id));
   if (cmd === "set_code_editors") mock.codeEditors = args.apps;
+  if (cmd === "set_lecture") { mock.lecture = args.on; mock.lecturesDir = "lectures"; }
   // Stands in for Harper's real-word check (#94), enough to preview both notes.
   if (cmd === "add_pronunciation_correction") return !/\b(cloud|clawed|code)\b/i.test(args.heard);
   // `?firstrun` previews a fresh install: nothing on disk yet (#54).
@@ -232,8 +237,35 @@ async function loadHome() {
     }
     renderRecent(s?.history || []);
     updateStatusBar(s);
+    renderLecture(s);
   } catch {}
 }
+
+// ── lecture capture (#23) ──
+// Home's card, shown while `lecture_mode` is on. A click only asks: the audio
+// thread answers with "lecture-changed", and that reload is what flips the card.
+let lectureOn = false;
+function renderLecture(s) {
+  lectureOn = !!s?.lecture;
+  $("lecture-card").hidden = !s?.lectureMode;
+  $("lecture-icon").classList.toggle("on", lectureOn);
+  $("lecture-title").textContent = lectureOn ? "Capturing a lecture" : "Lecture capture";
+  $("lecture-sub").textContent = lectureOn
+    ? "Writing the transcript as it goes. Dictation waits until you stop."
+    : "Writes a timestamped transcript to a file. Nothing is typed.";
+  $("lecture-toggle").textContent = lectureOn ? "Stop" : "Start";
+  // No folder until the first transcript line is written.
+  $("lecture-folder").hidden = !s?.lecturesDir;
+  $("lecture-folder").onclick = () => invoke("open_url", { url: s.lecturesDir });
+}
+$("lecture-toggle").onclick = async () => {
+  await invoke("set_lecture", { on: !lectureOn });
+  if (!hasTauri) loadHome();
+};
+// Why `start_dictation` answered false: paused from the tray (#60), or a lecture has the microphone.
+const notStarted = () => lectureOn
+  ? "A lecture is being captured. Stop it to dictate."
+  : "Dictation is paused. Resume it from the tray menu.";
 function updateStatusBar(s) {
   const parts = [];
   // Paused (tray) stops the hotkey and pill from starting takes, same chip
@@ -1323,7 +1355,7 @@ if ($("pron-listen-btn")) {
       // Paused from the tray: no take will come, so don't sit on "Listening".
       invoke("set_pronunciation_target", { word: null });
       pronSetState("idle");
-      $("pron-status").textContent = "Dictation is paused. Resume it from the tray menu.";
+      $("pron-status").textContent = notStarted();
       return;
     }
     pronSetState("listening", word);
@@ -1398,7 +1430,7 @@ if ($("cal-read-btn")) {
     await invoke("set_pronunciation_target", { word: sentence, calibration: true });
     if (await invoke("start_dictation") === false) {
       invoke("set_pronunciation_target", { word: null });
-      $("cal-status").textContent = "Dictation is paused. Resume it from the tray menu.";
+      $("cal-status").textContent = notStarted();
       return;
     }
     calSetState("listening");
@@ -2283,6 +2315,7 @@ async function boot() {
       if (["idle", "error", "cancelled", "nomodel"].includes(e.payload)) pronTakeEnded(e.payload);
     });
     T.event.listen("paused-changed", () => loadHome());
+    T.event.listen("lecture-changed", () => loadHome());
     T.event.listen("scratchpad-updated", (e) => { pad.rows = e.payload || []; renderPad(); });
     T.event.listen("navigate", (e) => {
       const page = e.payload;

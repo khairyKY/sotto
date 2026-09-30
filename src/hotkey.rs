@@ -28,6 +28,9 @@ pub enum DictationEvent {
     Transform(Transform),
     /// The Scratchpad (#19): its chord, or a row's "inject" from the page.
     Scratchpad(crate::scratchpad::Action),
+    /// Lecture capture (#23) on or off, from the tray menu or Home. Never
+    /// from a key: it has no hotkey, so it can't collide with dictation's.
+    Lecture(bool),
 }
 
 /// A hotkey binding source — either a keyboard key or a mouse button. The

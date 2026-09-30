@@ -200,6 +200,11 @@ body {
 .alert-title { font: 600 13px "Hanken Grotesk"; color: var(--mm-ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .alert-sub { font: 400 11px "Hanken Grotesk"; color: var(--mm-muted-3); }
 .alert-actions { display: flex; gap: 6px; flex: none; }
+/* Lecture capture (#23): the same card with a calm icon, accent while the
+   microphone is open. */
+.alert-card:not([hidden]) + .alert-card { margin-top: 12px; }
+.lecture-icon { background: var(--mm-tint); color: var(--mm-accent-ink); }
+.lecture-icon.on { background: var(--mm-accent); color: var(--mm-fg); }
 .btn {
   background: transparent;
   border: 0;

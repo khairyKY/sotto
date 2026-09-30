@@ -483,6 +483,12 @@ pub struct Config {
     /// Empty = no Park button.
     #[serde(default)]
     pub scratchpad_park_file: String,
+    /// Lecture mode (#23): long-form capture to a timestamped transcript in
+    /// `data_dir()/lectures/`, started and stopped from the tray menu and
+    /// Home. Nothing is typed (see `lecture.rs`). Off by default while it's
+    /// new; `config.toml` only, read at launch.
+    #[serde(default)]
+    pub lecture_mode: bool,
     /// Start minimized to the tray (no window shown on launch).
     #[serde(default = "default_true")]
     pub start_hidden: bool,
@@ -586,6 +592,7 @@ impl Default for Config {
             scratchpad: false,
             scratchpad_chord: default_scratchpad_chord(),
             scratchpad_park_file: String::new(),
+            lecture_mode: false,
             start_hidden: true,
             stats_enabled: true,
             retention: RetentionConfig::default(),
@@ -1005,6 +1012,13 @@ max_mb = 250
         assert!(!cfg.scratchpad && !Config::default().scratchpad);
         assert_eq!(cfg.scratchpad_chord, "Ctrl+Alt+Space");
         assert!(cfg.scratchpad_park_file.is_empty());
+    }
+
+    #[test]
+    fn lecture_mode_defaults_off_in_a_config_written_before_it() {
+        let cfg: Config =
+            toml::from_str("hotkey = \"ControlRight\"\nactivation_mode = \"toggle\"\ninjection_mode = \"paste\"\n").unwrap();
+        assert!(!cfg.lecture_mode && !Config::default().lecture_mode);
     }
 
     #[test]

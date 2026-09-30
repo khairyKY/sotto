@@ -18,6 +18,7 @@ mod hotkey;
 mod inject;
 mod job;
 mod journal;
+mod lecture;
 mod llm;
 mod polish;
 mod recordings;
@@ -141,6 +142,10 @@ pub struct Controls {
     pub level: Arc<AtomicU32>,
     /// True while recording — gates the level-event emitter.
     pub listening: Arc<AtomicBool>,
+    /// True while a lecture is being captured (#23). Its own flag, not
+    /// `listening`: that one means a dictation take, to the hotkey's toggle,
+    /// Escape and the pill's waveform. Written by the audio thread.
+    pub lecture: Arc<AtomicBool>,
     /// HWND (as isize) of the window that was focused when the user pressed
     /// the hotkey. If they Alt-Tab mid-dictation, we still inject here.
     /// 0 = nothing captured / capture failed.
@@ -213,6 +218,7 @@ impl Controls {
             history: history::History::new(cfg.persist_history),
             level: Arc::new(AtomicU32::new(0)),
             listening: Arc::new(AtomicBool::new(false)),
+            lecture: Arc::new(AtomicBool::new(false)),
             focus_target: Arc::new(AtomicIsize::new(0)),
             cancelled: Arc::new(AtomicBool::new(false)),
             stats_enabled: Arc::new(AtomicBool::new(cfg.stats_enabled)),
@@ -406,6 +412,12 @@ struct SettingsPayload {
     transform_defaults: Vec<config::Transform>,
     /// Shows the Pronunciation page's Calibrate card (#22).
     calibration: bool,
+    /// Lecture mode (#23): shows Home's card and the tray item, whether a
+    /// lecture is being captured now, and the transcripts' folder ("" until
+    /// the first one is written).
+    lecture_mode: bool,
+    lecture: bool,
+    lectures_dir: String,
 }
 
 // ── commands ───────────────────────────────────────────────────────────
@@ -541,6 +553,9 @@ fn get_settings(state: tauri::State<'_, AppState>) -> SettingsPayload {
         transforms: c.transforms.lock().unwrap().clone(),
         transform_defaults: config::default_transforms(),
         calibration: cfg.calibration,
+        lecture_mode: cfg.lecture_mode,
+        lecture: c.lecture.load(Ordering::Relaxed),
+        lectures_dir: Some(lecture::dir()).filter(|d| d.is_dir()).map(|d| d.display().to_string()).unwrap_or_default(),
     }
 }
 
@@ -897,7 +912,18 @@ fn start_dictation(state: tauri::State<'_, AppState>) -> bool {
         return false;
     }
     let _ = state.tx.send(DictationEvent::Start);
-    true
+    // Mid-lecture the Start is still sent, for the pill that says why it's
+    // refused (#23); `false` keeps the trainer off "Listening".
+    !state.controls.lecture.load(Ordering::Relaxed)
+}
+
+/// Start or stop lecture capture (#23): Home's card and the tray menu. The
+/// audio thread does the rest and answers with "lecture-changed".
+#[tauri::command]
+fn set_lecture(on: bool, state: tauri::State<'_, AppState>) {
+    if state.cfg.lock().unwrap().lecture_mode {
+        let _ = state.tx.send(DictationEvent::Lecture(on));
+    }
 }
 
 /// The Pronunciation Trainer's "Stop" click — same event a hotkey release/
@@ -1143,12 +1169,15 @@ fn init_logging(cli: bool) {
 
 // ── main ───────────────────────────────────────────────────────────────
 fn main() -> anyhow::Result<()> {
-    let cli = std::env::args().any(|a| ["--transcribe", "--polish", "--replay-flags", "--transform"].contains(&a.as_str()));
+    let cli = std::env::args().any(|a| ["--transcribe", "--lecture", "--polish", "--replay-flags", "--transform"].contains(&a.as_str()));
     init_logging(cli);
     init_ort();
 
     if let Some(path) = arg_value("--transcribe") {
         return run_transcribe_once(&path);
+    }
+    if let Some(path) = arg_value("--lecture") {
+        return lecture::run_once(&path);
     }
     if let Some(text) = arg_value("--polish") {
         return run_polish_once(&text);
@@ -1190,7 +1219,7 @@ fn main() -> anyhow::Result<()> {
         .invoke_handler(tauri::generate_handler![
             get_settings, set_hotkey, set_activation, set_polish, set_threshold,
             set_dictionary, set_tone, set_app_tones, set_auto_send, set_code_editors, set_transforms, set_transforms_enabled, set_launch_login, set_start_hidden, set_theme, copy_text,
-            set_overlay_position, set_overlay_always_visible, get_overlay_settings, start_dictation, stop_dictation, mark_overlay_idle,
+            set_overlay_position, set_overlay_always_visible, get_overlay_settings, start_dictation, stop_dictation, set_lecture, mark_overlay_idle,
             set_asr_model, set_asr_language,
             open_url, check_update, install_update, retry_last, cancel_dictation, dismiss_take,
             repolish_copy, flag_transcription,
@@ -1225,6 +1254,11 @@ fn main() -> anyhow::Result<()> {
             }
             if let Some(w) = app.get_webview_window("menu") {
                 harden_utility_window(&w, false);
+                // The lecture item (#23) is one more 33px row than
+                // tauri.conf.json's 380 has room for.
+                if cfg.lecture_mode {
+                    let _ = w.set_size(tauri::LogicalSize::new(230.0, 413.0));
+                }
             }
             if let Some(w) = app.get_webview_window("settings") {
                 if (cfg.zoom - 1.0).abs() > f64::EPSILON {
@@ -1319,6 +1353,10 @@ fn menu_action(app: tauri::AppHandle, action: String) {
             let _ = tray.set_tooltip(Some(if paused { "Sotto (paused)" } else { "Sotto" }));
         }
         let _ = app.emit("paused-changed", paused);
+    } else if action == "lecture" {
+        let state = app.state::<AppState>();
+        let on = !state.controls.lecture.load(Ordering::Relaxed);
+        set_lecture(on, state);
     } else {
         if let Some(w) = app.get_webview_window("settings") {
             let _ = w.show();
@@ -1661,6 +1699,7 @@ fn spawn_pipeline(
         let retention_enabled = retention_enabled.clone();
         let peek_busy = peek_busy.clone();
         let live_take = live_take.clone();
+        let lecture_on = controls.lecture.clone();
         std::thread::spawn(move || {
             let mut asr = asr::Asr::new();
             // Warm the ASR model before serving work, so the first dictation
@@ -1676,6 +1715,8 @@ fn spawn_pipeline(
             // keyed by take. Usually holds at most one entry — but a queued
             // earlier take can still be waiting while the next one records.
             let mut partials: HashMap<u64, Partial> = HashMap::new();
+            // Lecture mode (#23): the last chunk's text, for the next seam.
+            let mut lecture_prev = String::new();
 
             loop {
                 let work = match work_rx.recv_timeout(asr.idle_wait()) {
@@ -1683,9 +1724,9 @@ fn spawn_pipeline(
                     // No work for `asr.idle_unload_secs`: give the model's RAM
                     // back (#12); the next hotkey press reloads it. Not while
                     // recording: a long take with chunking off sends nothing
-                    // between its Prewarm and its Finish.
+                    // between its Prewarm and its Finish. Nor mid-lecture.
                     Err(crossbeam_channel::RecvTimeoutError::Timeout) => {
-                        if !listening.load(Ordering::Relaxed) {
+                        if lecture::may_unload(listening.load(Ordering::Relaxed), lecture_on.load(Ordering::Relaxed)) {
                             asr.unload();
                         }
                         continue;
@@ -1809,6 +1850,13 @@ fn spawn_pipeline(
                         run_transform(&app, &polisher, &suppressed, &cancelled, &listening, injection_mode, &t)
                     }
                     Work::Scratchpad(a) => scratchpad::run(&app, a, &suppressed, injection_mode),
+                    // Where lecture mode leaves the dictation path (#23): a
+                    // chunk's text goes to the transcript file as it lands.
+                    // No partials, no Finish, so never `process_take`:
+                    // nothing polished, typed, or put in history or stats.
+                    // Each line stands alone, so an engine picked in Settings
+                    // mid-lecture takes over at its next chunk (`sync` above).
+                    Work::Lecture(piece) => lecture::write(|s| asr.transcribe(s), piece, &mut lecture_prev),
                 }
             }
         });
@@ -1833,6 +1881,10 @@ fn spawn_pipeline(
         let mut take_context: Option<std::sync::mpsc::Receiver<String>> = None;
         // Pronunciation-Trainer detection peeks — last one's time, for cadence.
         let mut last_peek = std::time::Instant::now();
+        // Lecture mode (#23): the lecture being captured, if any. It records
+        // into `all`/`sent` like a take, on the same recorder and the same
+        // poll; what differs is where its chunks go (see the poll below).
+        let mut lecture: Option<lecture::Capture> = None;
 
         loop {
             // Poll only while recording — an idle Sotto has no reason to wake
@@ -1854,6 +1906,19 @@ fn spawn_pipeline(
             // over a chunk if enough has piled up behind a pause.
             let Some(event) = event else {
                 let fresh = recorder.drain();
+                // A lecture is cut by the same `next_chunk` (whatever
+                // `chunked_transcription` says: it has no one-shot path), but
+                // each chunk is written to its file rather than held for a
+                // Finish, and the audio behind it is dropped, not kept for a
+                // Retry. No crash journal either: its transcript is on disk
+                // already, and a journal would come back as a dictation.
+                if let Some(capture) = lecture.as_mut() {
+                    all.extend(fresh);
+                    if let Some(piece) = capture.step(&mut all, &mut sent) {
+                        let _ = work_tx.send(Work::Lecture(piece));
+                    }
+                    continue;
+                }
                 if journaled {
                     journal::append(take_id, &fresh);
                 }
@@ -1901,7 +1966,59 @@ fn spawn_pipeline(
                 continue;
             };
 
+            match lecture::gate(lecture.is_some(), &event) {
+                lecture::Gate::Refuse => {
+                    // The trainer's arm goes with the Start, as always (#47).
+                    arm_take(&mut training_word.lock().unwrap(), true);
+                    emit_state(&app, "lectureon");
+                    tracing::info!("start refused: lecture capture is on");
+                    continue;
+                }
+                lecture::Gate::Ignore => continue,
+                lecture::Gate::Pass => {}
+            }
+
             match event {
+                DictationEvent::Lecture(true) => {
+                    // A take being recorded is never cut short for one.
+                    if recording {
+                        tracing::info!("lecture start ignored: already recording");
+                        continue;
+                    }
+                    match recorder.start() {
+                        Ok(()) => {
+                            all.clear();
+                            sent = 0;
+                            recording = true;
+                            if sound_enabled.load(Ordering::Relaxed) {
+                                sounds::tick();
+                            }
+                            let capture = lecture::Capture::new();
+                            tracing::info!(file = %capture.file().display(), "lecture capture started");
+                            lecture = Some(capture);
+                            publish_lecture(&app, true);
+                        }
+                        Err(err) => {
+                            emit_state(&app, "error");
+                            tracing::error!(?err, "failed to start lecture capture");
+                        }
+                    }
+                }
+                DictationEvent::Lecture(false) => {
+                    let Some(capture) = lecture.take() else { continue };
+                    recording = false;
+                    if sound_enabled.load(Ordering::Relaxed) {
+                        sounds::tock();
+                    }
+                    all.extend(recorder.stop().unwrap_or_default());
+                    if let Some(piece) = capture.tail(&all, sent) {
+                        let _ = work_tx.send(Work::Lecture(piece));
+                    }
+                    all.clear();
+                    sent = 0;
+                    publish_lecture(&app, false);
+                    tracing::info!("lecture capture stopped");
+                }
                 DictationEvent::Start => {
                     // Start is idempotent mid-take. The hotkey, the overlay
                     // pill and the trainer button can all send it, and
@@ -2100,6 +2217,8 @@ enum Work {
     /// Non-destructive: it never touches the take or its chunk partials.
     /// `id` is the take it peeked at: only the live take's peek may fire.
     Peek { id: u64, samples: Vec<f32>, target: String },
+    /// A chunk of a lecture (#23), bound for its transcript file.
+    Lecture(lecture::Piece),
 }
 
 /// Chunk text accumulated for a take that's still being recorded.
@@ -2316,19 +2435,7 @@ impl Take {
 fn join_text(a: &str, b: &str, seam: bool) -> String {
     let (aw, bw): (Vec<&str>, Vec<&str>) =
         (a.split_whitespace().collect(), b.split_whitespace().collect());
-    // (i, j, k, dropped): aw[i..i+k] repeats as bw[j..j+k], and `dropped`
-    // words of `a` follow the repeat.
-    let repeat = (aw.len().saturating_sub(SEAM_WORDS)..aw.len())
-        .flat_map(|i| (0..=SEAM_SLACK).map(move |j| (i, j)))
-        .map(|(i, j)| {
-            let k = (0..)
-                .take_while(|&k| i + k < aw.len() && j + k < bw.len() && asr::same_word(aw[i + k], bw[j + k]))
-                .count();
-            (i, j, k, aw.len() - i - k)
-        })
-        .filter(|&(_, j, k, dropped)| dropped <= SEAM_SLACK && (k >= 2 || (k == 1 && j + dropped <= 1)))
-        .max_by_key(|&(_, j, k, dropped)| (k, std::cmp::Reverse(j + dropped)));
-    if let Some((i, j, k, _)) = repeat.filter(|_| seam) {
+    if let Some((i, j, k)) = seam_repeat(&aw, &bw).filter(|_| seam) {
         let bare = |w: &str| w.trim_end_matches(|c: char| !c.is_alphanumeric()).len();
         let (last_a, last_b) = (aw[i + k - 1], bw[j + k - 1]);
         let joint = format!("{}{}", &last_a[..bare(last_a)], &last_b[bare(last_b)..]);
@@ -2345,6 +2452,24 @@ fn join_text(a: &str, b: &str, seam: bool) -> String {
         (a, "") => a.to_string(),
         (a, b) => format!("{a} {b}"),
     }
+}
+
+/// The repeat `join_text` splices on: `(i, j, k)`, where `aw[i..i+k]` comes
+/// again as `bw[j..j+k]`. Its own function so a lecture line can drop the
+/// same words (`lecture::fresh`).
+fn seam_repeat(aw: &[&str], bw: &[&str]) -> Option<(usize, usize, usize)> {
+    // (i, j, k, dropped): `dropped` words of `a` follow the repeat.
+    (aw.len().saturating_sub(SEAM_WORDS)..aw.len())
+        .flat_map(|i| (0..=SEAM_SLACK).map(move |j| (i, j)))
+        .map(|(i, j)| {
+            let k = (0..)
+                .take_while(|&k| i + k < aw.len() && j + k < bw.len() && asr::same_word(aw[i + k], bw[j + k]))
+                .count();
+            (i, j, k, aw.len() - i - k)
+        })
+        .filter(|&(_, j, k, dropped)| dropped <= SEAM_SLACK && (k >= 2 || (k == 1 && j + dropped <= 1)))
+        .max_by_key(|&(_, j, k, dropped)| (k, std::cmp::Reverse(j + dropped)))
+        .map(|(i, j, k, _)| (i, j, k))
 }
 
 fn mode_str(m: PolishMode) -> &'static str {
@@ -2897,14 +3022,30 @@ fn retype(old: &str, fixed: &str, hwnd: isize, suppressed: &Arc<AtomicBool>, inj
 fn emit_state(app: &tauri::AppHandle, s: &str) {
     let _ = app.emit("overlay-state", s);
     *app.state::<AppState>().controls.overlay_state.lock().unwrap() = s.to_string();
-    if let Some(tray) = app.tray_by_id("main") {
-        let dark = tray::dark_for(&app.state::<AppState>().cfg.lock().unwrap().theme);
-        let _ = tray.set_icon(Some(tray::icon(s == "listening", dark)));
-    }
+    set_tray_icon(app, s == "listening");
     let always_visible = app.state::<AppState>().controls.overlay_always_visible.load(Ordering::Relaxed);
     if s != "idle" || always_visible {
         show_overlay(app);
     }
+}
+
+/// The tray tile is lilac while the microphone is open: a take being
+/// recorded, or a lecture for as long as it runs (#23), whatever the pill
+/// shows meanwhile.
+fn set_tray_icon(app: &tauri::AppHandle, listening: bool) {
+    let state = app.state::<AppState>();
+    if let Some(tray) = app.tray_by_id("main") {
+        let dark = tray::dark_for(&state.cfg.lock().unwrap().theme);
+        let _ = tray.set_icon(Some(tray::icon(listening || state.controls.lecture.load(Ordering::Relaxed), dark)));
+    }
+}
+
+/// Lecture capture went on or off (#23): the live flag, the tray tile, and
+/// the windows that show it (Home's card, the tray menu).
+fn publish_lecture(app: &tauri::AppHandle, on: bool) {
+    app.state::<AppState>().controls.lecture.store(on, Ordering::Relaxed);
+    set_tray_icon(app, false);
+    let _ = app.emit("lecture-changed", on);
 }
 
 /// Makes the overlay's ✕/↻ buttons clickable without the invisible window
