@@ -2987,9 +2987,10 @@ fn run_backtrack(
     }
 }
 
-/// Re-select the last dictation (Shift+Left × its length), copy it with
+/// Re-select the last dictation (`correction::reselect`: Shift+arrow over its
+/// caret stops, in whichever direction its paragraph runs), copy it with
 /// Ctrl+Insert, and type `fixed` over it only if the copy is that dictation.
-/// `transform::run` owns the clipboard around the copy.
+/// `transform::run` owns the clipboard around each copy.
 fn retype(old: &str, fixed: &str, hwnd: isize, suppressed: &Arc<AtomicBool>, injection_mode: InjectionMode) -> bool {
     let Ok(mut clip) = transform::SystemClipboard::new() else {
         return false;
@@ -3000,20 +3001,34 @@ fn retype(old: &str, fixed: &str, hwnd: isize, suppressed: &Arc<AtomicBool>, inj
     if !inject::wait_for_modifiers_released(Duration::from_secs(2)) {
         return false;
     }
-    let n = old.chars().count();
     suppressed.store(true, Ordering::SeqCst);
-    let outcome = transform::run(
-        &mut clip,
-        || inject::select_back(n).and_then(|()| inject::send_ctrl_insert()),
-        |copied| correction::same_text(copied, old).then(|| fixed.to_string()),
-        // An empty `fixed` is a backtrack (#26): delete the selection.
-        |out| if out.is_empty() { inject::press_backspace() } else { inject::inject_text(out, injection_mode) },
+    let replaced = correction::reselect(
+        old,
+        |arrow, n| {
+            let mut other = String::new();
+            let outcome = transform::run(
+                &mut clip,
+                || inject::select(arrow, n).and_then(|()| inject::send_ctrl_insert()),
+                |copied| {
+                    let same = correction::same_text(copied, old);
+                    if !same {
+                        other = copied.to_string();
+                    }
+                    same.then(|| fixed.to_string())
+                },
+                // An empty `fixed` is a backtrack (#26): delete the selection.
+                |out| if out.is_empty() { inject::press_backspace() } else { inject::inject_text(out, injection_mode) },
+            );
+            (outcome, other)
+        },
+        // Leave the caret where it was.
+        |arrow| {
+            let _ = inject::press_arrow(arrow);
+        },
     );
-    // Leave the caret where it was.
-    let _ = inject::press_right(correction::caret_back(&outcome));
     std::thread::sleep(Duration::from_millis(30)); // our own keys pass the hook while suppressed
     suppressed.store(false, Ordering::SeqCst);
-    outcome == transform::Outcome::Replaced
+    replaced
 }
 
 fn emit_state(app: &tauri::AppHandle, s: &str) {
