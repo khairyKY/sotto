@@ -181,6 +181,19 @@ pub fn track(w: &WebviewWindow) {
     });
 }
 
+/// The tray menu's half of #124: without lazy windows an Alt+F4 on it is
+/// refused and the menu hidden, or the tray would have no menu left to open.
+pub fn keep_menu(w: &WebviewWindow) {
+    let closing = w.clone();
+    w.on_window_event(move |e| {
+        let WindowEvent::CloseRequested { api, .. } = e else { return };
+        if close_hides(lazy(closing.app_handle())) {
+            api.prevent_close();
+            let _ = closing.hide();
+        }
+    });
+}
+
 /// Opens the main window, on `page` if one is given: the tray icon, a tray
 /// menu item, a second launch (#61).
 pub fn open_settings(app: &AppHandle, page: Option<String>) {
@@ -292,5 +305,57 @@ mod tests {
         let labels: Vec<&str> =
             conf["app"]["windows"].as_array().unwrap().iter().map(|w| w["label"].as_str().unwrap()).collect();
         assert!(labels.contains(&"settings") && labels.contains(&"menu"), "{labels:?}");
+    }
+
+    /// #127, the rule on `AppState`: a config guard held across a window or
+    /// tray call hangs the app once the main thread wants the config too.
+    /// ponytail: a text check. It knows only the calls named in `REACHES`, and
+    /// takes a guard bound with `let` to live to the end of its block (or a
+    /// `drop(cfg)`) and any other to the end of its line.
+    #[test]
+    fn no_config_guard_is_held_across_a_window_call_or_another_lock() {
+        const REACHES: [&str; 8] = [
+            "get_webview_window",
+            "tray_by_id",
+            "emit",
+            "_overlay(",
+            "set_tray_icon",
+            "publish_",
+            "app_windows::",
+            "harden_utility_window",
+        ];
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        for file in std::fs::read_dir(dir).unwrap().flatten() {
+            let Ok(src) = std::fs::read_to_string(file.path()) else { continue };
+            let lines: Vec<&str> = src.lines().map(str::trim).collect();
+            for (i, line) in lines.iter().enumerate() {
+                if line.starts_with("//") || !line.contains("cfg.lock()") {
+                    continue;
+                }
+                let bound = line.starts_with("let ") && line.ends_with("cfg.lock().unwrap();");
+                let mut depth = 0;
+                for (n, held) in lines.iter().enumerate().skip(i) {
+                    if held.starts_with("//") {
+                        continue;
+                    }
+                    if n > i && ((depth == 0 && held.starts_with('}')) || held.starts_with("drop(cfg)")) {
+                        break;
+                    }
+                    // A `Controls` mirror set from the config is the one lock allowed.
+                    let other_lock = n > i && held.contains(".lock()") && !held.contains("controls.");
+                    assert!(
+                        !other_lock && !REACHES.iter().any(|r| held.contains(r)),
+                        "{}:{}: the config guard from line {} is still held here: copy out of the lock first",
+                        file.path().display(),
+                        n + 1,
+                        i + 1,
+                    );
+                    depth += held.matches('{').count() as i32 - held.matches('}').count() as i32;
+                    if !bound || depth < 0 {
+                        break;
+                    }
+                }
+            }
+        }
     }
 }

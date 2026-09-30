@@ -240,6 +240,15 @@ impl Controls {
 /// + the worker's event channel (so commands and the tray can drive it).
 struct AppState {
     controls: Controls,
+    /// Lock rule (#127): copy what you need out and drop the guard before a
+    /// window or tray call, or before taking another lock (the pattern
+    /// `app_windows::build` uses). Sync commands, tray clicks and window
+    /// events all run on the main thread and take this lock, so a thread that
+    /// holds it while it waits on the main thread (`hwnd`, `outer_size`,
+    /// `is_visible`, `tray.set_icon`, building a window) hangs the app: alive,
+    /// but `Responding: False`. The one lock taken under it is a `Controls`
+    /// mirror being set from it, never the other way round. `cfg.save()`
+    /// under it is fine.
     cfg: Mutex<Config>,
     tx: crossbeam_channel::Sender<DictationEvent>,
 }
@@ -424,7 +433,9 @@ struct SettingsPayload {
 // ── commands ───────────────────────────────────────────────────────────
 #[tauri::command]
 fn get_settings(state: tauri::State<'_, AppState>) -> SettingsPayload {
-    let cfg = state.cfg.lock().unwrap();
+    // A copy, not the guard (#127): the rest takes nine other locks, lists
+    // the audio devices and sizes the model folders.
+    let cfg = state.cfg.lock().unwrap().clone();
     let c = &state.controls;
     let idx = c.hotkey_idx.load(Ordering::Relaxed).min(hotkey::SUPPORTED_HOTKEYS.len() - 1);
     let hotkey_options: Vec<HotkeyOption> = hotkey::SUPPORTED_HOTKEYS
@@ -1047,7 +1058,8 @@ fn flag_transcription(text: String, state: tauri::State<'_, AppState>) {
     }
     // The row's raw transcript, for `--replay-flags` (#8).
     let raw = state.controls.history.raw_for(&text);
-    let cfg = state.cfg.lock().unwrap();
+    // A copy (#127): `asr::last_engine` takes a lock of its own.
+    let cfg = state.cfg.lock().unwrap().clone();
     bug_reports::record(&bug_reports::BugReport {
         t: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0),
         text,
@@ -1249,6 +1261,8 @@ fn main() -> anyhow::Result<()> {
             }
             if let Some(w) = app.get_webview_window("menu") {
                 harden_utility_window(&w, false);
+                // An Alt+F4 on it hides it, as for the main window (#124).
+                app_windows::keep_menu(&w);
                 // The lecture item (#23) is one more 33px row than
                 // tauri.conf.json's 380 has room for.
                 if cfg.lecture_mode {
