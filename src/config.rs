@@ -494,6 +494,13 @@ pub struct Config {
     /// new; `config.toml` only, read at launch.
     #[serde(default)]
     pub lecture_mode: bool,
+    /// Lazy windows (#13): build the main window and the tray menu when they
+    /// are opened and destroy them when they close, so their WebView2 renderers
+    /// aren't held while Sotto sits in the tray (see `app_windows.rs`). Off by
+    /// default until it's been checked on a real install; `config.toml` only,
+    /// read at launch.
+    #[serde(default)]
+    pub lazy_windows: bool,
     /// Start minimized to the tray (no window shown on launch).
     #[serde(default = "default_true")]
     pub start_hidden: bool,
@@ -598,6 +605,7 @@ impl Default for Config {
             scratchpad_chord: default_scratchpad_chord(),
             scratchpad_park_file: String::new(),
             lecture_mode: false,
+            lazy_windows: false,
             start_hidden: true,
             stats_enabled: true,
             retention: RetentionConfig::default(),
@@ -1024,6 +1032,13 @@ max_mb = 250
         let cfg: Config =
             toml::from_str("hotkey = \"ControlRight\"\nactivation_mode = \"toggle\"\ninjection_mode = \"paste\"\n").unwrap();
         assert!(!cfg.lecture_mode && !Config::default().lecture_mode);
+    }
+
+    #[test]
+    fn lazy_windows_defaults_off_in_a_config_written_before_it() {
+        let cfg: Config =
+            toml::from_str("hotkey = \"ControlRight\"\nactivation_mode = \"toggle\"\ninjection_mode = \"paste\"\n").unwrap();
+        assert!(!cfg.lazy_windows && !Config::default().lazy_windows);
     }
 
     #[test]

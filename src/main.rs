@@ -7,6 +7,7 @@
 // events, commands, and the tray. See docs/msvc-setup.md.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod app_windows;
 mod asr;
 mod assets;
 mod audio;
@@ -1227,7 +1228,7 @@ fn main() -> anyhow::Result<()> {
             set_microphone, set_sound_enabled, set_zoom,
             set_replacements_enabled,
             set_formatting_commands, set_number_formatting, set_phonetic_correction, set_quote_style, set_pronunciation_target, add_pronunciation_correction,
-            menu_action,
+            menu_action, dismiss_window,
             assets::assets_status, assets::download_assets,
             scratchpad::scratchpad_state, scratchpad::scratchpad_page, scratchpad::scratchpad_delete,
             scratchpad::scratchpad_park, scratchpad::scratchpad_inject
@@ -1239,9 +1240,8 @@ fn main() -> anyhow::Result<()> {
             single_instance::on_wake(move || {
                 if let Some(w) = handle.get_webview_window("settings") {
                     let _ = w.unminimize();
-                    let _ = w.show();
-                    let _ = w.set_focus();
                 }
+                app_windows::open_settings(&handle, None);
             });
             if let Some(w) = app.get_webview_window("overlay") {
                 let _ = w.set_ignore_cursor_events(true);
@@ -1269,6 +1269,10 @@ fn main() -> anyhow::Result<()> {
                 if !cfg.start_hidden || !assets::assets_status().ready {
                     let _ = w.show();
                 }
+            }
+            // Lazy windows (#13): those two go again, unless launch is showing one.
+            if cfg.lazy_windows {
+                app_windows::at_launch(app.handle());
             }
             spawn_pipeline(app.handle().clone(), controls.clone(), cfg.clone(), tx.clone(), rx.clone());
             spawn_overlay_hittest(
@@ -1302,35 +1306,13 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
                     button: tauri::tray::MouseButton::Left,
                     button_state: tauri::tray::MouseButtonState::Up,
                     ..
-                } => {
-                    if let Some(w) = tray.app_handle().get_webview_window("settings") {
-                        let _ = w.show();
-                        let _ = w.set_focus();
-                    }
-                }
+                } => app_windows::open_settings(tray.app_handle(), None),
                 tauri::tray::TrayIconEvent::Click {
                     button: tauri::tray::MouseButton::Right,
                     button_state: tauri::tray::MouseButtonState::Up,
                     position,
                     ..
-                } => {
-                    if let Some(w) = tray.app_handle().get_webview_window("menu") {
-                        // Use the window's real size (already physical px) so
-                        // this never drifts from tauri.conf.json / menu.html —
-                        // hardcoded 230x260 here is what chipped the menu.
-                        let (mw, mh) = w
-                            .outer_size()
-                            .map(|s| (s.width as f64, s.height as f64))
-                            .unwrap_or((230.0, 380.0));
-                        let x = (position.x - mw + 10.0) as i32;
-                        let y = (position.y - mh - 5.0) as i32;
-                        let _ = w.set_position(tauri::PhysicalPosition::new(x, y));
-                        harden_utility_window(&w, false);
-                        let _ = w.show();
-                        harden_utility_window(&w, false);
-                        let _ = w.set_focus();
-                    }
-                }
+                } => app_windows::open_menu(tray.app_handle(), position),
                 _ => {}
             }
         })
@@ -1358,13 +1340,15 @@ fn menu_action(app: tauri::AppHandle, action: String) {
         let on = !state.controls.lecture.load(Ordering::Relaxed);
         set_lecture(on, state);
     } else {
-        if let Some(w) = app.get_webview_window("settings") {
-            let _ = w.show();
-            let _ = w.set_focus();
-            // "settings" too: it's a modal now, and navigate() is what opens it.
-            let _ = w.emit("navigate", action);
-        }
+        app_windows::open_settings(&app, Some(action));
     }
+}
+
+/// A window's own close: the main window's ✕, the tray menu on a click away
+/// or a pick. Hidden, or with lazy windows (#13) destroyed.
+#[tauri::command]
+async fn dismiss_window(window: tauri::WebviewWindow) {
+    app_windows::dismiss(&window);
 }
 
 #[derive(serde::Serialize)]

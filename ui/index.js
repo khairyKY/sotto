@@ -2,6 +2,10 @@
 
 const T = window.__TAURI__;
 const hasTauri = !!(T && T.core);
+// The backend hands a window it builds its theme and first page (app_windows.rs):
+// one built on demand (#13) is shown as it loads, before get_settings has
+// answered, and the `navigate` fired at it found nobody listening yet.
+const opened = window.__SOTTO_OPENED || {};
 
 const mock = {
   hotkey: "ControlRight",
@@ -163,7 +167,7 @@ if (hasTauri && T.window) {
   $("win-max").onclick = () => w.toggleMaximize();
   $("win-close").onclick = () => {
     invoke("set_pronunciation_target", { word: null });
-    w.hide();
+    invoke("dismiss_window"); // hidden, or destroyed with lazy windows (#13)
   };
 } else {
   $("win-close").onclick = () => window.close();
@@ -2011,6 +2015,7 @@ async function initAssets() {
   aiWaiting = (status.missing || []).some(n => /AI polish|llama/.test(n));
   loadHome();
   if (MOCK_FIRST_RUN) { mockDropped = true; mockDownload(); } // the backend auto-starts; the mock must too
+  if (status.error) assetEvents["asset-error"](status.error); // it stopped before this window was built (#13)
 }
 
 // ── alert card ──
@@ -2044,6 +2049,16 @@ function formatTime(date) {
   return `${hours}:${minutes} ${ampm}`;
 }
 
+function applyTheme(theme) {
+  if (theme === "system") {
+    const prefersDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
+    document.documentElement.dataset.theme = prefersDark ? "dark" : "light";
+  } else {
+    document.documentElement.dataset.theme = theme;
+  }
+}
+if (opened.theme) applyTheme(opened.theme); // before the first paint
+
 // ── boot ──
 async function boot() {
   const s = await getSettings();
@@ -2056,14 +2071,6 @@ async function boot() {
   renderTakeAlert(s.takeInfo || s.take_info || null);
 
   // Theme
-  function applyTheme(theme) {
-    if (theme === "system") {
-      const prefersDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
-      document.documentElement.dataset.theme = prefersDark ? "dark" : "light";
-    } else {
-      document.documentElement.dataset.theme = theme;
-    }
-  }
   const initTheme = s.theme || "system";
   applyTheme(initTheme);
   if (hasTauri && T.event) T.event.emit("theme-changed", initTheme);
@@ -2254,7 +2261,8 @@ async function boot() {
   renderDictPage(dictEntries);
   renderSnipPage(snipEntries);
   initTransforms(s);
-  loadScratchpad();
+  // A rebuilt window (#13) opens on Home: the backend may still think the pad is in front.
+  loadScratchpad().then(syncPad);
 
   // History data
   historyEntries = s.history || [];
@@ -2264,6 +2272,11 @@ async function boot() {
   pronVocabulary = (s.vocabulary || []).map(v => ({ word: v.word, heardAs: v.heardAs || [], recent: v.recent || [] }));
   $("cal-section").hidden = !s.calibration;
   loadPronunciation();
+
+  // A page the tray menu or the Scratchpad chord asks for.
+  const goTo = (page) => {
+    if (page && document.querySelector(`.nav-item[data-page="${CSS.escape(page)}"]`)) navigate(page);
+  };
 
   // Live event listeners
   if (hasTauri && T.event) {
@@ -2317,10 +2330,7 @@ async function boot() {
     T.event.listen("paused-changed", () => loadHome());
     T.event.listen("lecture-changed", () => loadHome());
     T.event.listen("scratchpad-updated", (e) => { pad.rows = e.payload || []; renderPad(); });
-    T.event.listen("navigate", (e) => {
-      const page = e.payload;
-      if (page && document.querySelector(`.nav-item[data-page="${page}"]`)) navigate(page);
-    });
+    T.event.listen("navigate", (e) => goTo(e.payload));
     // Fires on every worker outcome — null once a take is delivered, retried,
     // or dismissed, which is what actually takes the card off the screen.
     T.event.listen("take-changed", (e) => {
@@ -2333,5 +2343,6 @@ async function boot() {
 
   initUpdates();
   initAssets();
+  goTo(opened.page);
 }
 boot();

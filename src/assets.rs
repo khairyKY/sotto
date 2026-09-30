@@ -30,6 +30,10 @@ const RELEASE_BASE: &str = "https://github.com/khairyKY/sotto/releases/download"
 /// running at the same time. ponytail: a single global flag — fine, there is
 /// only ever one provisioning run for the whole app.
 static IN_PROGRESS: AtomicBool = AtomicBool::new(false);
+/// Why the last provisioning run stopped, until the next one starts. A window
+/// built after the `asset-error` event (#13) would otherwise say "Downloading"
+/// forever.
+static STOPPED: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
 
 enum Kind {
     /// A plain file downloaded straight to `dest` (which is also its marker).
@@ -128,6 +132,8 @@ pub struct AssetsStatus {
     pub ready: bool,
     /// Names of assets still missing (for the settings "Models" section).
     pub missing: Vec<String>,
+    /// The `asset-error` message, if the download has stopped on one.
+    pub error: Option<String>,
 }
 
 #[derive(Serialize, Clone)]
@@ -146,7 +152,7 @@ pub fn assets_status() -> AssetsStatus {
         .filter(|a| !is_present(a))
         .map(|a| a.name.to_string())
         .collect();
-    AssetsStatus { ready: missing.is_empty(), missing }
+    AssetsStatus { ready: missing.is_empty(), missing, error: STOPPED.lock().unwrap().clone() }
 }
 
 /// Manual trigger from the settings "Download" button. Same path as the
@@ -183,6 +189,7 @@ pub fn spawn_provision_if_missing(app: AppHandle) {
         }
         let names: Vec<&str> = missing.iter().map(|a| a.name).collect();
         tracing::info!(?names, "provisioning missing assets from GitHub");
+        *STOPPED.lock().unwrap() = None;
         // Leftover `.part` files from an interrupted run are kept on purpose:
         // `download_to` resumes them with a Range request (#52).
         let result = provision(&app, &missing);
@@ -196,7 +203,9 @@ pub fn spawn_provision_if_missing(app: AppHandle) {
                 tracing::error!(?err, "asset provisioning failed");
                 // `{:#}` keeps the cause chain ("downloading X: got N of M bytes …"),
                 // not just the outermost context.
-                let _ = app.emit("asset-error", format!("{err:#}"));
+                let msg = format!("{err:#}");
+                *STOPPED.lock().unwrap() = Some(msg.clone());
+                let _ = app.emit("asset-error", msg);
             }
         }
     });
