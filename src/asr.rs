@@ -187,13 +187,23 @@ impl SpeechModel for PromptedWhisper {
         let err = |e: whisper_rs::WhisperError| TranscribeError::Inference(e.to_string());
         let params = full_params(self.beam, options.language.as_deref(), options.translate, self.prompt.as_deref());
         self.state.full(params, samples).map_err(err)?;
-        let mut text = String::new();
+        let mut bytes = Vec::new();
         for segment in self.state.as_iter() {
-            // A segment that isn't UTF-8 fails the take, as in transcribe-rs.
-            text.push_str(segment.to_str().map_err(err)?);
+            bytes.extend_from_slice(segment.to_bytes().map_err(err)?);
         }
-        Ok(TranscriptionResult { text: text.trim().to_string(), segments: None })
+        Ok(TranscriptionResult { text: segments_text(&bytes), segments: None })
     }
+}
+
+/// The take's text from its segments' raw bytes, decoded once. whisper.cpp
+/// cuts segments at token boundaries, and a token can end mid-character, so a
+/// multi-byte character (any Arabic letter) can straddle two segments.
+/// Decoding each segment on its own failed the whole take on the first such
+/// split (transcribe-rs's behaviour: 32 of 165 egyptian-small takes errored);
+/// joined first, the character is whole again. Bytes that are invalid even
+/// then become U+FFFD rather than losing the take.
+fn segments_text(bytes: &[u8]) -> String {
+    String::from_utf8_lossy(bytes).trim().to_string()
 }
 
 impl Asr {
@@ -556,6 +566,19 @@ mod tests {
         fn transcribe_raw(&mut self, _: &[f32], _: &TranscribeOptions) -> Result<TranscriptionResult, TranscribeError> {
             unimplemented!()
         }
+    }
+
+    #[test]
+    fn a_character_split_across_segments_survives() {
+        // One segment ends mid-character and the next begins with the rest
+        // of it: each half alone is invalid UTF-8.
+        let whole = " كشري مع صلصة ".as_bytes();
+        let cut = 4; // inside the second Arabic letter (2 bytes each, after the space)
+        assert!(std::str::from_utf8(&whole[..cut]).is_err() && std::str::from_utf8(&whole[cut..]).is_err());
+        let joined: Vec<u8> = [&whole[..cut], &whole[cut..]].concat();
+        assert_eq!(segments_text(&joined), "كشري مع صلصة");
+        // Truly broken bytes don't fail the take either.
+        assert_eq!(segments_text(b"ok \xFF done"), "ok \u{FFFD} done");
     }
 
     #[test]
