@@ -21,6 +21,9 @@ const mock = {
   tone: "",
   appTones: [],
   autoSend: ["Slack", "Terminal"],
+  // `?variables` previews the Code editors list (#27).
+  variableRecognition: new URLSearchParams(location.search).has("variables"),
+  codeEditors: ["VS Code"],
   history: [
     // Arabic-first and code-switched samples keep bidi rendering (#42) checkable in the preview.
     // raw/tier/fallback exist for this session's rows only (#25); the last two stand in for rows reloaded from history.jsonl.
@@ -82,6 +85,7 @@ async function invoke(cmd, args) {
   if (cmd === "set_auto_send") mock.autoSend = args.apps;
   if (cmd === "scratchpad_state") return mock.pad;
   if (cmd === "scratchpad_delete") return (mock.pad.rows = mock.pad.rows.filter(r => r.id !== args.id));
+  if (cmd === "set_code_editors") mock.codeEditors = args.apps;
   // Stands in for Harper's real-word check (#94), enough to preview both notes.
   if (cmd === "add_pronunciation_correction") return !/\b(cloud|clawed|code)\b/i.test(args.heard);
   // `?firstrun` previews a fresh install: nothing on disk yet (#54).
@@ -972,23 +976,25 @@ function initToneUI(s) {
   populateToneAppDatalist();
 }
 
-// ── auto-send (#21) ──
-// Apps that get an Enter after a dictation lands. The Dictionary's row
-// markup with one field: a row is an app name and a remove button, and "" is
-// the row being added (it suggests from the per-app tones' app datalist).
-let autoSend = [];
-function renderAutoSend() {
-  const host = $("auto-send-list");
+// ── app lists: auto-send (#21), code editors (#27) ──
+// Apps that get an Enter after a dictation lands, and apps where spoken
+// casing commands run. The Dictionary's row markup with one field: a row is
+// an app name and a remove button, and "" is the row being added (it suggests
+// from the per-app tones' app datalist). Each list is saved whole by `cmd`.
+const autoSend = { listId: "auto-send-list", addId: "auto-send-add", cmd: "set_auto_send", example: "Slack", apps: [] };
+const codeEditors = { listId: "code-editors-list", addId: "code-editors-add", cmd: "set_code_editors", example: "Cursor", apps: [] };
+function renderAppList(list) {
+  const host = $(list.listId);
   if (!host) return;
-  host.innerHTML = autoSend.length ? "" : '<div style="padding:14px 16px;font-size:12.5px;color:var(--mm-muted-3)">No apps yet</div>';
-  autoSend.forEach((app, i) => {
+  host.innerHTML = list.apps.length ? "" : '<div style="padding:14px 16px;font-size:12.5px;color:var(--mm-muted-3)">No apps yet</div>';
+  list.apps.forEach((app, i) => {
     const row = document.createElement("div");
     row.className = "dict-row-view";
     if (app === "") {
       row.classList.add("editing");
       row.innerHTML = `
         <div class="dict-edit-fields">
-          <input class="dict-edit-input spoken" list="tone-app-datalist" placeholder="app (e.g. Slack)" />
+          <input class="dict-edit-input spoken" list="tone-app-datalist" placeholder="app (e.g. ${list.example})" />
           <div class="dict-edit-actions">
             <span class="action-btn save-btn" title="Save">
               <svg viewBox="0 0 20 20" width="15" height="15"><path d="M4 10.5 L8 14.5 L16 5.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
@@ -999,8 +1005,8 @@ function renderAutoSend() {
           </div>
         </div>
       `;
-      row.querySelector(".save-btn").onclick = () => { autoSend[i] = row.querySelector("input").value.trim(); saveAutoSend(); };
-      row.querySelector(".cancel-btn").onclick = () => { autoSend.splice(i, 1); renderAutoSend(); };
+      row.querySelector(".save-btn").onclick = () => { list.apps[i] = row.querySelector("input").value.trim(); saveAppList(list); };
+      row.querySelector(".cancel-btn").onclick = () => { list.apps.splice(i, 1); renderAppList(list); };
     } else {
       row.innerHTML = `
         <span class="term">${escapeHtml(app)}</span>
@@ -1010,21 +1016,23 @@ function renderAutoSend() {
           </span>
         </div>
       `;
-      row.querySelector(".del-btn").onclick = () => { autoSend.splice(i, 1); saveAutoSend(); };
+      row.querySelector(".del-btn").onclick = () => { list.apps.splice(i, 1); saveAppList(list); };
     }
     host.appendChild(row);
   });
   host.querySelector("input")?.focus();
 }
-function saveAutoSend() {
-  autoSend = autoSend.filter(a => a !== "");
-  invoke("set_auto_send", { apps: autoSend });
-  renderAutoSend();
+function saveAppList(list) {
+  list.apps = list.apps.filter(a => a !== "");
+  invoke(list.cmd, { apps: list.apps });
+  renderAppList(list);
 }
-if ($("auto-send-add")) $("auto-send-add").onclick = () => {
-  if (!autoSend.includes("")) autoSend.push("");
-  renderAutoSend();
-};
+for (const list of [autoSend, codeEditors]) {
+  if ($(list.addId)) $(list.addId).onclick = () => {
+    if (!list.apps.includes("")) list.apps.push("");
+    renderAppList(list);
+  };
+}
 
 // ── history page ──
 let historyEntries = [];
@@ -2060,8 +2068,12 @@ async function boot() {
   if ($("theme")) selectSegment($("theme"), s.theme || "system");
   setThresholdUI(s.threshold);
   initToneUI(s);
-  autoSend = [...(s.autoSend || [])];
-  renderAutoSend();
+  autoSend.apps = [...(s.autoSend || [])];
+  renderAppList(autoSend);
+  // Variable recognition (#27) is config-only while it's new; its list shows with it.
+  $("code-editors-section").hidden = !s.variableRecognition;
+  codeEditors.apps = [...(s.codeEditors || [])];
+  renderAppList(codeEditors);
   renderModels(s.models || []);
   if ($("asr-language-select")) {
     $("asr-language-select").value = s.asrLanguage || "auto";

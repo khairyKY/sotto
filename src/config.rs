@@ -448,6 +448,17 @@ pub struct Config {
     /// never global.
     #[serde(default)]
     pub auto_send: Vec<String>,
+    /// Variable recognition (#27): in a code editor, "camel case user name"
+    /// types userName (also pascal, snake, kebab and constant case; see
+    /// `polish::apply_casing_commands`). Off by default while it's new;
+    /// `config.toml` only, read at launch.
+    #[serde(default)]
+    pub variable_recognition: bool,
+    /// The apps variable recognition runs in, as `stats::app_name()` gives
+    /// them: VS Code by default (its `Code.exe` is named "VS Code"), plus any
+    /// added in Settings > Dictation.
+    #[serde(default = "default_code_editors")]
+    pub code_editors: Vec<String>,
     /// Arms the Transform chords (#18). Off by default while the feature is
     /// new: the page shows, but no chord fires until this is on.
     #[serde(default)]
@@ -525,6 +536,10 @@ fn default_theme() -> String {
     "system".to_string()
 }
 
+fn default_code_editors() -> Vec<String> {
+    vec!["VS Code".to_string()]
+}
+
 fn default_quote_style() -> String {
     "straight".to_string()
 }
@@ -563,6 +578,8 @@ impl Default for Config {
             app_tones: Vec::new(),
             auto_tone: false,
             auto_send: Vec::new(),
+            variable_recognition: false,
+            code_editors: default_code_editors(),
             transforms_enabled: false,
             transforms: default_transforms(),
             calibration: false,
@@ -988,6 +1005,17 @@ max_mb = 250
         assert!(!cfg.scratchpad && !Config::default().scratchpad);
         assert_eq!(cfg.scratchpad_chord, "Ctrl+Alt+Space");
         assert!(cfg.scratchpad_park_file.is_empty());
+    }
+
+    #[test]
+    fn variable_recognition_is_off_and_lists_vs_code_in_a_config_written_before_it() {
+        let old = "hotkey = \"ControlRight\"\nactivation_mode = \"toggle\"\ninjection_mode = \"paste\"\n";
+        let cfg: Config = toml::from_str(old).unwrap();
+        assert!(!cfg.variable_recognition && !Config::default().variable_recognition);
+        assert_eq!(cfg.code_editors, ["VS Code"]);
+        // An emptied list stays empty: the default fills a missing key only.
+        let cfg: Config = toml::from_str(&format!("{old}code_editors = []\n")).unwrap();
+        assert!(cfg.code_editors.is_empty());
     }
 
     #[test]

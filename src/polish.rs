@@ -93,7 +93,7 @@ impl Polisher {
     /// "fixes made by Sotto" numbers on the Insights dashboard.
     pub fn polish(&self, raw: &str) -> PolishResult {
         let tone = self.controls.tone.lock().unwrap().clone();
-        self.polish_with_tone(raw, &tone)
+        self.polish_with_tone(raw, &tone, "")
     }
 
     /// Same as `polish`, but resolves a tone for `app` first: an exact
@@ -103,7 +103,7 @@ impl Polisher {
     /// known.
     pub fn polish_for(&self, raw: &str, app: &str, context: Option<&str>) -> PolishResult {
         let tone = self.resolve_tone(app, context);
-        self.polish_with_tone(raw, &tone)
+        self.polish_with_tone(raw, &tone, app)
     }
 
     /// Tone-lookup order: per-app override → field context → default tone →
@@ -123,7 +123,7 @@ impl Polisher {
         }
     }
 
-    fn polish_with_tone(&self, raw: &str, tone: &str) -> PolishResult {
+    fn polish_with_tone(&self, raw: &str, tone: &str, app: &str) -> PolishResult {
         // Formatting commands run FIRST, on the raw transcript, before both
         // the mode branch and the dictionary pass below: before the mode
         // branch so the AI tier receives text already broken into paragraphs
@@ -152,6 +152,24 @@ impl Polisher {
         let raw = if self.controls.number_formatting.load(Ordering::Relaxed) {
             numbered = normalize_numbers(raw);
             numbered.as_str()
+        } else {
+            raw
+        };
+
+        // Variable recognition (#27): "camel case user name" -> userName, only
+        // in a listed code editor. After numbers, so "version two" can become
+        // version2. Each identifier made is masked from here on (see
+        // `apply_casing_commands`), so no later pass can respell it: the
+        // dictionary, the phonetic corrector, tier0 and Harper only ever see
+        // an opaque placeholder, and the AI tier must hand every one back
+        // intact (`remask`) or the rules result is kept.
+        let cased;
+        let mut made: Vec<String> = Vec::new();
+        let raw = if !app.is_empty()
+            && self.controls.code_editors.lock().unwrap().iter().any(|a| a.eq_ignore_ascii_case(app))
+        {
+            (cased, made) = apply_casing_commands(raw);
+            cased.as_str()
         } else {
             raw
         };
@@ -210,7 +228,8 @@ impl Polisher {
             PolishMode::Rules => (self.apply_harper(&tier0(raw)), "rules", ""),
             PolishMode::Ai => {
                 let rules = tier0(raw);
-                match self.polish_ai(raw, &rules, tone) {
+                // The model gets the real identifiers, for context.
+                match self.polish_ai(&unmask(raw, &made), &unmask(&rules, &made), tone).and_then(|t| remask(&t, &made)) {
                     // No Harper on the model's output: the model already makes
                     // the mechanical fixes Harper targets, with the whole
                     // sentence in view, and on invented model outputs Harper's
@@ -231,6 +250,7 @@ impl Polisher {
         } else {
             apply_dictionary(&cleaned, &dict, EntryKind::Snippet)
         };
+        let text = unmask(&text, &made);
         PolishResult { text, corrected_words, dict_hits: word_hits + snippet_hits, notable, tier, fallback }
     }
 
@@ -381,7 +401,8 @@ pub struct PolishResult {
     /// The tier that actually produced `text` ("off" | "rules" | "ai") —
     /// not the configured one — and, when AI mode kept the rules result,
     /// why ("short", "no-op", "unavailable", "empty", "llm-error",
-    /// "line-breaks", or a `rewrite_guard` reason); "" otherwise (#67).
+    /// "line-breaks", "identifiers", or a `rewrite_guard` reason); ""
+    /// otherwise (#67).
     pub tier: &'static str,
     pub fallback: &'static str,
 }
@@ -1134,6 +1155,137 @@ fn apply_paired_quote(text: &str, open_glyph: &str, close_glyph: &str) -> String
         rest = &rest[oend..];
     }
     out
+}
+
+// ── variable recognition (#27) ───────────────────────────────────────────
+// In a code editor, "camel case user name" types userName. Explicit spoken
+// commands only: nothing is guessed from context, which would need the
+// editor's own symbol list.
+
+/// The casing styles, each said as "<style> case".
+const CASINGS: &[&str] = &["camel", "pascal", "snake", "kebab", "constant"];
+/// Words one casing command takes at most.
+const CASING_MAX_WORDS: usize = 4;
+
+/// The casing command starting at `toks[i]`, if one does: "<style> case",
+/// any capitalization, with no punctuation inside or after it. "I like camel
+/// case, mostly" has a pause there, so it stays prose.
+fn casing_at(toks: &[&str], i: usize) -> Option<&'static str> {
+    let (_, style, trail) = split_affixes(toks.get(i)?);
+    if !trail.is_empty() || !toks.get(i + 1)?.eq_ignore_ascii_case("case") {
+        return None;
+    }
+    CASINGS.iter().find(|s| s.eq_ignore_ascii_case(style)).copied()
+}
+
+/// Join plain ASCII `words` in `style`: camel userName, pascal UserName,
+/// snake user_name, kebab user-name, constant USER_NAME.
+fn case_words(style: &str, words: &[&str]) -> String {
+    let lower: Vec<String> = words.iter().map(|w| w.to_ascii_lowercase()).collect();
+    let cap = |w: &String| w[..1].to_ascii_uppercase() + &w[1..];
+    match style {
+        "camel" => lower[0].clone() + &lower[1..].iter().map(cap).collect::<String>(),
+        "pascal" => lower.iter().map(cap).collect(),
+        "snake" => lower.join("_"),
+        "kebab" => lower.join("-"),
+        _ => lower.join("_").to_ascii_uppercase(),
+    }
+}
+
+/// Stands in for identifier `i` after `apply_casing_commands`: one Private
+/// Use Area char, which no ASR emits, no dictionary entry holds, the phonetic
+/// corrector and tier0 skip (it isn't alphanumeric), and Harper lexes as an
+/// unlintable token, never a word, so it neither respells it nor starts a
+/// sentence on it.
+fn placeholder(i: usize) -> char {
+    char::from_u32(0xE000 + i as u32).unwrap_or('\u{E000}')
+}
+
+/// Rewrite each casing command and the 1-4 words after it as one
+/// identifier. A command takes plain ASCII words (letters, digits) until a
+/// natural break: a word with punctuation after it is the last one taken
+/// (the punctuation stays after the identifier); punctuation before a word, a
+/// word that isn't plain ASCII (Arabic, "it's"), the next command or the end
+/// of the line stop it before that word. A command with no word to take is
+/// left as said. Returns the text with each identifier masked by its
+/// `placeholder`, and the identifiers in order (`unmask` puts them back).
+fn apply_casing_commands(text: &str) -> (String, Vec<String>) {
+    let mut made = Vec::new();
+    let out = rewrite_words(text, |toks| {
+        let mut out = Vec::with_capacity(toks.len());
+        let mut i = 0;
+        while i < toks.len() {
+            let Some(style) = casing_at(toks, i) else {
+                out.push(toks[i].to_string());
+                i += 1;
+                continue;
+            };
+            let (mut words, mut trail, mut j) = (Vec::new(), "", i + 2);
+            while j < toks.len() && words.len() < CASING_MAX_WORDS && casing_at(toks, j).is_none() {
+                let (lead, core, after) = split_affixes(toks[j]);
+                if !lead.is_empty() || core.is_empty() || !core.chars().all(|c| c.is_ascii_alphanumeric()) {
+                    break;
+                }
+                words.push(core);
+                j += 1;
+                if !after.is_empty() {
+                    trail = after;
+                    break;
+                }
+            }
+            if words.is_empty() {
+                out.push(toks[i].to_string());
+                i += 1;
+                continue;
+            }
+            out.push(format!("{}{}{trail}", split_affixes(toks[i]).0, placeholder(made.len())));
+            made.push(case_words(style, &words));
+            i = j;
+        }
+        out
+    });
+    (out, made)
+}
+
+/// Put `apply_casing_commands`' identifiers back in place of their
+/// placeholders.
+fn unmask(text: &str, made: &[String]) -> String {
+    if made.is_empty() {
+        return text.to_string();
+    }
+    let mut out = String::with_capacity(text.len());
+    for c in text.chars() {
+        match (c as u32).checked_sub(0xE000).and_then(|i| made.get(i as usize)) {
+            Some(ident) => out.push_str(ident),
+            None => out.push(c),
+        }
+    }
+    out
+}
+
+/// Mask the AI tier's rewrite again, so the snippet pass can't touch the
+/// identifiers either. Each must come back exactly as made: the model
+/// capitalizing, splitting or dropping one would undo the command, so that
+/// keeps the rules result instead. The one thing the model does add is
+/// backticks around it (measured: both identifiers of a two-identifier take),
+/// which an editor doesn't want typed, so a pair hugging it goes.
+///
+/// ponytail: a substring find, longest first, so an identifier inside a
+/// longer word the model wrote counts as kept. Unmasking restores the same
+/// characters, so only the guard is looser. Upgrade path: whole-word match.
+fn remask(text: &str, made: &[String]) -> Result<String, &'static str> {
+    let mut order: Vec<usize> = (0..made.len()).collect();
+    order.sort_by_key(|&i| std::cmp::Reverse(made[i].len()));
+    let mut text = text.to_string();
+    for i in order {
+        let mut from = text.find(made[i].as_str()).ok_or("identifiers")?;
+        let mut to = from + made[i].len();
+        if text[..from].ends_with('`') && text[to..].starts_with('`') {
+            (from, to) = (from - 1, to + 1);
+        }
+        text.replace_range(from..to, placeholder(i).encode_utf8(&mut [0; 4]));
+    }
+    Ok(text)
 }
 
 /// Tier 0 rules cleanup. `rewrite_words` also collapses runs of spaces and
@@ -2458,5 +2610,132 @@ mod tests {
         let with_app = p.polish_for("um hello there", "slack", Some("hey are you around"));
         let default = p.polish("um hello there");
         assert_eq!(with_app.text, default.text);
+    }
+
+    // ── #27: variable recognition ────────────────────────────────────
+    fn cased(text: &str) -> String {
+        let (masked, made) = apply_casing_commands(text);
+        unmask(&masked, &made)
+    }
+
+    #[test]
+    fn each_casing_joins_its_words() {
+        assert_eq!(cased("camel case user name"), "userName");
+        assert_eq!(cased("pascal case user name"), "UserName");
+        assert_eq!(cased("snake case user name"), "user_name");
+        assert_eq!(cased("kebab case user name"), "user-name");
+        assert_eq!(cased("constant case max retries"), "MAX_RETRIES");
+        // However the ASR capitalized the command or the words.
+        assert_eq!(cased("Camel Case User name"), "userName");
+        assert_eq!(cased("SNAKE case Get URL"), "get_url");
+    }
+
+    #[test]
+    fn casing_takes_one_to_four_words_until_a_natural_break() {
+        assert_eq!(cased("camel case count"), "count");
+        assert_eq!(cased("camel case get user by id now"), "getUserById now", "four words at most");
+        assert_eq!(cased("set camel case user name, then save."), "set userName, then save.");
+        assert_eq!(cased("snake case is valid. Next line"), "is_valid. Next line");
+        assert_eq!(cased("camel case foo snake case bar baz"), "foo bar_baz", "the next command is a break");
+        assert_eq!(cased("camel case user\nname"), "user\nname", "a line break is a break");
+        assert_eq!(cased("camel case user (name)"), "user (name)", "punctuation before a word is a break");
+        assert_eq!(cased("\"camel case user name\""), "\"userName\"");
+    }
+
+    #[test]
+    fn a_casing_command_with_nothing_to_take_stays_prose() {
+        for prose in ["I like camel case.", "we use camel case", "camel case, mostly", "camel, case user", "a case study"] {
+            assert_eq!(cased(prose), prose);
+        }
+    }
+
+    #[test]
+    fn casing_mixes_with_prose_and_keeps_digits() {
+        assert_eq!(cased("rename camel case user name, then run the tests"), "rename userName, then run the tests");
+        assert_eq!(cased("snake case retry count 3"), "retry_count_3");
+        assert_eq!(cased("camel case user 2 id"), "user2Id");
+        assert_eq!(cased("constant case http 404"), "HTTP_404");
+        assert_eq!(cased("camel case pi 3.14"), "pi 3.14", "a word that isn't plain letters or digits is a break");
+    }
+
+    #[test]
+    fn casing_leaves_arabic_untouched() {
+        let arabic = "افتح الملف وشغّل الـ build";
+        assert_eq!(cased(arabic), arabic);
+        assert_eq!(cased("camel case مرحبا يا صاحبي"), "camel case مرحبا يا صاحبي");
+        assert_eq!(cased("سمّيه camel case user name."), "سمّيه userName.");
+    }
+
+    #[test]
+    fn remask_needs_every_identifier_back_exactly() {
+        let made = vec!["userName".to_string(), "userName".to_string(), "max_retries".to_string()];
+        let back = remask("Set userName to userName and max_retries to 3.", &made).unwrap();
+        assert_eq!(unmask(&back, &made), "Set userName to userName and max_retries to 3.");
+        assert!(!back.contains("userName"), "masked again, so the snippet pass can't reach it");
+        assert_eq!(remask("Set UserName to userName and max_retries to 3.", &made), Err("identifiers"));
+        assert_eq!(remask("Set userName and max retries to 3.", &made), Err("identifiers"));
+        assert_eq!(remask("Nothing to keep.", &[]), Ok("Nothing to keep.".to_string()));
+        // Backticks the model put around an identifier aren't typed.
+        let marked = remask("Rename it to `userName`, then `userName` and `max_retries`.", &made).unwrap();
+        assert_eq!(unmask(&marked, &made), "Rename it to userName, then userName and max_retries.");
+    }
+
+    /// Rules mode, variable recognition on for VS Code, and every pass that
+    /// could respell an identifier armed: a Word entry for "max", a snippet,
+    /// and "Claude" trained for the phonetic corrector.
+    fn code_polisher(editors: &[&str]) -> Polisher {
+        let cfg = crate::config::Config::default();
+        let controls = crate::Controls::from_config(&cfg);
+        controls.polish_mode.store(PolishMode::Rules.as_u8(), Ordering::Relaxed);
+        *controls.code_editors.lock().unwrap() = editors.iter().map(|e| e.to_string()).collect();
+        *controls.vocabulary.lock().unwrap() = vec![vocab("Claude", &[])];
+        *controls.dictionary.lock().unwrap() = vec![
+            (vec!["max".into()], "Max".into(), EntryKind::Word),
+            (vec!["retries".into()], "retries (see the runbook)".into(), EntryKind::Snippet),
+        ];
+        Polisher::new(controls, cfg.llm.clone())
+    }
+
+    #[test]
+    fn identifiers_survive_harper_tier0_the_dictionary_and_the_phonetic_corrector() {
+        let p = code_polisher(&["VS Code"]);
+        // Not capitalized at the start, not respelled by Harper.
+        assert_eq!(p.polish_for("camel case user name.", "VS Code", None).text, "userName.");
+        assert_eq!(p.polish_for("set camel case get user by id, then save", "vs code", None).text, "Set getUserById, then save");
+        // The dictionary would make it Max_retries and append the snippet.
+        assert_eq!(p.polish_for("constant case max retries.", "VS Code", None).text, "MAX_RETRIES.");
+        assert_eq!(p.polish_for("snake case max retries.", "VS Code", None).text, "max_retries.");
+        // The phonetic corrector would make it Claude.
+        assert_eq!(p.polish_for("camel case clode.", "VS Code", None).text, "clode.");
+        // Harper doesn't start the sentence on the word after it either.
+        assert_eq!(
+            p.polish_for("camel case user name, is what the field is called in the form.", "VS Code", None).text,
+            "userName, is what the field is called in the form."
+        );
+        // Spoken numbers run first, so they end up as digits in the identifier.
+        assert_eq!(p.polish_for("camel case version two.", "VS Code", None).text, "version2.");
+    }
+
+    #[test]
+    fn casing_only_fires_in_a_listed_app() {
+        let p = code_polisher(&["VS Code"]);
+        assert_eq!(p.polish_for("camel case user name", "Notepad", None).text, "Camel case user name");
+        assert_eq!(p.polish_for("camel case user name", "", None).text, "Camel case user name");
+        assert_eq!(p.polish("camel case user name").text, "Camel case user name", "no app: repolish_copy");
+        // The other passes still run as normal outside the editor.
+        assert_eq!(p.polish_for("camel case clode", "Notepad", None).text, "Camel case Claude");
+        // Off (the default config): the list is empty until the flag is on.
+        let cfg = crate::config::Config::default();
+        let controls = crate::Controls::from_config(&cfg);
+        assert!(controls.code_editors.lock().unwrap().is_empty());
+        let p = Polisher::new(controls, cfg.llm.clone());
+        assert_eq!(p.polish_for("camel case user name", "VS Code", None).text, "Camel case user name");
+    }
+
+    #[test]
+    fn arabic_dictation_is_untouched_in_a_code_editor() {
+        let p = code_polisher(&["VS Code"]);
+        let arabic = "افتح الملف وشغّل الـ build";
+        assert_eq!(p.polish_for(arabic, "VS Code", None).text, p.polish_for(arabic, "Notepad", None).text);
     }
 }

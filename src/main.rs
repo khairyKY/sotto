@@ -129,6 +129,9 @@ pub struct Controls {
     pub training_word: Arc<Mutex<Option<Training>>>,
     /// Per-app tone overrides: (app name, tone instruction) pairs.
     pub app_tones: Arc<Mutex<Vec<(String, String)>>>,
+    /// Apps where spoken casing commands run (#27). Empty unless
+    /// `variable_recognition` is on (read at launch).
+    pub code_editors: Arc<Mutex<Vec<String>>>,
     /// Transform chords (#18), read live by the hotkey listener — see
     /// `config::Transform`. `transforms_enabled` arms them.
     pub transforms: Arc<Mutex<Vec<config::Transform>>>,
@@ -206,6 +209,7 @@ impl Controls {
             app_tones: Arc::new(Mutex::new(
                 cfg.app_tones.iter().map(|e| (e.app.clone(), e.tone.clone())).collect(),
             )),
+            code_editors: Arc::new(Mutex::new(if cfg.variable_recognition { cfg.code_editors.clone() } else { Vec::new() })),
             history: history::History::new(cfg.persist_history),
             level: Arc::new(AtomicU32::new(0)),
             listening: Arc::new(AtomicBool::new(false)),
@@ -347,6 +351,9 @@ struct SettingsPayload {
     app_tones: Vec<AppToneDto>,
     /// Apps that get an Enter after a dictation lands (#21).
     auto_send: Vec<String>,
+    /// Variable recognition (#27): shows the Code editors list, and the list.
+    variable_recognition: bool,
+    code_editors: Vec<String>,
     history: Vec<HistoryDto>,
     models: Vec<ModelDto>,
     hotkey_options: Vec<HotkeyOption>,
@@ -478,6 +485,8 @@ fn get_settings(state: tauri::State<'_, AppState>) -> SettingsPayload {
         tone: c.tone.lock().unwrap().clone(),
         app_tones: c.app_tones.lock().unwrap().iter().map(|(a, t)| AppToneDto { app: a.clone(), tone: t.clone() }).collect(),
         auto_send: cfg.auto_send.clone(),
+        variable_recognition: cfg.variable_recognition,
+        code_editors: cfg.code_editors.clone(),
         history: c.history.snapshot().into_iter().map(HistoryDto::from).collect(),
         models: vec![
             ModelDto {
@@ -760,6 +769,17 @@ fn set_app_tones(tones: Vec<AppToneDto>, state: tauri::State<'_, AppState>) {
 fn set_auto_send(apps: Vec<String>, state: tauri::State<'_, AppState>) {
     let mut cfg = state.cfg.lock().unwrap();
     cfg.auto_send = apps.into_iter().map(|a| a.trim().to_string()).filter(|a| !a.is_empty()).collect();
+    let _ = cfg.save();
+}
+/// The apps spoken casing commands run in (#27). Live only while
+/// `variable_recognition` is on; saved either way.
+#[tauri::command]
+fn set_code_editors(apps: Vec<String>, state: tauri::State<'_, AppState>) {
+    let mut cfg = state.cfg.lock().unwrap();
+    cfg.code_editors = apps.into_iter().map(|a| a.trim().to_string()).filter(|a| !a.is_empty()).collect();
+    if cfg.variable_recognition {
+        *state.controls.code_editors.lock().unwrap() = cfg.code_editors.clone();
+    }
     let _ = cfg.save();
 }
 /// The Transforms page's list (#18). Nameless entries are dropped; a chord
@@ -1169,7 +1189,7 @@ fn main() -> anyhow::Result<()> {
         .manage(state)
         .invoke_handler(tauri::generate_handler![
             get_settings, set_hotkey, set_activation, set_polish, set_threshold,
-            set_dictionary, set_tone, set_app_tones, set_auto_send, set_transforms, set_transforms_enabled, set_launch_login, set_start_hidden, set_theme, copy_text,
+            set_dictionary, set_tone, set_app_tones, set_auto_send, set_code_editors, set_transforms, set_transforms_enabled, set_launch_login, set_start_hidden, set_theme, copy_text,
             set_overlay_position, set_overlay_always_visible, get_overlay_settings, start_dictation, stop_dictation, mark_overlay_idle,
             set_asr_model, set_asr_language,
             open_url, check_update, install_update, retry_last, cancel_dictation, dismiss_take,
@@ -3092,7 +3112,12 @@ fn run_polish_once(raw: &str) -> anyhow::Result<()> {
     controls.ai_min_words.store(0, Ordering::Relaxed);
     let polisher = polish::Polisher::new(controls, cfg.llm.clone());
     let t = Instant::now();
-    let out = polisher.polish(raw);
+    // `--app "VS Code"` polishes as if dictated into that app (per-app tone,
+    // variable recognition #27).
+    let out = match arg_value("--app") {
+        Some(app) => polisher.polish_for(raw, &app, None),
+        None => polisher.polish(raw),
+    };
     println!("raw      => {raw:?}");
     println!(
         "polished => {:?}  ({} ms, {} words corrected, {} dict fixes)",
