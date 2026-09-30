@@ -10,7 +10,7 @@
 //! `scratchpad_state`) and is handed its theme and first page up front
 //! (`opened_script`).
 
-use std::sync::atomic::{AtomicIsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
 use std::sync::Mutex;
 use tauri::webview::PageLoadEvent;
 use tauri::{AppHandle, Emitter, Manager, PhysicalPosition, PhysicalSize, WebviewWindow, WebviewWindowBuilder, WindowEvent};
@@ -49,8 +49,18 @@ fn opened_script(theme: &str, page: Option<&str>) -> String {
     format!("window.__SOTTO_OPENED = {};", serde_json::json!({ "theme": theme, "page": page }))
 }
 
-pub fn lazy(app: &AppHandle) -> bool {
-    app.state::<crate::AppState>().cfg.lock().unwrap().lazy_windows
+/// `lazy_windows`, set once in setup. An atomic, not the config lock: `lazy`
+/// is asked from the main thread (tray clicks, the close handler), and a
+/// command holding the config lock while it waits on the main thread for a
+/// window call would deadlock against it. The flag only changes at launch.
+static LAZY: AtomicBool = AtomicBool::new(false);
+
+pub fn set_lazy(on: bool) {
+    LAZY.store(on, Ordering::Relaxed);
+}
+
+pub fn lazy(_app: &AppHandle) -> bool {
+    LAZY.load(Ordering::Relaxed)
 }
 
 /// One build at a time: a double click on the tray icon asks twice.

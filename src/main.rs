@@ -1266,6 +1266,7 @@ fn main() -> anyhow::Result<()> {
                 }
             }
             // Lazy windows (#13): those two go again, unless launch is showing one.
+            app_windows::set_lazy(cfg.lazy_windows);
             if cfg.lazy_windows {
                 app_windows::at_launch(app.handle());
             } else if let Some(w) = app.get_webview_window("settings") {
