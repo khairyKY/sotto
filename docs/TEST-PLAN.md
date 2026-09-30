@@ -235,6 +235,10 @@ State changes:
   applies on the next take too. See 🆕 G8.
 - 2026-09-29 · E4 · warm-up added by #14 (merged): the first dictation after a restart is no
   longer slow on a cold GPU driver cache. See 🆕 G12.
+- 2026-09-30 · E5 · the "Egyptian engine fails today (asset 404, #4)" text no longer holds:
+  the file was uploaded to `assets-v2` on 2026-09-23T20:58Z and returns 200 (see the dated
+  notes in `docs/updating.md` §0). The engine's remaining known issue is #68 (English speech
+  read as Arabic on Auto language). E5's "Last verified" is unchanged.
 
 ## 3. Polish chain
 
@@ -500,6 +504,9 @@ State changes:
 - 2026-09-29 · A2, A3 · ❌ gap A-9 is unchanged by this batch (still open, no fixing PR in
   #46–#88). Not to be confused with #10/#87's restart removal (🆕 G8), which is about the
   Speech-model/Language controls, not first-run visibility.
+- 2026-09-30 · A6 · "Known: `assets-v2/ggml-egyptian-codeswitch-small.bin` is 404 (#4)" no
+  longer holds: all six manifest URLs return 200 (release gate before and after the v0.6.1
+  publish; see `docs/updating.md` §0). A6's "Last verified" is unchanged.
 
 ## 10. M-track (Android)
 
