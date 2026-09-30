@@ -1273,6 +1273,9 @@ fn main() -> anyhow::Result<()> {
             // Lazy windows (#13): those two go again, unless launch is showing one.
             if cfg.lazy_windows {
                 app_windows::at_launch(app.handle());
+            } else if let Some(w) = app.get_webview_window("settings") {
+                // The only main window there will be: an Alt+F4 hides it (#124).
+                app_windows::track(&w);
             }
             spawn_pipeline(app.handle().clone(), controls.clone(), cfg.clone(), tx.clone(), rx.clone());
             spawn_overlay_hittest(

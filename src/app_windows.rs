@@ -22,7 +22,8 @@ pub enum Open {
     Focus,
     /// Lazy, and not built yet or destroyed since: build it, then show it.
     Build,
-    /// Not lazy, and gone (an Alt+F4 closed it): nothing, as before #13.
+    /// Not lazy, and gone: nothing, as before #13. A close no longer gets the
+    /// main window here (`close_hides`, #124).
     Nothing,
 }
 
@@ -32,6 +33,13 @@ pub fn open_step(exists: bool, lazy: bool) -> Open {
         (false, true) => Open::Build,
         (false, false) => Open::Nothing,
     }
+}
+
+/// Does closing a window only hide it? Without lazy windows, yes: nothing
+/// would build it again. The ✕ button (`dismiss`) and a real close, Alt+F4 or
+/// the taskbar's (`track`, #124), both ask here.
+pub fn close_hides(lazy: bool) -> bool {
+    !lazy
 }
 
 /// Runs before the page's own scripts. A window shown as it loads must be
@@ -142,16 +150,23 @@ pub fn build(
     Some(w)
 }
 
-/// Notes the main window's handle, and where it is when it closes.
-fn track(w: &WebviewWindow) {
+/// Notes the main window's handle, and where it is when it closes. Without
+/// lazy windows the close itself is refused and the window hidden (#124): a
+/// real close would destroy the only one there will be.
+pub fn track(w: &WebviewWindow) {
     MAIN_HWND.store(w.hwnd().map_or(0, |h| h.0 as isize), Ordering::Relaxed);
     let closing = w.clone();
     w.on_window_event(move |e| {
-        if matches!(e, WindowEvent::CloseRequested { .. }) && !closing.is_minimized().unwrap_or(true) {
+        let WindowEvent::CloseRequested { api, .. } = e else { return };
+        if !closing.is_minimized().unwrap_or(true) {
             let maximized = closing.is_maximized().unwrap_or(false);
             if let (Ok(at), Ok(size)) = (closing.outer_position(), closing.inner_size()) {
                 *PLACE.lock().unwrap() = Some((at, size, maximized));
             }
+        }
+        if close_hides(lazy(closing.app_handle())) {
+            api.prevent_close();
+            let _ = closing.hide();
         }
     });
 }
@@ -217,7 +232,7 @@ fn show_menu(w: &WebviewWindow, at: PhysicalPosition<f64>) {
 /// A window put away: hidden, or with lazy windows closed for good, its
 /// renderer with it. Safe on any thread: a close is queued for the event loop.
 pub fn dismiss(w: &WebviewWindow) {
-    let _ = if lazy(w.app_handle()) { w.close() } else { w.hide() };
+    let _ = if close_hides(lazy(w.app_handle())) { w.hide() } else { w.close() };
 }
 
 #[cfg(test)]
@@ -231,6 +246,18 @@ mod tests {
         assert_eq!(open_step(false, true), Open::Build);
         // Flag off: opening never builds anything, exactly as before #13.
         assert_eq!(open_step(false, false), Open::Nothing);
+    }
+
+    /// #124: an Alt+F4 with the flag off destroyed the window, and the tray
+    /// then had nothing to open until a restart.
+    #[test]
+    fn a_closed_window_can_always_be_opened_again() {
+        for lazy in [false, true] {
+            // Hidden, it still exists; destroyed, it doesn't.
+            let exists = close_hides(lazy);
+            assert_ne!(open_step(exists, lazy), Open::Nothing, "lazy={lazy}");
+        }
+        assert!(close_hides(false) && !close_hides(true));
     }
 
     #[test]
