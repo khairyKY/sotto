@@ -24,18 +24,41 @@ The design philosophy of Sotto is **calm, quiet, precise, and unobtrusive** — 
 ## ✨ Features
 
 - **Push-to-Talk & Toggle Modes:** Hold to speak and release to transcribe, or tap once to start and tap again to stop.
-- **Offline ASR (Speech-to-Text):** **Parakeet v3 int8** (ONNX, English-only, default) or **Whisper large-v3-turbo** (multilingual, Vulkan GPU-accelerated) — pick your engine in Settings.
-- **AI Polish Tier:** Uses a local **Qwen2.5 1.5B Instruct** model via a background `llama.cpp` sidecar to clean up speech, correct grammar, fix stutters, and add punctuation.
+- **Offline ASR (Speech-to-Text):** **Parakeet v3 int8** (ONNX, English-only, default), **Whisper large-v3-turbo** (multilingual, Vulkan GPU-accelerated), or **Egyptian Arabic** (a Whisper-small model tuned for Egyptian Arabic mixed with English; known issue: on **Auto** language it can mistake English speech for Arabic, [#68](https://github.com/khairyKY/sotto/issues/68)). Pick your engine in Settings; it takes over on your next dictation, no restart. The speech model is unloaded after 5 idle minutes to free memory and reloads while you start speaking.
+- **AI Polish Tier:** Uses a local **Qwen2.5 1.5B Instruct** model via a background `llama.cpp` sidecar to clean up speech, correct grammar, fix stutters, and add punctuation. If the model drops clauses or adds words you never said, Sotto keeps the rules-tier result instead.
 - **Rule-Based Polish Tier:** Fast, instant, zero-cost rules cleanup for short phrases, bypassing the LLM round-trip.
 - **Polish Word-Count Threshold:** Automatically routes shorter phrases through the rules tier and longer dictations through the AI tier.
-- **Custom Dictionary & Snippets:** Define custom replacements (e.g., `"gee pee tee"` ➔ `GPT`, `"my email"` ➔ `dev@sotto.app`).
+- **Custom Dictionary & Snippets:** Define custom replacements (e.g., `"gee pee tee"` ➔ `GPT`, `"my email"` ➔ `dev@sotto.app`). An entry can have aliases ("my main email", "my primary email" ➔ one address) and its own on/off switch, and one master switch pauses them all.
+- **Pronunciation Trainer:** Teach Sotto a name by saying it: type the word, press **Listen for it**, and say it. A miss can be added as a correction. Your trained words then guide AI polish and, on the Whisper engines, the speech model itself. The optional **Say it first** switch (off by default) plays the word in an offline Windows voice before you speak.
+- **Fix Trained Words by Sound:** A word that merely *sounds like* one you trained (a new mishearing of "Claude", say) is pulled back to the right spelling. Ordinary English words, filenames and code are left alone. On by default; switch it off in Settings → Dictation.
+- **Voice Formatting Commands:** Say "new line" or "new paragraph" for a real break, and "open quote" / "close quote" or "quote … unquote" for quotation marks (straight by default; curly in Settings → Dictation → Quote style).
+- **Spoken Numbers as Digits:** "twenty three" ➔ `23`, "seven fifteen a.m." ➔ `7:15 a.m.`. Both this and the voice commands are on by default, with a switch each in Settings → Dictation.
+- **Long Dictations:** Past about 10 seconds of audio, transcription starts while you are still talking, so the wait after you stop is only the last stretch.
+- **Crash-Safe Takes:** Audio is journaled to disk while you speak and deleted once the take is delivered or dismissed. If Sotto or the PC dies mid-dictation, the take comes back on the next launch under **Last dictation wasn't delivered** on Home, with **Retry**.
 - **Cancel & Retry:** Press Escape (or click ✕ on the pill) to abort a dictation. The take is kept in memory, so ↻ on the pill — or **Retry last dictation** in the tray — re-runs it without speaking again.
 - **Insights Dashboard:** Words dictated, time saved, WPM, per-app breakdown, and a weekday-aligned streak calendar. Stats are local-only and can be turned off.
-- **Dictation History:** Recent dictations, with one click to re-copy or re-polish any row. Opt in to **Keep history** in Settings to have it survive a restart.
-- **Calm UI Overlay:** A transparent pill, click-through except over its own buttons and — while listening — the pill body itself, so a click stops and delivers the take (✕ still cancels). Turn on **always-visible** in Settings to also start a take by clicking the idle pill.
+- **Dictation History:** Recent dictations, with one click to re-copy or re-polish any row. **±** shows word by word what polish changed (for lines from this session), with **Use what I said** to copy your original wording instead, and **⚑** flags a bad line into a local file, `bug-reports.jsonl`, for you to review. Nothing is sent anywhere. Opt in to **Keep history** in Settings → Data & privacy to have the list survive a restart.
+- **Calm UI Overlay:** A transparent pill, click-through except over its own buttons and — while listening — the pill body itself, so a click stops and delivers the take (✕ still cancels). Pick one of nine screen positions in Settings → Appearance → Pill position. Turn on **Always show the pill** (Settings → Dictation, opt-in) to keep it tucked on screen when idle and start a take by clicking it.
 - **Themes & Zoom:** Light / Dark / follow-system, plus `Ctrl +` / `Ctrl -` / `Ctrl 0` to scale the whole window.
 - **Launch at Login** and **Minimized Launch:** Start automatically, hidden to the system tray.
 - **Clipboard Safety Net:** Every delivered dictation is also left on the clipboard, in case focus moved.
+
+### Off by default
+
+These ship switched off. Turn them on when you want them. (**Keep history** and **Always show the pill**, above, are opt-in too.)
+
+| Feature | What it does | Turn it on |
+| :--- | :--- | :--- |
+| **Transforms** (beta) | Select text in any app, press a shortcut (defaults: `Ctrl+Alt+1` Polish, `Ctrl+Alt+2` Prompt engineer; change or add your own; with Right Ctrl as your dictation key, use the left Ctrl), and the local model rewrites it in place. Your clipboard is put back afterwards. | Transforms page → **Enabled** |
+| **Auto-send** | Presses Enter after a dictation lands, only in the apps you list. | Settings → Dictation → **Auto-send** → **+ Add app** |
+| **Keep recordings** | Saves each take's audio, what Sotto heard and the polished text, so you can compare them later. Local only, capped at 500 MB by default (oldest go first). | Settings → Data & privacy → **Keep recordings** |
+| **Voice correction** | Right after a dictation, say "correction: Claude, not clawed" and Sotto retypes that dictation with the fix; for a misheard name or term it also teaches the pair, as a Dictionary entry you can remove. If the text has moved on, it leaves the document alone and puts the fix on the clipboard. The command itself is never typed. | `config.toml`: `voice_correction = true` |
+| **Backtrack** | A take that is only "scratch that", "undo that" or "delete that" deletes your last dictation (not in terminals). | `config.toml`: `backtrack = true` |
+| **Calibrate** | The Pronunciation page gets a Calibrate card: read sentences built from your trained words, and add any Sotto heard differently as a correction. | `config.toml`: `calibration = true` |
+| **Scratchpad** (beta) | A private pad page: dictate while it is in front and the take lands there instead of in an app. Opens and closes with `Ctrl+Alt+Space` (the default). Keeps the last 200 lines, on this device. | `config.toml`: `scratchpad = true` |
+| **Auto tone** | When a take starts in the AI tier, Sotto reads up to 300 characters before the caret in the focused field so polish can match its register. Read on your machine through UI Automation, never from password fields or terminals, never logged or stored. A per-app tone from Settings → Tone still wins. | `config.toml`: `auto_tone = true` |
+
+The `config.toml` switches are plain top-level lines in `%APPDATA%\sotto\config.toml` (above any `[section]` heading); restart Sotto after editing. These features are new and were tested with unit tests and in the UI preview rather than in daily use, so expect rough edges, and please report them.
 
 ---
 
@@ -67,11 +90,8 @@ Sotto uses the **Marshmallow** design language — a soft cream/lilac palette, N
 
 ## 📦 Getting Started (For Users)
 
-### 1. Install (~4 MB)
+### 1. Install (~16 MB)
 Grab the latest installer from the [**Releases page**](https://github.com/khairyKY/sotto/releases/latest) — pick `Sotto_x.y.z_x64-setup.exe` and run it.
-
-> [!NOTE]
-> This README describes Sotto as built from `master`. The latest downloadable installer is **v0.3.0** — almost everything below already matches it; a couple of opt-in, off-by-default items (**Keep history**, **always-visible** pill) ship in the next release.
 
 > [!IMPORTANT]
 > **Windows will warn you before it runs.** You'll see a blue **"Windows protected your PC"** screen. Click **More info → Run anyway**.
@@ -81,13 +101,13 @@ Grab the latest installer from the [**Releases page**](https://github.com/khairy
 > Don't just take our word for it. You can check:
 > - **Read the source.** All of it is in this repo, published for transparency. The installer is built from exactly this code.
 > - **Scan it.** Upload the `.exe` to [VirusTotal](https://www.virustotal.com/) before running it.
-> - **Watch the network.** Sotto only ever talks to `github.com`: the [release feed](https://github.com/khairyKY/sotto/releases/latest/download/latest.json) (update check) and, first run only, the [`assets-v1`](https://github.com/khairyKY/sotto/releases/tag/assets-v1) release (Qwen, the llama.cpp runtime, and Parakeet) plus [`assets-v2`](https://github.com/khairyKY/sotto/releases/tag/assets-v2) if you pick the Whisper engine instead. There is no telemetry or analytics of any kind — grep the source. It also talks to `127.0.0.1:8177`, which is the AI-polish model running on your own machine; that's loopback and never leaves your PC. Once the models are downloaded, pull your network cable and it still works.
+> - **Watch the network.** Sotto only ever talks to `github.com`: the [release feed](https://github.com/khairyKY/sotto/releases/latest/download/latest.json) (update check) and, first run only, the [`assets-v1`](https://github.com/khairyKY/sotto/releases/tag/assets-v1) release (Qwen, the llama.cpp runtime, and Parakeet) plus [`assets-v2`](https://github.com/khairyKY/sotto/releases/tag/assets-v2) if you pick the Whisper or Egyptian Arabic engine instead. There is no telemetry or analytics of any kind — grep the source. It also talks to `127.0.0.1:8177`, which is the AI-polish model running on your own machine; that's loopback and never leaves your PC. Once the models are downloaded, pull your network cable and it still works.
 > - **Check the signature.** Every release *is* cryptographically signed with [minisign](https://jedisct1.github.io/minisign/) for the auto-updater; that's what stops a tampered update from installing. It's just not the certificate flavour SmartScreen recognises.
 >
 > If you'd rather trust nothing, build it yourself — see [Development](#️-development--building-from-source).
 
 ### 2. First launch — one-time model download (~2.1 GB)
-The installer is intentionally tiny because the models aren't in it. On first launch Sotto opens Settings and downloads them once into `%APPDATA%\sotto`, with a progress banner. After that, dictation works fully offline, and app updates never re-download any of it.
+The installer is intentionally tiny because the models aren't in it. On first launch Sotto opens Settings and downloads them once into `%APPDATA%\sotto`, with a progress banner. If the connection drops, restart Sotto and the download picks up where it stopped. After that, dictation works fully offline, and app updates never re-download any of it.
 
 | Download | On disk | What it is |
 | :--- | :--- | :--- |
@@ -117,7 +137,7 @@ Sotto launches minimized to the **system tray** (check the `^` overflow menu nex
 
 Open any app, hold **Right Ctrl** (the default — rebindable in Settings), speak, release. Sotto transcribes locally and pastes into the focused window. Press **Escape** to cancel; the take is kept so you can retry it.
 
-### 4. Updates — one click, ~4 MB
+### 4. Updates — one click, ~16 MB
 Sotto checks GitHub on launch. When a newer version is out, open the tray icon → **Settings**, where an **Install & restart** banner appears (dismissable with ✕). Click it — the small installer downloads, verifies its minisign signature, and relaunches. Your models and settings are untouched.
 
 ### 5. Uninstalling
@@ -200,14 +220,15 @@ Sotto is structured as a Tauri v2 application:
 
 ### Cutting a release
 
-The updater workflow (bump version → sign → publish to GitHub Releases so every running app picks it up as a 4 MB update) is documented step-by-step in [`docs/updating.md`](./docs/updating.md).
+The updater workflow (bump version → sign → publish to GitHub Releases so every running app picks it up as a 16 MB update) is documented step-by-step in [`docs/updating.md`](./docs/updating.md).
 
 ---
 
 ## 🔒 Security & Privacy
 
 - **100% Local:** All voice recordings are processed on your local CPU/GPU. No speech, transcripts, or keystrokes ever leave your device.
-- **Single-Instance Protection:** Sotto uses a single-instance guard to ensure only one session can hook the keyboard at any time.
+- **Nothing Dictated Is Stored Unless You Opt In:** Keeping History across restarts, keeping recordings and the Scratchpad are all off by default, and the log holds counts only (unless you set `SOTTO_LOG=debug`). Two things do write your words locally: a take in flight is journaled to `%APPDATA%\sotto\pending\` until it is delivered or dismissed (see **Crash-Safe Takes**), and a line you flag with ⚑ is saved to `bug-reports.jsonl`. Neither leaves your machine.
+- **Single-Instance Protection:** Sotto uses a single-instance guard to ensure only one session can hook the keyboard at any time. Launching it a second time just brings the running window forward.
 - **Keystroke Injection Safety:** Global key-event interception is temporarily suspended during text injection to prevent cyclic key-repeats or focus issues.
 
 ---

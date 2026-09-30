@@ -39,6 +39,22 @@ and by dated "State changes" notes in the sections each PR touched: #8, #10, #11
 `D:\Coding\_claude-cloud\sotto-log\2026-09-29-0305-conductor-status.md` for the batch/merge
 map and `sotto-log\2026-09-28-*-handoff.md` for the per-issue detail this catch-up drew from.
 
+**2026-09-30 release.** Sotto v0.6.1 was installed on Kai's machine and published on
+2026-09-30 (tag `v0.6.1` = master `7ceb023`). The release record is
+`D:\Coding\_claude-cloud\sotto-log\2026-09-30-1737-conductor-release-v0.6.1.md`. Full suite
+on the released tree, from that record: 236 passed, 2 ignored.
+
+State changes:
+- 2026-09-30 · every row marked **merged** as of `7ceb023` (including P24 and P25, still
+  marked `branch (#8)`, which merged) · now **installed** (Kai's machine, 2026-09-30) and
+  **published** (v0.6.1). Rows marked **installed** (the 2026-09-24 exe) are published too:
+  v0.6.1 is built from `7ceb023`, which contains that code. Read every "merged" or "branch"
+  State cell above with this note. The "Test these first" sections' "not yet installed"
+  wording is history.
+- 2026-09-30 · Last verified · **not changed by the above.** Only 🆕 D24 (§1) is verified
+  in this note. Every other row keeps its "Last verified" value, and the manual ones stay
+  manual, not yet verified on the installed build.
+
 Test data is always invented. Never use real snippets, contacts or dictated text here.
 Real-voice runs are manual rows for Kai.
 
@@ -184,6 +200,7 @@ Full suite on `1ede4e6` (this catch-up, via the cargo wrapper): **206 passed, 0 
 | D21 | Settings → Microphone: pick a device, dictate. Then unplug it and dictate again. | The log `opening input stream device=` shows the pick. Unplugged: it falls back to the default mic, no failure. | manual | published | — |
 | D22 | Settings → Dictation sounds on/off. | On: a soft tick at start and a tock at stop/cancel. Off: silent. | `sounds::tests::wav_header_is_valid_and_sized` + manual | published | 2026-09-28 auto |
 | D23 | Always-show pill on. Click the idle tucked pill. | It dips, then morphs into Listening. | manual | installed | — |
+| 🆕 D24 | **Hotkey dictation lands in the focused window.** Focus a text field in another app (a chat box or Notepad), press the dictation key, say one sentence, and finish the take (release in Hold, tap again in Toggle). | The sentence is typed once, into the window you started in. `sotto.log` shows `transcript raw_chars=N chars=N`, then `injected chars=N`, with N the length of the sentence that arrived. | manual (a real take on the installed v0.6.1 build) | installed, published (v0.6.1) | **VERIFIED 2026-09-30** by a real take (Kai): 4.69 s of audio, transcribed in 641 ms, `injected chars=42`, matching the 42-character sentence that arrived in the chat window he had focused. The key mode was not recorded. |
 
 State changes:
 - 2026-09-29 · D19 · ❌ gap A-5 narrowed by #51 (merged, not yet installed): a genuinely

@@ -35,6 +35,14 @@ written on 2026-09-23). As of today, `origin/master` = local master, both at
 The old snapshot is left in place above for history; don't treat its numbers
 as current.
 
+**Update, 2026-09-30:** v0.6.1 is published (GitHub "Latest", 2026-09-30; tag
+`v0.6.1` = `7ceb023`). `origin/master` = local master = `7ceb023`, no gap, and
+`Cargo.toml` and `tauri.conf.json` both say 0.6.1. Public users go v0.3.0 → v0.6.1
+in one step, so the v0.4.x–v0.6.0 gap described above is closed. The asset releases
+are still pre-release. The release record is
+`D:\Coding\_claude-cloud\sotto-log\2026-09-30-1737-conductor-release-v0.6.1.md`.
+The 2026-09-23 and 2026-09-28 snapshots above are history.
+
 ### Known release blocker — fix before ever publishing again
 
 `src/assets.rs` manifests the Egyptian model as
@@ -54,6 +62,14 @@ The built model exists locally at
 `D:\sotto\models\ggml-egyptian-codeswitch-small.bin` (465 MiB). Either upload it
 (§5) or remove that engine from the model picker before shipping — a user who
 picks it today gets a failed download and a stashed take.
+
+**Resolved, 2026-09-30.** The Egyptian model has been on `assets-v2` since
+2026-09-23T20:58Z (GitHub's `updated_at` for the asset; the upload began at
+20:32Z): `ggml-egyptian-codeswitch-small.bin`, 487,601,984 bytes (465 MiB). All six
+manifest URLs return `200`: the §3.5 audit in the v0.6.1 release gate, before and
+after the publish, and again on 2026-09-30 when this note was written. The 404
+above, the "MISSING" row in §1's layout table and §5's "Fixing the Egyptian 404"
+are history; there is nothing left to fix.
 
 ---
 
@@ -301,6 +317,25 @@ Then do one real dictation and confirm text lands. Logs live in
 > **inject it into whatever window has focus** — park the cursor somewhere
 > harmless first.
 
+> **Note, 2026-09-30: how to prove the installed exe is the build.** Do not compare
+> the installed exe's hash with `target\release\sotto.exe`; they never match. The Tauri
+> bundler patches the exe with its bundle type while it packages the installer, so
+> `target\release\sotto.exe` is the file from before that patch. (v0.6.1: installed
+> `4a7b1289…`, `target\release` `bf01879a…`; both were right.) Verify by the installer
+> hash and the FileVersion instead:
+>
+> ```powershell
+> # the installer you ran is the one you built: record this hash (step 8 checks the
+> # published copy against it)
+> (Get-FileHash "target\release\bundle\nsis\Sotto_${v}_x64-setup.exe").Hash
+> # the installed exe reports the release version
+> (Get-Item "D:\Installations\Sotto\Sotto.exe").VersionInfo.FileVersion   # must be $v
+> ```
+>
+> For a release whose code added new log or UI strings, also search the installed exe
+> for one of them. The v0.6.1 check found the #37 start guard, the #64/#51 speech
+> gate, scratchpad, voice correction and the Whisper warm-up that way.
+
 ### Step 4 — generate `latest.json`
 
 ```powershell
@@ -352,6 +387,20 @@ curl -sI -L -o /dev/null -w '%{http_code}\n' \
 Both must be correct or running apps see a broken update. Best final check:
 install the *previous* version, launch it, and confirm the in-app update banner
 appears and completes.
+
+> **Note, 2026-09-30: download the published installer fully before hashing it.** To
+> confirm the published installer is byte-identical to the one you built, download the
+> whole file (no `--max-time`, no timeout wrapper) and compare its size before its hash.
+> A time-limited download stops short, and its hash then differs from the built one
+> even though the release is fine. (v0.6.1: 16,910,575 bytes, SHA-256
+> `b5fb5c65d9a5d149…`, the same on both sides.)
+>
+> ```powershell
+> $p = "$env:TEMP\published-setup.exe"
+> curl.exe -sL -o $p "https://github.com/khairyKY/sotto/releases/download/v$v/Sotto_${v}_x64-setup.exe"
+> (Get-Item $p).Length     # must equal the built installer's length
+> (Get-FileHash $p).Hash   # must equal the built installer's hash
+> ```
 
 ---
 
