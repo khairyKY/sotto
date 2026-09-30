@@ -1237,12 +1237,7 @@ fn main() -> anyhow::Result<()> {
             build_tray(app)?;
             // A second launch (Start menu, shortcut) lands here (#61).
             let handle = app.handle().clone();
-            single_instance::on_wake(move || {
-                if let Some(w) = handle.get_webview_window("settings") {
-                    let _ = w.unminimize();
-                }
-                app_windows::open_settings(&handle, None);
-            });
+            single_instance::on_wake(move || app_windows::open_settings(&handle, None));
             if let Some(w) = app.get_webview_window("overlay") {
                 let _ = w.set_ignore_cursor_events(true);
                 position_overlay(&w, &cfg.overlay.position);

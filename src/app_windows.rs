@@ -177,6 +177,8 @@ pub fn open_settings(app: &AppHandle, page: Option<String>) {
     let existing = app.get_webview_window("settings");
     match (open_step(existing.is_some(), lazy(app)), existing) {
         (Open::Focus, Some(w)) => {
+            // First: show and set_focus don't restore a minimised window (#125).
+            let _ = w.unminimize();
             let _ = w.show();
             let _ = w.set_focus();
             // "settings" too: it's a modal now, and navigate() is what opens it.
