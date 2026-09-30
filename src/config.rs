@@ -349,6 +349,10 @@ pub struct AsrConfig {
     /// inactivity; the next hotkey press loads it again while you speak.
     /// 0 keeps it loaded for the whole session.
     pub idle_unload_secs: u64,
+    /// Whisper engines' decode: 0 (default) is greedy, N a beam search of N
+    /// (whisper.cpp caps it at 8). Beam 3 made words out of room tone far
+    /// more often, and was slower (#101). Applies from the next model load.
+    pub whisper_beam: u32,
 }
 
 impl Default for AsrConfig {
@@ -358,6 +362,7 @@ impl Default for AsrConfig {
             language: "auto".to_string(),
             vocabulary_prompt: true,
             idle_unload_secs: 300,
+            whisper_beam: 0,
         }
     }
 }
@@ -1059,6 +1064,15 @@ max_mb = 250
         assert!(old.asr.vocabulary_prompt);
         let off: Config = toml::from_str(&format!("{base}[asr]\nvocabulary_prompt = false\n")).unwrap();
         assert!(!off.asr.vocabulary_prompt);
+    }
+
+    #[test]
+    fn whisper_decodes_greedy_unless_a_beam_is_set() {
+        let base = "hotkey = \"ControlRight\"\nactivation_mode = \"toggle\"\ninjection_mode = \"paste\"\n";
+        let old: Config = toml::from_str(&format!("{base}[asr]\nmodel = \"whisper-turbo\"\n")).unwrap();
+        assert_eq!((old.asr.whisper_beam, Config::default().asr.whisper_beam), (0, 0));
+        let beam: Config = toml::from_str(&format!("{base}[asr]\nwhisper_beam = 3\n")).unwrap();
+        assert_eq!(beam.asr.whisper_beam, 3);
     }
 }
 

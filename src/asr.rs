@@ -15,10 +15,11 @@ use std::sync::Mutex;
 use std::time::Duration;
 use transcribe_rs::onnx::parakeet::ParakeetModel;
 use transcribe_rs::onnx::Quantization;
-use transcribe_rs::whisper_cpp::{WhisperEngine, WhisperInferenceParams, WhisperLoadParams};
+use transcribe_rs::whisper_cpp::gpu::auto_select_gpu_device;
 use transcribe_rs::{
     ModelCapabilities, SpeechModel, TranscribeError, TranscribeOptions, TranscriptionResult,
 };
+use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters, WhisperState};
 
 pub struct Asr {
     model: Option<Box<dyn SpeechModel>>,
@@ -34,6 +35,8 @@ pub struct Asr {
     prompt: Option<String>,
     /// `asr.idle_unload_secs`; 0 keeps the model loaded.
     idle_unload_secs: u64,
+    /// `asr.whisper_beam`, taken at the next load like `prompt`.
+    whisper_beam: u32,
 }
 
 /// The engine behind the latest transcript. Flags are labelled with it (#10):
@@ -106,23 +109,74 @@ fn vocab_prompt(vocab: &[VocabEntry]) -> Option<String> {
     (!out.is_empty()).then(|| out + ".")
 }
 
-/// transcribe-rs's `SpeechModel` impl for Whisper has no prompt, so wrap the
-/// engine and go through `transcribe_with`, which has one. Everything else
-/// is `WhisperInferenceParams::default()`, i.e. what the plain impl sends.
+/// Most decoders whisper.cpp runs at once (`WHISPER_MAX_DECODERS`); a bigger
+/// beam fails the whole decode.
+const MAX_BEAM: u32 = 8;
+
+/// One Whisper decode's settings. `beam` is `asr.whisper_beam`: 0 is greedy.
+/// The rest is what transcribe-rs's `WhisperInferenceParams::default()`
+/// sends, plus our prompt.
+fn full_params<'a>(beam: u32, language: Option<&'a str>, translate: bool, prompt: Option<&str>) -> FullParams<'a, 'a> {
+    let mut p = FullParams::new(match beam {
+        0 => SamplingStrategy::Greedy { best_of: 1 },
+        n => SamplingStrategy::BeamSearch { beam_size: n.min(MAX_BEAM) as i32, patience: -1.0 },
+    });
+    p.set_language(language);
+    p.set_translate(translate);
+    p.set_print_special(false);
+    p.set_print_progress(false);
+    p.set_print_realtime(false);
+    p.set_print_timestamps(false);
+    p.set_suppress_blank(true);
+    p.set_suppress_nst(true);
+    p.set_no_speech_thold(0.2);
+    p.set_no_context(true);
+    if let Some(prompt) = prompt {
+        p.set_initial_prompt(prompt);
+    }
+    p
+}
+
+/// Whisper through whisper-rs directly. transcribe-rs's `WhisperEngine` has
+/// no prompt in its `SpeechModel` impl (#77) and hardcodes a beam of 3 (#101).
+///
+/// Greedy by default. On invented TTS clips over room tone (#101), turbo at
+/// beam 3 made words out of room tone 47 times in 165 against greedy's 6,
+/// took 25% longer, and kept a quiet clause no more often (81 in 132 both).
+/// egyptian-small invents words from room tone either way (133 in 165);
+/// greedy only gets there 3x sooner.
+///
+/// One `WhisperState` per load, as transcribe-rs had. A fresh one per take
+/// would make every decode reproducible, but it measured ~320 ms slower a
+/// take (it allocates ~450 MB of GPU buffers). whisper.cpp seeds decoder 0's
+/// RNG once per state; beam search draws from it on every token (turbo: 3
+/// repeats differed on 43 of 100 clips), greedy only after a temperature
+/// fallback (turbo: 2 of 100, "." against "..." on room tone).
 ///
 /// Don't reach for `no_speech_thold` when Whisper drops a quiet clause (#69):
 /// this whisper.cpp reads the no-speech probability after the last prompt
 /// token instead of at SOT, so it measured 0.000 on every window, digital
 /// silence included, and 0.2 / 0.6 / 1.0 decode identically. The drop is the
-/// beam-3 decode itself; `suppress_blank` and `suppress_nst` don't move it.
+/// decode itself; `suppress_blank` and `suppress_nst` don't move it.
 struct PromptedWhisper {
-    engine: WhisperEngine,
+    /// Keeps its context (the loaded model) alive.
+    state: WhisperState,
     prompt: Option<String>,
+    beam: u32,
 }
 
 impl SpeechModel for PromptedWhisper {
     fn capabilities(&self) -> ModelCapabilities {
-        self.engine.capabilities()
+        // Nothing in Sotto reads these.
+        ModelCapabilities {
+            name: "Whisper",
+            engine_id: "whisper_cpp",
+            sample_rate: 16_000,
+            languages: &[], // any
+            supports_timestamps: false,
+            supports_translation: false,
+            supports_streaming: false,
+        }
     }
 
     fn transcribe_raw(
@@ -130,13 +184,15 @@ impl SpeechModel for PromptedWhisper {
         samples: &[f32],
         options: &TranscribeOptions,
     ) -> Result<TranscriptionResult, TranscribeError> {
-        let params = WhisperInferenceParams {
-            language: options.language.clone(),
-            translate: options.translate,
-            initial_prompt: self.prompt.clone(),
-            ..Default::default()
-        };
-        self.engine.transcribe_with(samples, &params)
+        let err = |e: whisper_rs::WhisperError| TranscribeError::Inference(e.to_string());
+        let params = full_params(self.beam, options.language.as_deref(), options.translate, self.prompt.as_deref());
+        self.state.full(params, samples).map_err(err)?;
+        let mut text = String::new();
+        for segment in self.state.as_iter() {
+            // A segment that isn't UTF-8 fails the take, as in transcribe-rs.
+            text.push_str(segment.to_str().map_err(err)?);
+        }
+        Ok(TranscriptionResult { text: text.trim().to_string(), segments: None })
     }
 }
 
@@ -162,6 +218,7 @@ impl Asr {
             language: None,
             prompt: None,
             idle_unload_secs: 0,
+            whisper_beam: 0,
         };
         asr.sync(&cfg);
         asr
@@ -180,6 +237,7 @@ impl Asr {
         self.language = to_language_option(&cfg.asr.language);
         self.prompt = cfg.asr.vocabulary_prompt.then(|| vocab_prompt(&cfg.polish.vocabulary)).flatten();
         self.idle_unload_secs = cfg.asr.idle_unload_secs;
+        self.whisper_beam = cfg.asr.whisper_beam;
     }
 
     /// The engine the next transcript comes from.
@@ -214,8 +272,8 @@ impl Asr {
                     "Whisper model not found at {} — download it first",
                     path.display()
                 );
-                // NOT `WhisperEngine::load()` — that defaults flash_attn to
-                // true, and on the AMD iGPU (Vulkan0) flash attention has no
+                // flash_attn stays off (transcribe-rs's `WhisperEngine::load()`
+                // defaults it on): on the AMD iGPU (Vulkan0) flash attention has no
                 // fast kernel and silently falls back to a slow path: measured
                 // 6.5x slower on identical audio (23.1s vs 3.5s for 7.5s of
                 // speech). It is not a correctness issue — the transcript is
@@ -229,18 +287,16 @@ impl Asr {
                 // use_gpu stays true: when no Vulkan device is usable,
                 // whisper.cpp reports "no devices found" and falls back to CPU
                 // on its own, so this degrades rather than fails.
-                let params = WhisperLoadParams {
-                    use_gpu: true,
-                    flash_attn: false,
-                    // -1 = GPU_DEVICE_AUTO: transcribe-rs picks a dedicated GPU
-                    // first, then most VRAM (the RTX 3050 here, not whisper.cpp's
-                    // own default of device 0, the iGPU).
-                    gpu_device: -1,
-                };
+                let mut params = WhisperContextParameters::default();
+                // transcribe-rs's auto-select picks a dedicated GPU first, then
+                // most VRAM (the RTX 3050 here, not whisper.cpp's own default
+                // of device 0, the iGPU).
+                params.use_gpu(true).flash_attn(false).gpu_device(auto_select_gpu_device());
+                let ctx = WhisperContext::new_with_params(&path, params).context("loading Whisper model")?;
                 Box::new(PromptedWhisper {
-                    engine: WhisperEngine::load_with_params(&path, params)
-                        .context("loading Whisper model")?,
+                    state: ctx.create_state().context("creating Whisper state")?,
                     prompt: self.prompt.clone(),
+                    beam: self.whisper_beam,
                 })
             } else {
                 let dir = config::model_dir();
@@ -276,6 +332,7 @@ impl Asr {
                     warmup_ms = t.elapsed().as_millis() as u64,
                     // Length only: the words are the user's.
                     prompt_bytes = self.prompt.as_ref().map_or(0, |p| p.len()),
+                    beam = self.whisper_beam,
                     "ASR warmed up"
                 );
             }
@@ -467,6 +524,22 @@ mod tests {
     }
 
     #[test]
+    fn whisper_decodes_greedy_at_beam_0_and_keeps_the_other_settings_either_way() {
+        // FullParams has no getters; its Debug prints whisper.cpp's struct
+        // (strategy 0 = greedy, 1 = beam search).
+        let p = |beam| format!("{:?}", full_params(beam, Some("en"), false, None));
+        let (greedy, beam3) = (p(0), p(3));
+        assert!(greedy.contains("strategy: 0") && greedy.contains("best_of: 1"), "{greedy}");
+        assert!(beam3.contains("strategy: 1") && beam3.contains("beam_size: 3"), "{beam3}");
+        assert!(p(20).contains("beam_size: 8"), "past 8 whisper.cpp fails the decode");
+        for s in [&greedy, &beam3] {
+            for kept in ["no_context: true", "suppress_blank: true", "suppress_nst: true", "no_speech_thold: 0.2", "translate: false", "print_progress: false", "print_timestamps: false"] {
+                assert!(s.contains(kept), "{kept} missing: {s}");
+            }
+        }
+    }
+
+    #[test]
     fn idle_unload_waits_only_while_a_model_is_loaded() {
         assert_eq!(idle_wait(true, 300), Duration::from_secs(300));
         assert_eq!(idle_wait(false, 300), Duration::MAX); // nothing to free
@@ -493,16 +566,19 @@ mod tests {
             language: None,
             prompt: None,
             idle_unload_secs: 0,
+            whisper_beam: 0,
         };
         let mut cfg = config::Config::default();
         cfg.asr.model = "whisper-turbo".into();
         cfg.asr.language = "ar".into();
         cfg.asr.idle_unload_secs = 60;
+        cfg.asr.whisper_beam = 3;
         cfg.polish.vocabulary = vec![entry("Zorvex", 0, 0)];
         asr.sync(&cfg);
-        assert!(asr.model.is_some(), "no reload for language or words");
+        assert!(asr.model.is_some(), "no reload for language, words or beam");
         assert_eq!(asr.language.as_deref(), Some("ar"));
         assert_eq!(asr.prompt.as_deref(), Some("Zorvex.")); // used at the next load
+        assert_eq!(asr.whisper_beam, 3); // likewise
         assert_eq!(asr.idle_wait(), Duration::from_secs(60));
         asr.unload();
         assert!(asr.model.is_none());
