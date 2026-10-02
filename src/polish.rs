@@ -345,7 +345,19 @@ impl Polisher {
 
         let vocabulary = self.controls.vocabulary.lock().unwrap().clone();
         let t = std::time::Instant::now();
-        let text = match llm.polish(rules, tone, &vocabulary_clause(&vocabulary)) {
+        // The known mishearings this take holds, for the worked example,
+        // then the other mishearings of those same words.
+        let (mut heard, mut spare) = (Vec::new(), Vec::new());
+        for e in &vocabulary {
+            let known = e.heard_as.iter().filter(|h| !h.trim().is_empty());
+            let (found, other): (Vec<_>, Vec<_>) = known.partition(|h| find_whole_ci(rules, h).is_some());
+            if !found.is_empty() {
+                heard.extend(found.into_iter().map(|h| (h.clone(), e.word.clone())));
+                spare.extend(other.into_iter().map(|h| (h.clone(), e.word.clone())));
+            }
+        }
+        heard.extend(spare);
+        let text = match llm.polish(rules, tone, &vocabulary_clause(&vocabulary), &heard) {
             Ok(text) if !text.trim().is_empty() => text,
             Ok(_) => {
                 tracing::warn!("AI polish returned empty text — using rules");
@@ -620,7 +632,21 @@ fn apply_formatting_commands(raw: &str) -> String {
     for (phrase, brk) in FORMATTING_COMMANDS {
         text = replace_whole_ci(&text, phrase, brk).0;
     }
-    collapse_space_around_breaks(&text)
+    // An ASR that hears the command as its own sentence punctuates it
+    // ("list. New line. Apples."), which left ". Apples." on the new line
+    // (#29). A mark alone at the start of a line was the command's, so it
+    // goes with it; one that starts a word (".env") stays.
+    let text = collapse_space_around_breaks(&text);
+    let mut lines = text.split('\n');
+    let mut out = lines.next().unwrap_or_default().to_string();
+    for line in lines {
+        out.push('\n');
+        out.push_str(match line.strip_prefix(['.', ',', ';', ':', '!', '?']) {
+            Some(rest) if rest.is_empty() || rest.starts_with(' ') => rest.trim_start(),
+            _ => line,
+        });
+    }
+    out
 }
 
 /// Rewrite `text` word by word without losing its line breaks. `pass` gets
@@ -2034,6 +2060,16 @@ mod tests {
         // Leading/trailing edges too — no stray space at either end.
         assert_eq!(apply_formatting_commands("new paragraph hello"), "\n\nhello");
         assert_eq!(apply_formatting_commands("hello new line"), "hello\n");
+    }
+
+    #[test]
+    fn formatting_commands_take_the_mark_the_asr_put_after_them() {
+        assert_eq!(apply_formatting_commands("Shopping list. New line. Apples. New line. Rice."), "Shopping list.\nApples.\nRice.");
+        // The mark before the command is the speaker's sentence: it stays.
+        assert_eq!(apply_formatting_commands("Dear team, new paragraph, the office is closed."), "Dear team,\n\nthe office is closed.");
+        assert_eq!(apply_formatting_commands("Thanks. New line."), "Thanks.\n");
+        // Not a stray mark: it starts the word.
+        assert_eq!(apply_formatting_commands("it goes in new line .env"), "it goes in\n.env");
     }
 
     #[test]
