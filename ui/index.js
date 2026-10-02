@@ -115,7 +115,7 @@ async function invoke(cmd, args) {
   if (cmd === "set_code_editors") mock.codeEditors = args.apps;
   if (cmd === "set_lecture") { mock.lecture = args.on; mock.lecturesDir = "lectures"; }
   // Stands in for Harper's real-word check (#94), enough to preview both notes.
-  if (cmd === "add_pronunciation_correction") return !/\b(cloud|clawed|code)\b/i.test(args.heard);
+  if (cmd === "add_pronunciation_correction") return args.confirmed ?? !/\b(cloud|clawed|code)\b/i.test(args.heard);
   // `?firstrun` previews a fresh install: nothing on disk yet (#54).
   if (cmd === "assets_status") return MOCK_FIRST_RUN
     ? { ready: false, missing: ["Parakeet v3 (speech-to-text)", "Qwen2.5 1.5B (AI polish)", "llama.cpp runtime"] }
@@ -1308,8 +1308,14 @@ function pronAddSampleRow(word, heard, matched) {
 
 // "Add correction" (the trainer's and Calibrate's): the only thing that saves.
 // A real-word mishearing is kept as a hint only, never a dictionary entry (#94).
+// Harper can't vouch for an Arabic word, so that one asks first (#116): OK
+// makes the entry, Cancel keeps the hint only.
 async function pronAddCorrection(word, heard, btn) {
-  const exact = await invoke("add_pronunciation_correction", { word, heard });
+  const arabic = /\p{Script=Arabic}/u.test(heard);
+  const confirmed = arabic
+    ? confirm(`Every “${heard}” you say becomes “${word}”. Add it to your Dictionary?\n\nYou can switch it off there. Cancel keeps it as a hint only.`)
+    : undefined;
+  const exact = await invoke("add_pronunciation_correction", { word, heard, confirmed });
   const s = await getSettings();
   pronVocabulary = (s.vocabulary || []).map(v => ({ word: v.word, heardAs: v.heardAs || [], recent: v.recent || [] }));
   renderTrainedWords();
@@ -1323,7 +1329,7 @@ async function pronAddCorrection(word, heard, btn) {
   const note = document.createElement("span");
   note.className = "pron-learned";
   note.textContent = exact ? "Learned" : "Learned as a hint";
-  if (!exact) note.title = `“${heard}” has a real word in it, so Sotto won't change it everywhere. It's kept as a hint.`;
+  if (!exact && !arabic) note.title = `“${heard}” has a real word in it, so Sotto won't change it everywhere. It's kept as a hint.`;
   btn.replaceWith(note);
 }
 

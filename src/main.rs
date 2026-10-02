@@ -738,15 +738,26 @@ fn set_pronunciation_target(word: Option<String>, calibration: Option<bool>, sta
 /// already covers this exact phrase, so retraining the same mishearing
 /// twice doesn't pile up duplicates. Returns whether it's an entry, so the
 /// page can say which happened.
+/// `confirmed` is the user's answer when the page asked first (an Arabic
+/// heard form, #116); without one (a voice correction) `dictionary_safe`
+/// decides, and it never makes an entry from Arabic.
 #[tauri::command]
-fn add_pronunciation_correction(word: String, heard: String, state: tauri::State<'_, AppState>) -> bool {
+fn add_pronunciation_correction(word: String, heard: String, confirmed: Option<bool>, state: tauri::State<'_, AppState>) -> bool {
     let word = word.trim().to_string();
     let heard = heard.trim().to_string();
     if word.is_empty() || heard.is_empty() {
         return false;
     }
     let mut cfg = state.cfg.lock().unwrap();
+    let exact = teach_correction(&mut cfg, word, heard, confirmed);
+    *state.controls.vocabulary.lock().unwrap() = cfg.polish.vocabulary.clone();
+    *state.controls.dictionary.lock().unwrap() = live_dictionary(&cfg.dictionary);
+    let _ = cfg.save();
+    exact
+}
 
+/// `add_pronunciation_correction`'s config half, split out for tests.
+fn teach_correction(cfg: &mut Config, word: String, heard: String, confirmed: Option<bool>) -> bool {
     match cfg.polish.vocabulary.iter_mut().find(|e| e.word.eq_ignore_ascii_case(&word)) {
         Some(entry) => {
             if !entry.heard_as.iter().any(|h| h.eq_ignore_ascii_case(&heard)) {
@@ -755,9 +766,8 @@ fn add_pronunciation_correction(word: String, heard: String, state: tauri::State
         }
         None => cfg.polish.vocabulary.push(VocabEntry { word: word.clone(), heard_as: vec![heard.clone()], recent: Vec::new() }),
     }
-    *state.controls.vocabulary.lock().unwrap() = cfg.polish.vocabulary.clone();
 
-    let exact = polish::dictionary_safe(&heard);
+    let exact = confirmed.unwrap_or_else(|| polish::dictionary_safe(&heard));
     let already_covered =
         cfg.dictionary.iter().any(|e| e.enabled && e.phrases().iter().any(|p| p.eq_ignore_ascii_case(&heard)));
     if exact && !already_covered {
@@ -768,10 +778,7 @@ fn add_pronunciation_correction(word: String, heard: String, state: tauri::State
             enabled: true,
             kind: Some(EntryKind::Word),
         });
-        *state.controls.dictionary.lock().unwrap() = live_dictionary(&cfg.dictionary);
     }
-
-    let _ = cfg.save();
     exact
 }
 
@@ -3026,12 +3033,12 @@ fn run_correction(
         return;
     };
     let taught = correction::harvests(right, wrong);
-    if taught {
-        add_pronunciation_correction(right.to_string(), wrong.to_string(), app.state::<AppState>());
-    }
+    // No page to ask on (#116): an Arabic `wrong` is taught as a hint only,
+    // and the pill has no note that fits, so `entry` goes to the log.
+    let entry = taught && add_pronunciation_correction(right.to_string(), wrong.to_string(), None, app.state::<AppState>());
     let retyped =
         hwnd == focus && !correction::is_terminal(app_name) && retype(&old, &fixed, hwnd, suppressed, injection_mode);
-    tracing::info!(retyped, taught, chars = fixed.chars().count(), "voice correction");
+    tracing::info!(retyped, taught, entry, chars = fixed.chars().count(), "voice correction");
     // The fix is now the last dictation (a second correction builds on it)
     // and the clipboard's safety net, as after any delivery.
     correction::remember(&fixed, hwnd);
@@ -3517,6 +3524,26 @@ mod tests {
         // Never global: no wildcard, and an unknown app matches nothing.
         assert!(!auto_sends(&["*".to_string()], "Slack", true));
         assert!(!auto_sends(&[String::new()], "", true));
+    }
+
+    #[test]
+    fn an_arabic_correction_is_a_hint_unless_the_user_says_yes() {
+        // #116. A voice correction brings no answer (`run_correction` passes
+        // None): an Arabic heard form is kept as a hint only, English is #94's
+        // rule as before.
+        let mut cfg = Config::default();
+        assert!(!teach_correction(&mut cfg, "Koshary".into(), "كوشري".into(), None));
+        assert_eq!(cfg.polish.vocabulary[0].heard_as, ["كوشري"]);
+        assert!(cfg.dictionary.is_empty());
+        assert!(teach_correction(&mut cfg, "Claude".into(), "clode".into(), None));
+        assert!(!teach_correction(&mut cfg, "Claude".into(), "cloud".into(), None));
+        assert_eq!(cfg.dictionary.len(), 1, "clode only");
+        // The trainer's answer: no keeps the hint only, yes makes the entry.
+        assert!(!teach_correction(&mut cfg, "Koshary".into(), "كشري".into(), Some(false)));
+        assert_eq!(cfg.dictionary.len(), 1);
+        assert!(teach_correction(&mut cfg, "Koshary".into(), "كوشري".into(), Some(true)));
+        assert_eq!((cfg.dictionary[1].spoken.as_str(), cfg.dictionary[1].replacement.as_str()), ("كوشري", "Koshary"));
+        assert_eq!(cfg.polish.vocabulary[0].heard_as, ["كوشري", "كشري"]);
     }
 
     #[test]
