@@ -1689,9 +1689,12 @@ fn is_real_word(english: &FstDictionary, word: &str) -> bool {
 /// transliterations, jargon), so one unknown word among real ones is weak
 /// proof the phrase can't be real speech. A deliberate entry is still one
 /// click away on the Dictionary page.
+///
+/// Arabic script never is (#116): Harper can't vouch for an Arabic word, so
+/// only the user can. The trainer asks first; a voice correction can't.
 pub fn dictionary_safe(heard: &str) -> bool {
     let english = FstDictionary::curated();
-    heard.split_whitespace().all(|tok| !is_real_word(&english, split_affixes(tok).1))
+    !heard.chars().any(is_arabic) && heard.split_whitespace().all(|tok| !is_real_word(&english, split_affixes(tok).1))
 }
 
 /// A span's code must be at least this long (onset letter + 5 consonant
@@ -2516,13 +2519,13 @@ mod tests {
 
     #[test]
     fn trainer_corrections_write_dictionary_entries_for_non_words_only() {
-        // #94: non-words and names get an exact entry (plus the hint). Arabic
-        // isn't English, so Harper can't vouch for it: it keeps today's entry.
-        for heard in ["clode", "Clode", "soto.", "clode soto", "كوشري"] {
+        // #94: non-words and names get an exact entry (plus the hint).
+        for heard in ["clode", "Clode", "soto.", "clode soto"] {
             assert!(dictionary_safe(heard), "{heard}");
         }
-        // ...a real word, or a phrase holding one, stays a hint.
-        for heard in ["cloud", "Cloud,", "clawed", "culled", "cloud code", "adding gravity", "clode code", "the German ICLI"] {
+        // ...a real word, or a phrase holding one, stays a hint. So does
+        // Arabic: Harper can't vouch for it, so it needs the user's yes (#116).
+        for heard in ["cloud", "Cloud,", "clawed", "culled", "cloud code", "adding gravity", "clode code", "the German ICLI", "كوشري", "كوشري soto"] {
             assert!(!dictionary_safe(heard), "{heard}");
         }
     }
