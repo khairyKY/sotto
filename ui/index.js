@@ -9,6 +9,15 @@ const opened = window.__SOTTO_OPENED || {};
 
 const mock = {
   hotkey: "ControlRight",
+  // A few of hotkey.rs's SUPPORTED_HOTKEYS, so the preview shows key names as the app does.
+  hotkeyOptions: [
+    { label: "Right Ctrl", name: "ControlRight", risky: false },
+    { label: "Left Ctrl", name: "ControlLeft", risky: false },
+    { label: "Right Alt", name: "AltGr", risky: false },
+    { label: "Caps Lock", name: "CapsLock", risky: false },
+    { label: "F8", name: "F8", risky: false },
+    { label: "Space", name: "Space", risky: true },
+  ],
   activation: "hold",
   polish: "ai",
   threshold: 18,
@@ -25,13 +34,18 @@ const mock = {
   tone: "",
   appTones: [],
   autoSend: ["Slack", "Terminal"],
-  // `?variables` previews the Code editors list (#27).
+  // Settings > Labs (#130). `?variables`, `?calibration`, `?scratchpad` and
+  // `?lecture` turn one on, as its config flag does.
   variableRecognition: new URLSearchParams(location.search).has("variables"),
+  voiceCorrection: false,
+  backtrack: false,
+  autoTone: false,
+  lazyWindows: false,
   codeEditors: ["VS Code"],
   history: [
     // Arabic-first and code-switched samples keep bidi rendering (#42) checkable in the preview.
     // raw/tier/fallback exist for this session's rows only (#25); the last two stand in for rows reloaded from history.jsonl.
-    { time: "2:31 PM", text: "افتح الـ terminal وشغّل الـ build", raw: "يعني افتح ال terminal و شغّل ال build", tier: "ai", fallback: "" },
+    { time: "2:31 PM", text: "افتح الـ terminal وشغّل الـ build", raw: "يعني افتح ال terminal و شغّل ال build", tier: "rules", fallback: "arabic" },
     { time: "2:20 PM", text: "الاجتماع الساعة اتناشر ونص", raw: "الاجتماع الساعة اتناشر ونص", tier: "rules", fallback: "short" },
     { time: "2:14 PM", text: "Let's ship the overlay states first.", raw: "um so let's let's ship the overlay states first", tier: "ai", fallback: "" },
     { time: "1:58 PM", text: "you@example.com", raw: "my main email", tier: "rules", fallback: "llm-error" },
@@ -39,9 +53,9 @@ const mock = {
     { time: "Sep 27", text: "Move the standup to Thursday at ten." },
   ],
   models: [
-    { id: "parakeet-v3", name: "Parakeet v3", variant: "· English", meta: "NVIDIA · int8 quantized", state: "installed", size: "639 MB", selected: true },
-    { id: "whisper-turbo", name: "Whisper turbo", variant: "· 99 languages", meta: "OpenAI · large-v3-turbo q5_0", state: "download", size: "547 MB", selected: false },
-    { id: "egyptian-small", name: "Egyptian Arabic", variant: "· عامية + English", meta: "Whisper small · code-switch tuned", state: "download", size: "465 MB", selected: false },
+    { id: "parakeet-v3", name: "Parakeet v3", variant: "· English", meta: "NVIDIA", state: "installed", size: "639 MB", selected: true },
+    { id: "whisper-turbo", name: "Whisper turbo", variant: "· 99 languages", meta: "OpenAI", state: "download", size: "547 MB", selected: false },
+    { id: "egyptian-small", name: "Egyptian Arabic", variant: "· عامية + English", meta: "Whisper small, tuned for Egyptian speech", state: "download", size: "465 MB", selected: false },
   ],
   asrModel: "parakeet-v3",
   asrLanguage: "auto",
@@ -61,7 +75,8 @@ const mock = {
     { word: "كشري", heardAs: [], recent: [] },
   ],
   calibration: new URLSearchParams(location.search).has("calibration"),
-  // Scratchpad (#19), invented rows. `?scratchpad` turns the page on, as the config flag does.
+  scratchpad: new URLSearchParams(location.search).has("scratchpad"),
+  // Scratchpad (#19), invented rows.
   pad: {
     enabled: new URLSearchParams(location.search).has("scratchpad"),
     chord: "Ctrl+Alt+Space",
@@ -74,7 +89,7 @@ const mock = {
       { id: Date.now() - 60000, text: "الـ demo بكرة الساعة عشرة، جهز الـ slides" },
     ],
   },
-  // Lecture mode (#23). `?lecture` shows Home's card, as the config flag does.
+  // Lecture mode (#23): Home's card.
   lectureMode: new URLSearchParams(location.search).has("lecture"),
   lecture: false,
   lecturesDir: "",
@@ -90,7 +105,10 @@ async function invoke(cmd, args) {
   if (cmd === "set_asr_model") { mock.models.forEach(m => { m.selected = m.id === args.model; }); mockLoad(args.model); }
   if (cmd === "download_assets") mockDownload();
   if (cmd === "set_transforms") mock.transforms = args.transforms;
-  if (cmd === "set_transforms_enabled") mock.transformsEnabled = args.enabled;
+  if (cmd === "set_lab_flag") {
+    mock[labKey(args.name)] = args.on;
+    if (args.name === "scratchpad") mock.pad.enabled = args.on;
+  }
   if (cmd === "set_auto_send") mock.autoSend = args.apps;
   if (cmd === "scratchpad_state") return mock.pad;
   if (cmd === "scratchpad_delete") return (mock.pad.rows = mock.pad.rows.filter(r => r.id !== args.id));
@@ -111,6 +129,8 @@ async function getSettings() {
 
 let HOTKEY_LABELS = {};
 let HOTKEY_RISKY = {};
+// Settings > Labs (#130): a flag's get_settings field is its config name, camelCased.
+const labKey = (flag) => flag.replace(/_(\w)/g, (_, c) => c.toUpperCase());
 
 const $ = (id) => document.getElementById(id);
 
@@ -559,9 +579,9 @@ function renderDictPage(entries) {
         row.classList.remove("entry-off");
         row.innerHTML = `
           <div class="dict-edit-fields">
-            <input class="dict-edit-input spoken" dir="auto" value="${escapeHtml(e.spoken)}" placeholder="spoken" />
+            <input class="dict-edit-input spoken" dir="auto" value="${escapeHtml(e.spoken)}" placeholder="you say" />
             <span class="dict-edit-arrow">&rarr;</span>
-            <input class="dict-edit-input replacement" dir="auto" value="${escapeHtml(e.replacement)}" placeholder="replacement" />
+            <input class="dict-edit-input replacement" dir="auto" value="${escapeHtml(e.replacement)}" placeholder="Sotto types" />
             <div class="dict-edit-actions">
               <span class="action-btn save-btn" title="Save">
                 <svg viewBox="0 0 20 20" width="15" height="15"><path d="M4 10.5 L8 14.5 L16 5.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
@@ -740,9 +760,9 @@ function renderSnipPage(entries) {
         row.classList.remove("entry-off");
         row.innerHTML = `
           <div class="dict-edit-fields snip-edit-fields">
-            <input class="dict-edit-input spoken" dir="auto" value="${escapeHtml(e.spoken)}" placeholder="phrase" />
+            <input class="dict-edit-input spoken" dir="auto" value="${escapeHtml(e.spoken)}" placeholder="you say" />
             <span class="dict-edit-arrow">&rarr;</span>
-            <input class="dict-edit-input replacement" dir="auto" value="${escapeHtml(e.replacement)}" placeholder="expansion" />
+            <input class="dict-edit-input replacement" dir="auto" value="${escapeHtml(e.replacement)}" placeholder="Sotto types" />
             <div class="dict-edit-actions">
               <span class="action-btn save-btn" title="Save">
                 <svg viewBox="0 0 20 20" width="15" height="15"><path d="M4 10.5 L8 14.5 L16 5.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
@@ -879,8 +899,8 @@ function updateToneDisabled(polishMode) {
   card.classList.toggle("disabled", !enabled);
   if ($("tone-sub")) {
     $("tone-sub").textContent = enabled
-      ? "Casual in Slack, professional in email — the Wispr Flow model."
-      : "Needs AI polish — switch Cleanup to AI above to use tones.";
+      ? "How AI polish sounds, unless an app has its own tone below"
+      : "Needs AI polish. Set Cleanup to AI to use tones.";
   }
 }
 function setToneSelectUI(tone) {
@@ -925,7 +945,7 @@ function renderToneAppsPage(entries) {
         row.innerHTML = `
           <input class="spoken" list="tone-app-datalist" value="${escapeHtml(e.app)}" placeholder="app (e.g. Slack)" style="flex:1; margin-right:4px;" />
           <span class="arrow" style="margin:0 4px; color:var(--mm-muted-3);">&rarr;</span>
-          <input class="replacement" list="tone-preset-datalist" value="${escapeHtml(e.tone)}" placeholder="tone instruction" style="flex:1; margin-right:8px;" />
+          <input class="replacement" list="tone-preset-datalist" value="${escapeHtml(e.tone)}" placeholder="how it should sound" style="flex:1; margin-right:8px;" />
           <div class="actions" style="display:flex; gap:10px; align-items:center;">
             <span class="action-btn save-btn" title="Save" style="color:var(--mm-status-green); font-size:14px; font-weight:bold;">&#10003;</span>
             <span class="action-btn cancel-btn" title="Cancel" style="color:var(--mm-coral); font-size:14px; font-weight:bold;">&#10005;</span>
@@ -1085,7 +1105,7 @@ function renderHistoryPage(entries) {
     row.className = "hist-row";
     // ± only when this session kept the raw transcript (#25); reloaded rows have none.
     const diffBtn = e.raw ? '<span class="diff-toggle" title="What changed">±</span>' : "";
-    row.innerHTML = `<span class="time">${e.time}</span><span class="txt" dir="auto">${escapeHtml(e.text)}</span>${diffBtn}<span class="copy" title="Copy">⧉</span><span class="retry" title="Re-polish &amp; copy">↻</span><span class="flag" title="Flag as wrong / not working">⚑</span>`;
+    row.innerHTML = `<span class="time">${e.time}</span><span class="txt" dir="auto">${escapeHtml(e.text)}</span>${diffBtn}<span class="copy" title="Copy">⧉</span><span class="retry" title="Re-polish &amp; copy">↻</span><span class="flag" title="Flag as wrong">⚑</span>`;
     row.querySelector(".copy").onclick = (ev) => { ev.stopPropagation(); copyText(e.text); };
     row.querySelector(".retry").onclick = (ev) => { ev.stopPropagation(); invoke("repolish_copy", { text: e.text }); };
     const flagEl = row.querySelector(".flag");
@@ -1114,12 +1134,19 @@ function diffHtml(a, b) {
 
 // Review panel (#25): raw → delivered as struck/accent words, which tier ran,
 // and "Use what I said" (raw to the clipboard; see copy_original).
+// Why AI mode kept the Rules result: polish.rs's `fallback` codes, in words.
+const AI_SKIPPED = {
+  arabic: "AI polish is off for Arabic", short: "too short for AI", "no-op": "already clean",
+  unavailable: "AI isn't downloaded yet", empty: "AI gave no answer", "llm-error": "AI failed",
+  "line-breaks": "AI lost your line breaks", identifiers: "AI changed code names",
+  "dropped-words": "AI dropped words", "new-words": "AI added words", "example-leak": "AI added words",
+};
 function reviewPanel(e) {
   const panel = document.createElement("div");
   panel.className = "hist-review";
   panel.hidden = true;
   const tier = { ai: "AI polish", rules: "Rules", off: "No polish" }[e.tier] || e.tier;
-  const note = e.fallback ? `${tier} · AI skipped: ${e.fallback}` : tier;
+  const note = e.fallback ? `${tier} · ${AI_SKIPPED[e.fallback] || `AI skipped: ${e.fallback}`}` : tier;
   const unchanged = e.raw.trim() === e.text.trim();
   panel.innerHTML = `${unchanged ? "" : `<div class="hist-diff" dir="auto">${diffHtml(e.raw, e.text)}</div>`}
     <div class="hist-review-foot"><span class="hist-tier">${escapeHtml(unchanged ? note + " · no changes" : note)}</span>
@@ -1159,7 +1186,7 @@ function renderPad() {
     row.innerHTML = `<span class="time">${padTime(r.id)}</span><span class="txt" dir="auto">${escapeHtml(r.text)}</span>
       <button class="act" data-a="copy" title="Copy" aria-label="Copy">⧉</button>
       <button class="act" data-a="inject" title="${into}" aria-label="${into}"${pad.targetApp ? "" : " hidden"}>↵</button>
-      <button class="act" data-a="park" title="Park to file" aria-label="Park to file"${pad.canPark ? "" : " hidden"}>⇲</button>
+      <button class="act" data-a="park" title="Add to your notes file" aria-label="Add to your notes file"${pad.canPark ? "" : " hidden"}>⇲</button>
       <button class="act" data-a="delete" title="Delete" aria-label="Delete">✕</button>`;
     row.onclick = () => copyText(r.text);
     row.querySelectorAll(".act").forEach((b) => b.onclick = async (ev) => {
@@ -1169,8 +1196,8 @@ function renderPad() {
       if (a === "inject") invoke("scratchpad_inject", { text: r.text });
       if (a === "delete") { pad.rows = await invoke("scratchpad_delete", { id: r.id }); renderPad(); }
       if (a === "park") {
-        try { await invoke("scratchpad_park", { text: r.text }); b.textContent = "✓"; b.title = "Parked"; }
-        catch (err) { b.textContent = "!"; b.title = `Couldn't park it: ${err}`; }
+        try { await invoke("scratchpad_park", { text: r.text }); b.textContent = "✓"; b.title = "Added to your notes file"; }
+        catch (err) { b.textContent = "!"; b.title = `Couldn't add it: ${err}`; }
       }
     });
     host.appendChild(row);
@@ -1204,7 +1231,7 @@ function renderTrainedWords() {
     row.className = "pron-trained-row";
     row.innerHTML = `
       <span class="pron-trained-word" dir="auto">${escapeHtml(v.word)}</span>
-      <span class="pron-trained-heard">${v.heardAs.length ? "heard as: " + v.heardAs.map(h => `<bdi>${escapeHtml(h)}</bdi>`).join(", ") : ((v.recent || []).length ? "no corrections logged" : "no attempts yet")}</span>
+      <span class="pron-trained-heard">${v.heardAs.length ? "heard as: " + v.heardAs.map(h => `<bdi>${escapeHtml(h)}</bdi>`).join(", ") : ((v.recent || []).length ? "no corrections yet" : "no attempts yet")}</span>
       <span class="pron-strength" style="--pct:${pct}"><span class="pron-strength-num">${total ? `${hits}/${total}` : "—"}</span></span>
     `;
     host.appendChild(row);
@@ -1295,8 +1322,8 @@ async function pronAddCorrection(word, heard, btn) {
   });
   const note = document.createElement("span");
   note.className = "pron-learned";
-  note.textContent = exact ? "Learned" : `Learned (hint only — ${heard.includes(" ") ? "has a real word" : "real word"})`;
-  if (!exact) note.title = `A dictionary entry would change every “${heard}” you say, so it's kept as a hint.`;
+  note.textContent = exact ? "Learned" : "Learned as a hint";
+  if (!exact) note.title = `“${heard}” has a real word in it, so Sotto won't change it everywhere. It's kept as a hint.`;
   btn.replaceWith(note);
 }
 
@@ -1383,7 +1410,7 @@ function loadCalibration() {
 function calShow() {
   const sentence = calSentences[calIndex];
   $("cal-progress").textContent = sentence ? `Sentence ${calIndex + 1} of ${calSentences.length}`
-    : calSentences.length ? "" : "Train a word above first, and Calibrate reads it back in a sentence.";
+    : calSentences.length ? "" : "Train a word above first. Calibrate then gives you a sentence with it to read.";
   $("cal-sentence").textContent = sentence || (calSentences.length ? "That's every trained word." : "");
   $("cal-diff").hidden = true;
   $("cal-pairs").innerHTML = "";
@@ -1490,7 +1517,7 @@ function setTransformCapture(chord, note) {
   $("transform-capture-keys").innerHTML = chord ? chordKeysHtml(chord) : "Press the shortcut";
   $("transform-capture-sub").textContent = note || (chord
     ? "Press another to change it."
-    : "Focus this box, then press Ctrl, Alt or Win plus one key.");
+    : "Click here, then press Ctrl, Alt or Win plus one key.");
 }
 
 function openTransformModal(i) {
@@ -1524,7 +1551,7 @@ $("transform-capture").addEventListener("keydown", (ev) => {
   // The regex covers the browser preview, whose mock has no hotkey list.
   const bindable = HOTKEY_LABELS[name] || /^(Key[A-Z]|Digit\d|F([1-9]|1[0-2]))$/.test(name);
   if (!bindable || /^(Mouse|Control|Shift|Alt|Meta|CapsLock)/.test(name)) {
-    setTransformCapture(transformDraftChord, "That key isn't bindable. Try a letter, digit or F-key.");
+    setTransformCapture(transformDraftChord, "Sotto can't use that key. Try a letter, digit or F-key.");
     return;
   }
   if (!mods.some(m => m !== "Shift")) {
@@ -1578,15 +1605,35 @@ $("transforms-reset").onclick = () => {
 function initTransforms(s) {
   transforms = (s.transforms || []).map(t => ({ ...t }));
   transformDefaults = s.transformDefaults || [];
-  const sw = $("transforms-enabled");
-  const on = !!s.transformsEnabled;
-  sw.setAttribute("aria-checked", String(on));
-  $("transforms-grid").classList.toggle("list-disabled", !on);
-  initSwitch(sw, (v) => {
-    invoke("set_transforms_enabled", { enabled: v });
-    $("transforms-grid").classList.toggle("list-disabled", !v);
-  });
   renderTransforms();
+}
+
+// ── labs (#130) ──
+// Every Labs switch, and the Transforms page's own, sets its config flag by
+// name. Switches for one flag stay in step, and a feature's page, card or
+// list shows only while it's on. Turned off on its own page, that page stays
+// in front until you leave it.
+function showLab(flag, on) {
+  document.querySelectorAll(`[data-lab="${flag}"]`).forEach(sw => sw.setAttribute("aria-checked", String(on)));
+  if (flag === "transforms_enabled") {
+    $("nav-transforms").hidden = !on;
+    $("transforms-grid").classList.toggle("list-disabled", !on);
+  }
+  if (flag === "variable_recognition") $("code-editors-section").hidden = !on;
+  if (flag === "calibration") $("cal-section").hidden = !on;
+}
+function initLabs(s) {
+  document.querySelectorAll("[data-lab]").forEach(sw => {
+    const flag = sw.dataset.lab;
+    showLab(flag, !!s[labKey(flag)]);
+    initSwitch(sw, async (on) => {
+      await invoke("set_lab_flag", { name: flag, on });
+      showLab(flag, on);
+      if (flag === "scratchpad") loadScratchpad();
+      if (flag === "lecture_mode") loadHome();
+      if (flag === "calibration") loadPronunciation();
+    });
+  });
 }
 
 // ── settings page wiring ──
@@ -1666,8 +1713,8 @@ function renderModels(models) {
           </svg>
         </span>
         <div>
-          <div class="name" style="font-weight: 500; color: var(--mm-ink);">${escapeHtml(m.name)} <span class="sub" style="color: var(--mm-muted-2); font-size: 11.5px; font-weight: 400;">${escapeHtml(m.variant)}</span></div>
-          <div class="meta" style="font: 400 11.5px 'Hanken Grotesk'; color: var(--mm-muted-3); margin-top: 2px;">${metaOverride || m.meta || (m.state === "installed" ? `Installed &middot; ${m.size} &middot; on-device` : `Not installed &middot; ${m.size}`)}</div>
+          <div class="name" style="font-weight: 500; color: var(--mm-ink);">${escapeHtml(m.name)} <span class="sub" style="color: var(--mm-muted-2); font-size: 11.5px; font-weight: 400;">${escapeHtml(m.variant)}</span>${m.id === "egyptian-small" ? ' <span class="badge-beta">EXPERIMENTAL</span>' : ""}</div>
+          <div class="meta" style="font: 400 11.5px 'Hanken Grotesk'; color: var(--mm-muted-3); margin-top: 2px;">${metaOverride || (m.state === "installed" ? m.meta : `${m.meta} &middot; ${m.size}`)}</div>
         </div>
       </div>
       <div style="flex:1"></div>
@@ -1699,19 +1746,21 @@ async function selectAsrModel(id, alsoDownload) {
   renderModels(s.models || []);
 }
 
-// Parakeet is English-only and provably ignores the language setting — grey
-// the picker out and say so, rather than let it silently do nothing.
+// Parakeet is English-only and provably ignores the language setting, and
+// egyptian-small always listens for Arabic (#68; asr.rs forces it): grey the
+// picker out and say so, rather than let it silently do nothing. The stored
+// choice stays, for the next engine picked.
+let asrLanguage = "auto";
 function updateLanguageDisabled(modelId) {
   const wrapper = $("asr-language-wrapper");
   const select = $("asr-language-select");
   const sub = $("asr-language-sub");
   if (!wrapper || !select) return;
-  const isParakeet = modelId === "parakeet-v3";
-  select.disabled = isParakeet;
-  wrapper.classList.toggle("disabled", isParakeet);
-  if (sub) sub.textContent = isParakeet
-    ? "Parakeet is English-only and ignores this."
-    : "Which language to expect, or auto-detect";
+  const fixed = { "parakeet-v3": "Parakeet only hears English.", "egyptian-small": "Egyptian Arabic always listens for Arabic." }[modelId];
+  select.value = modelId === "egyptian-small" ? "ar" : asrLanguage;
+  select.disabled = !!fixed;
+  wrapper.classList.toggle("disabled", !!fixed);
+  if (sub) sub.textContent = fixed || "The language you speak, or Auto-detect";
 }
 
 async function copyText(text) {
@@ -1840,16 +1889,16 @@ function closeHotkeyModal() {
   $("hotkey-modal").hidden = true;
   $("hotkey-capture").classList.remove("armed");
   $("capture-title").textContent = "Press any key or mouse button";
-  $("capture-sub").textContent = "Focus this box, then tap the key you want.";
+  $("capture-sub").textContent = "Click here, then press the key you want.";
 }
 function pickHotkey(name) {
   if (!HOTKEY_LABELS[name]) {
-    $("capture-title").textContent = "That key isn't bindable";
-    $("capture-sub").textContent = "This build supports the keys shown below.";
+    $("capture-title").textContent = "Sotto can't use that key";
+    $("capture-sub").textContent = "Pick one from the list below.";
     $("hotkey-capture").classList.remove("armed");
     return;
   }
-  if (HOTKEY_RISKY[name] && !window.confirm(`Use "${HOTKEY_LABELS[name]}" as your dictation hotkey?\n\nThis key is often used elsewhere.`)) return;
+  if (HOTKEY_RISKY[name] && !window.confirm(`Use ${HOTKEY_LABELS[name]} as your dictation key?\n\nYou probably use this key for other things too.`)) return;
   currentHotkey = name;
   setKeycap(name);
   invoke("set_hotkey", { key: name });
@@ -1864,8 +1913,9 @@ document.addEventListener("keydown", (ev) => {
   if (document.activeElement !== $("hotkey-capture")) return;
   ev.preventDefault(); ev.stopPropagation();
   $("hotkey-capture").classList.add("armed");
-  $("capture-title").textContent = `Captured: ${ev.code}`;
-  pickHotkey(eventCodeToName(ev.code));
+  const name = eventCodeToName(ev.code);
+  $("capture-title").textContent = `Captured: ${HOTKEY_LABELS[name] || name}`;
+  pickHotkey(name);
 });
 $("hotkey-capture").addEventListener("mousedown", (ev) => {
   if (ev.button === 0) return;
@@ -1873,7 +1923,7 @@ $("hotkey-capture").addEventListener("mousedown", (ev) => {
   const name = MOUSE_BUTTON_TO_KEY[ev.button];
   if (!name) return;
   $("hotkey-capture").classList.add("armed");
-  $("capture-title").textContent = `Captured: ${name}`;
+  $("capture-title").textContent = `Captured: ${HOTKEY_LABELS[name] || name}`;
   pickHotkey(name);
 });
 
@@ -1923,7 +1973,7 @@ async function initUpdates() {
     $("update-text").textContent = "Downloading update…";
     try { await invoke("install_update"); }
     catch (e) {
-      $("update-text").innerHTML = `Auto-update failed. <a href="#" id="update-manual-link">Download it manually from GitHub</a>`;
+      $("update-text").innerHTML = `The update didn't install. <a href="#" id="update-manual-link">Download it from GitHub</a>`;
       const link = document.getElementById("update-manual-link");
       if (link) link.onclick = (ev) => { ev.preventDefault(); openReleases(); };
       $("update-install").disabled = false;
@@ -2000,7 +2050,7 @@ async function initAssets() {
     "assets-ready": async () => {
       fill.style.width = "100%";
       dot.classList.remove("amber");
-      text.textContent = "All models ready. Hold your hotkey and speak.";
+      text.textContent = `All set. ${$("hint-verb").textContent} ${$("keycap-display").textContent} ${$("hint-tail").textContent}`;
       // First run: the banner is the only "you're done" signal, so it stays a while.
       setTimeout(() => { banner.hidden = true; }, aiWaiting ? 8000 : 1500);
       if (aiWaiting) { aiWaiting = false; loadHome(); } // AI tier is live now, no restart
@@ -2130,16 +2180,15 @@ async function boot() {
   initToneUI(s);
   autoSend.apps = [...(s.autoSend || [])];
   renderAppList(autoSend);
-  // Variable recognition (#27) is config-only while it's new; its list shows with it.
-  $("code-editors-section").hidden = !s.variableRecognition;
   codeEditors.apps = [...(s.codeEditors || [])];
   renderAppList(codeEditors);
   asrLoad = s.asrLoad || null;
+  asrLanguage = s.asrLanguage || "auto";
   renderModels(s.models || []);
   if ($("asr-language-select")) {
-    $("asr-language-select").value = s.asrLanguage || "auto";
     $("asr-language-select").onchange = () => {
-      invoke("set_asr_language", { language: $("asr-language-select").value });
+      asrLanguage = $("asr-language-select").value;
+      invoke("set_asr_language", { language: asrLanguage });
     };
   }
   populateMicPicker(s.microphone_options || s.microphoneOptions || [], s.microphone || "");
@@ -2196,7 +2245,7 @@ async function boot() {
   // Clear stats button wiring
   if ($("clear-stats-btn")) {
     $("clear-stats-btn").onclick = async () => {
-      const confirmClear = confirm("Are you sure you want to clear all usage statistics?");
+      const confirmClear = confirm("Clear all Insights data? This can't be undone.");
       if (confirmClear) {
         await invoke("clear_stats");
         loadInsights();
@@ -2212,15 +2261,15 @@ async function boot() {
     t.setAttribute("aria-checked", String(!!s.historyPersist));
     initSwitch(t, (on) => {
       const ok = confirm(on
-        ? "Keep history across restarts?\n\nYour dictated text will be written to history.jsonl in your data folder so it survives restarts. It stays on this device and is never uploaded. Turning this off deletes the file."
-        : "Stop keeping history?\n\nThis deletes the saved history file. This session's list stays until Sotto quits.");
+        ? "Keep History after restarts?\n\nSotto saves your dictated text to history.jsonl in your data folder. It stays on this device and is never uploaded. Turning this off deletes the file."
+        : "Stop keeping History?\n\nThis deletes the saved file. This session's list stays until Sotto quits.");
       if (!ok) { t.setAttribute("aria-checked", String(!on)); return; }
       invoke("set_history_persist", { enabled: on });
     });
   }
   if ($("clear-history-btn")) {
     $("clear-history-btn").onclick = async () => {
-      if (!confirm("Are you sure you want to clear your history?")) return;
+      if (!confirm("Clear the History list?")) return;
       await invoke("clear_history");
       historyEntries = [];
       renderHistoryPage(historyEntries);
@@ -2236,7 +2285,7 @@ async function boot() {
   if ($("recordings-size")) {
     const mb = s.recordingsSizeMb || 0;
     const cap = s.retentionMaxMb || 500;
-    $("recordings-size").textContent = `${mb} MB kept, capped at ${cap} MB`;
+    $("recordings-size").textContent = `${mb} MB of ${cap} MB used`;
   }
   if ($("recordings-folder-path") && s.recordingsDir) {
     $("recordings-folder-path").textContent = s.recordingsDir;
@@ -2246,10 +2295,10 @@ async function boot() {
   }
   if ($("clear-recordings-btn")) {
     $("clear-recordings-btn").onclick = async () => {
-      const confirmClear = confirm("Are you sure you want to delete all kept recordings?");
+      const confirmClear = confirm("Delete every kept recording? This can't be undone.");
       if (confirmClear) {
         await invoke("clear_recordings");
-        $("recordings-size").textContent = `0 MB kept, capped at ${s.retentionMaxMb || 500} MB`;
+        $("recordings-size").textContent = `0 MB of ${s.retentionMaxMb || 500} MB used`;
       }
     };
   }
@@ -2292,7 +2341,7 @@ async function boot() {
 
   // Pronunciation trainer data
   pronVocabulary = (s.vocabulary || []).map(v => ({ word: v.word, heardAs: v.heardAs || [], recent: v.recent || [] }));
-  $("cal-section").hidden = !s.calibration;
+  initLabs(s);
   loadPronunciation();
 
   // A page the tray menu or the Scratchpad chord asks for.

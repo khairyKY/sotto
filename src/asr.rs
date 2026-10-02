@@ -116,9 +116,14 @@ fn idle_wait(loaded: bool, idle_unload_secs: u64) -> Duration {
     }
 }
 
-/// Maps the config's language string to what `TranscribeOptions` expects.
-fn to_language_option(lang: &str) -> Option<String> {
-    if lang.eq_ignore_ascii_case("auto") {
+/// Maps the config's language string to what `TranscribeOptions` expects,
+/// for `engine`. egyptian-small always decodes as Arabic (#68): left to
+/// detect, it writes English speech out as Arabic. `asr.language` itself is
+/// kept, for when another engine is picked again.
+fn to_language_option(engine: &str, lang: &str) -> Option<String> {
+    if engine == "egyptian-small" {
+        Some("ar".to_string())
+    } else if lang.eq_ignore_ascii_case("auto") {
         None
     } else {
         Some(lang.to_string())
@@ -289,7 +294,7 @@ impl Asr {
             self.engine = next.to_string();
             self.model = None;
         }
-        self.language = to_language_option(&cfg.asr.language);
+        self.language = to_language_option(&self.engine, &cfg.asr.language);
         self.prompt = cfg.asr.vocabulary_prompt.then(|| vocab_prompt(&cfg.polish.vocabulary)).flatten();
         self.idle_unload_secs = cfg.asr.idle_unload_secs;
         self.whisper_beam = cfg.asr.whisper_beam;
@@ -501,14 +506,38 @@ mod tests {
 
     #[test]
     fn auto_language_maps_to_none() {
-        assert_eq!(to_language_option("auto"), None);
-        assert_eq!(to_language_option("Auto"), None); // config value isn't case-sensitive
+        assert_eq!(to_language_option("whisper-turbo", "auto"), None);
+        assert_eq!(to_language_option("whisper-turbo", "Auto"), None); // config value isn't case-sensitive
     }
 
     #[test]
     fn explicit_language_passes_through() {
-        assert_eq!(to_language_option("en"), Some("en".to_string()));
-        assert_eq!(to_language_option("ar"), Some("ar".to_string()));
+        assert_eq!(to_language_option("whisper-turbo", "en"), Some("en".to_string()));
+        assert_eq!(to_language_option("whisper-turbo", "ar"), Some("ar".to_string()));
+    }
+
+    #[test]
+    fn egyptian_small_always_listens_for_arabic() {
+        for lang in ["auto", "en", "ar", "fr"] {
+            assert_eq!(to_language_option("egyptian-small", lang).as_deref(), Some("ar"), "{lang}");
+        }
+        // Only while it is the engine that runs: the stored choice is kept.
+        let mut asr = Asr {
+            model: None,
+            engine: "egyptian-small".into(),
+            language: None,
+            prompt: None,
+            idle_unload_secs: 0,
+            whisper_beam: 0,
+        };
+        let mut cfg = config::Config::default();
+        cfg.asr.model = "egyptian-small".into();
+        cfg.asr.language = "auto".into();
+        asr.sync(&cfg);
+        assert_eq!(asr.language.as_deref(), Some("ar"));
+        assert_eq!(cfg.asr.language, "auto");
+        // While its download is still landing, the engine that runs keeps the choice.
+        assert_eq!(to_language_option(next_engine("whisper-turbo", "egyptian-small", |e| e == "whisper-turbo"), "auto"), None);
     }
 
     fn entry(word: &str, heard_as: usize, misses: usize) -> VocabEntry {

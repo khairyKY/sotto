@@ -54,11 +54,11 @@
             <svg viewBox="0 0 20 20" width="17" height="17"><path d="M4 11.5 V8.5 M7 14 V6 M10 16 V4 M13 14 V6 M16 11.5 V8.5" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>
             <span>Pronunciation</span>
           </a>
-          <a class="nav-item" data-page="transforms" href="#">
+          <!-- Labs features (#130): each nav item shows only while its flag is on. -->
+          <a class="nav-item" data-page="transforms" href="#" id="nav-transforms" hidden>
             <svg viewBox="0 0 20 20" width="17" height="17"><path d="M8 4 H5 A1 1 0 0 0 4 5 V15 A1 1 0 0 0 5 16 H8 M12 7 L15.5 10 L12 13 M15.5 10 H7.5" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>
             <span>Transforms</span>
           </a>
-          <!-- Scratchpad (#19), behind the `scratchpad` config flag. -->
           <a class="nav-item" data-page="scratchpad" href="#" id="nav-scratchpad" hidden>
             <svg viewBox="0 0 20 20" width="17" height="17"><path d="M4 4 H16 V16 H4 Z M7 8 H13 M7 11 H11" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>
             <span>Scratchpad</span>
@@ -143,7 +143,7 @@
               <button data-value="month">Month</button>
             </div>
           </div>
-          <p class="page-sub">All numbers live on this device. Nothing is uploaded &mdash; ever.</p>
+          <p class="page-sub">These numbers stay on this device. Nothing is uploaded.</p>
 
           <div class="insight-grid">
             <div class="card-raised insight-card">
@@ -210,7 +210,7 @@
             <div class="toggle-row">
               <div class="row-label">
                 <div class="label">All replacements</div>
-                <div class="sub">Covers dictionary words and snippets &mdash; flip off to pause everything below.</div>
+                <div class="sub">Turn off to pause every dictionary word and snippet</div>
               </div>
               <button class="switch" id="dict-master-toggle" role="switch" aria-checked="true"><span class="knob"></span></button>
             </div>
@@ -254,7 +254,7 @@
             <div class="toggle-row">
               <div class="row-label">
                 <div class="label">All replacements</div>
-                <div class="sub">Same switch as Dictionary &mdash; flip off to pause everything below.</div>
+                <div class="sub">Same switch as on Dictionary. Turn off to pause every word and snippet.</div>
               </div>
               <button class="switch" id="snip-master-toggle" role="switch" aria-checked="true"><span class="knob"></span></button>
             </div>
@@ -291,7 +291,7 @@
         <section class="page" id="page-history">
           <div class="page-head-row" style="margin-bottom:14px">
             <h1 class="page-title" style="margin:0">History</h1>
-            <span class="section-hint" style="color: var(--mm-muted-3); font-size: 11.5px;">Click any entry to copy it again</span>
+            <span class="section-hint" style="color: var(--mm-muted-3); font-size: 11.5px;">Click a line to copy it</span>
           </div>
           <p class="page-sub">Session log &middot; copy or re-polish any line.</p>
 
@@ -303,7 +303,7 @@
 
           <div class="history-footnote">
             <svg viewBox="0 0 20 20" width="13" height="13"><rect x="4.5" y="8.5" width="11" height="7.5" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M7 8.5 V6.3 A3 3 0 0 1 13 6.3 V8.5" fill="none" stroke="currentColor" stroke-width="1.5"/></svg>
-            <span>History stays on this device. It clears when Sotto quits unless Keep history is on in Settings. &plusmn; shows what polish changed, for lines from this session. Flagging a line saves it locally to <code>bug-reports.jsonl</code> for you to review; nothing is ever sent anywhere.</span>
+            <span>History stays on this device and clears when Sotto quits, unless Keep history is on in Settings. &plusmn; shows what polish changed in this session&rsquo;s lines. &#9873; saves a line to <code>bug-reports.jsonl</code> for you to look at later. Nothing is sent anywhere.</span>
           </div>
         </section>
 
@@ -313,7 +313,7 @@
             <h1 class="page-title" style="margin:0">Pronunciation</h1>
             <span class="section-hint" style="color: var(--mm-muted-3); font-size: 11.5px;">Teach Sotto how you say a word</span>
           </div>
-          <p class="page-sub">Type a word Sotto keeps mishearing, press &ldquo;Listen for it,&rdquo; then say it — no hotkey needed here.</p>
+          <p class="page-sub">Type a word Sotto keeps getting wrong, press &ldquo;Listen for it&rdquo;, then say it. You don&rsquo;t need the dictation key here.</p>
 
           <div class="card-raised pron-listen-card">
             <div class="search-bar" style="margin-bottom:0">
@@ -367,7 +367,7 @@
             </div>
             <div style="display:flex;align-items:center;gap:9px">
               <span class="section-hint">Enabled</span>
-              <button class="switch" id="transforms-enabled" role="switch" aria-checked="false" aria-label="Transform shortcuts"><span class="knob"></span></button>
+              <button class="switch" id="transforms-enabled" data-lab="transforms_enabled" role="switch" aria-checked="false" aria-label="Transform shortcuts"><span class="knob"></span></button>
             </div>
           </div>
           <div style="max-width:440px;margin-bottom:18px">
@@ -401,7 +401,7 @@
 
           <div class="history-footnote">
             <svg viewBox="0 0 20 20" width="13" height="13"><rect x="4.5" y="8.5" width="11" height="7.5" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M7 8.5 V6.3 A3 3 0 0 1 13 6.3 V8.5" fill="none" stroke="currentColor" stroke-width="1.5"/></svg>
-            <span>The pad stays on this device, in <code>scratchpad.jsonl</code>, and keeps the last 200 lines. Nothing is ever sent anywhere.</span>
+            <span>The pad stays on this device, in <code>scratchpad.jsonl</code>, and keeps the last 200 lines. Nothing is sent anywhere.</span>
           </div>
         </section>
 
@@ -437,6 +437,10 @@
             </div>
 
             <div class="settings-container">
+              <!-- Sections (#130), one job each: Dictation starts a take and
+                   shows it; Polish cleans the words up; Tone is how AI polish
+                   sounds; Speech model hears you; App is the window itself;
+                   Data & privacy is what's kept; Labs holds what's new. -->
               <div class="settings-section-title">Dictation</div>
               <div class="card-raised settings-card">
                 <div class="settings-row bare">
@@ -473,6 +477,40 @@
                     </div>
                   </div>
                 </div>
+                <div class="divider"></div>
+                <div class="toggle-row">
+                  <div class="row-label">
+                    <div class="label">Dictation sounds</div>
+                    <div class="sub">A soft tick when recording starts and stops</div>
+                  </div>
+                  <button class="switch" id="sound-sounds" role="switch" aria-checked="true"><span class="knob"></span></button>
+                </div>
+                <div class="divider"></div>
+                <div class="toggle-row">
+                  <div class="row-label">
+                    <div class="label">Always show the pill</div>
+                    <div class="sub">Keep it on screen. Click it to start dictating.</div>
+                  </div>
+                  <button class="switch" id="overlay-always-visible-toggle" role="switch" aria-checked="false"><span class="knob"></span></button>
+                </div>
+                <div class="divider"></div>
+                <div class="settings-row bare">
+                  <div class="row-label">
+                    <div class="label">Pill position</div>
+                    <div class="sub">Where the pill sits on your screen</div>
+                  </div>
+                  <div class="anchor-grid" id="overlay-position" data-value="bottom-center">
+                    <button data-value="top-left" aria-label="Top left"></button>
+                    <button data-value="top-center" aria-label="Top center"></button>
+                    <button data-value="top-right" aria-label="Top right"></button>
+                    <button data-value="middle-left" aria-label="Middle left"></button>
+                    <button data-value="middle-center" aria-label="Middle center"></button>
+                    <button data-value="middle-right" aria-label="Middle right"></button>
+                    <button data-value="bottom-left" aria-label="Bottom left"></button>
+                    <button data-value="bottom-center" aria-label="Bottom center"></button>
+                    <button data-value="bottom-right" aria-label="Bottom right"></button>
+                  </div>
+                </div>
               </div>
 
               <div class="settings-section-title">Polish</div>
@@ -480,7 +518,7 @@
                 <div class="settings-row bare">
                   <div class="row-label">
                     <div class="label">Cleanup</div>
-                    <div class="sub">Off &middot; Rules (instant, local) &middot; AI (local LLM rewrite)</div>
+                    <div class="sub">Rules fix punctuation instantly. AI rewrites more, still on this device.</div>
                   </div>
                   <div class="segmented" id="polish" data-value="ai">
                     <button data-value="off">Off</button>
@@ -492,12 +530,47 @@
                 <div class="settings-row bare">
                   <div class="row-label nowrap">
                     <div class="label">Use AI past</div>
-                    <div class="sub">shorter clips stay on instant rules</div>
+                    <div class="sub">Shorter dictations get Rules</div>
                   </div>
                   <div class="slider-wrap">
                     <input type="range" id="threshold" min="0" max="60" value="18" />
                     <span class="mono" id="threshold-val">18 words</span>
                   </div>
+                </div>
+                <div class="divider"></div>
+                <div class="toggle-row">
+                  <div class="row-label">
+                    <div class="label">Voice formatting commands</div>
+                    <div class="sub">Say &ldquo;new line&rdquo; or &ldquo;quote &hellip; unquote&rdquo; to get the real thing</div>
+                  </div>
+                  <button class="switch" id="formatting-commands-toggle" role="switch" aria-checked="true"><span class="knob"></span></button>
+                </div>
+                <div class="divider"></div>
+                <div class="settings-row bare">
+                  <div class="row-label">
+                    <div class="label">Quote style</div>
+                    <div class="sub">Straight is safe everywhere, including code and terminals</div>
+                  </div>
+                  <div class="segmented" id="quote-style" data-value="straight">
+                    <button data-value="straight">Straight</button>
+                    <button data-value="curly">Curly</button>
+                  </div>
+                </div>
+                <div class="divider"></div>
+                <div class="toggle-row">
+                  <div class="row-label">
+                    <div class="label">Spoken numbers as digits</div>
+                    <div class="sub">Say &ldquo;twenty three&rdquo; to get &ldquo;23&rdquo;</div>
+                  </div>
+                  <button class="switch" id="number-formatting-toggle" role="switch" aria-checked="true"><span class="knob"></span></button>
+                </div>
+                <div class="divider"></div>
+                <div class="toggle-row">
+                  <div class="row-label">
+                    <div class="label">Fix trained words by sound</div>
+                    <div class="sub">Words that sound like one you trained get your spelling</div>
+                  </div>
+                  <button class="switch" id="phonetic-correction-toggle" role="switch" aria-checked="true"><span class="knob"></span></button>
                 </div>
               </div>
 
@@ -506,7 +579,7 @@
                 <div class="settings-row bare">
                   <div class="row-label">
                     <div class="label">Default tone</div>
-                    <div class="sub" id="tone-sub">Casual in Slack, professional in email &mdash; the Wispr Flow model.</div>
+                    <div class="sub" id="tone-sub">How AI polish sounds, unless an app has its own tone below</div>
                   </div>
                   <div class="row-control">
                     <div class="select-wrapper">
@@ -532,7 +605,7 @@
                 <div class="settings-row bare" style="flex-direction:column; align-items:stretch; gap:10px">
                   <div class="page-head-row">
                     <div class="row-label">
-                      <div class="label">Per-app overrides</div>
+                      <div class="label">Per-app tones</div>
                     </div>
                     <span class="link-change" id="tone-app-add">+ Add app</span>
                   </div>
@@ -553,7 +626,7 @@
                 <div class="settings-row bare">
                   <div class="row-label">
                     <div class="label">Language</div>
-                    <div class="sub" id="asr-language-sub">Which language to expect, or auto-detect</div>
+                    <div class="sub" id="asr-language-sub">The language you speak, or Auto-detect</div>
                   </div>
                   <div class="row-control">
                     <div class="select-wrapper" id="asr-language-wrapper">
@@ -572,87 +645,12 @@
                 </div>
               </div>
 
-              <div class="settings-section-title">Dictation</div>
-              <div class="card-raised settings-card">
-                <div class="toggle-row">
-                  <div class="row-label">
-                    <div class="label">Voice formatting commands</div>
-                    <div class="sub">Say &ldquo;new line&rdquo;, &ldquo;open quote&rdquo; / &ldquo;close quote&rdquo;, or &ldquo;quote &hellip; unquote&rdquo; to insert real punctuation instead of the words</div>
-                  </div>
-                  <button class="switch" id="formatting-commands-toggle" role="switch" aria-checked="true"><span class="knob"></span></button>
-                </div>
-                <div class="divider"></div>
-                <div class="toggle-row">
-                  <div class="row-label">
-                    <div class="label">Spoken numbers as digits</div>
-                    <div class="sub">Say &ldquo;twenty three&rdquo; or &ldquo;seven fifteen a.m.&rdquo; and get &ldquo;23&rdquo; or &ldquo;7:15 a.m.&rdquo; instead of the words</div>
-                  </div>
-                  <button class="switch" id="number-formatting-toggle" role="switch" aria-checked="true"><span class="knob"></span></button>
-                </div>
-                <div class="divider"></div>
-                <div class="toggle-row">
-                  <div class="row-label">
-                    <div class="label">Fix trained words by sound</div>
-                    <div class="sub">Pull words that sound like ones you&rsquo;ve trained (Claude, Sotto&hellip;) back to the right spelling, even for new mishearings</div>
-                  </div>
-                  <button class="switch" id="phonetic-correction-toggle" role="switch" aria-checked="true"><span class="knob"></span></button>
-                </div>
-                <div class="divider"></div>
-                <div class="settings-row bare">
-                  <div class="row-label">
-                    <div class="label">Quote style</div>
-                    <div class="sub">Straight is safe everywhere, including code and terminals</div>
-                  </div>
-                  <div class="segmented" id="quote-style" data-value="straight">
-                    <button data-value="straight">Straight</button>
-                    <button data-value="curly">Curly</button>
-                  </div>
-                </div>
-                <div class="divider"></div>
-                <div class="toggle-row">
-                  <div class="row-label">
-                    <div class="label">Always show the pill</div>
-                    <div class="sub">Keep it on screen when idle &mdash; click it to start a dictation</div>
-                  </div>
-                  <button class="switch" id="overlay-always-visible-toggle" role="switch" aria-checked="false"><span class="knob"></span></button>
-                </div>
-                <div class="divider"></div>
-                <div class="settings-row bare" style="flex-direction:column; align-items:stretch; gap:10px">
-                  <div class="page-head-row">
-                    <div class="row-label">
-                      <div class="label">Auto-send</div>
-                      <div class="sub">Press Enter after a dictation lands in these apps</div>
-                    </div>
-                    <span class="link-change" id="auto-send-add">+ Add app</span>
-                  </div>
-                  <div class="card-recessed dict-entries-container" style="margin-bottom:0">
-                    <div class="dict-entries-list" id="auto-send-list"></div>
-                  </div>
-                </div>
-                <!-- Variable recognition (#27), behind the `variable_recognition` config flag. -->
-                <div id="code-editors-section" hidden>
-                  <div class="divider"></div>
-                  <div class="settings-row bare" style="flex-direction:column; align-items:stretch; gap:10px">
-                    <div class="page-head-row">
-                      <div class="row-label">
-                        <div class="label">Code editors</div>
-                        <div class="sub">Say &ldquo;camel case user name&rdquo; and get &ldquo;userName&rdquo; in these apps</div>
-                      </div>
-                      <span class="link-change" id="code-editors-add">+ Add app</span>
-                    </div>
-                    <div class="card-recessed dict-entries-container" style="margin-bottom:0">
-                      <div class="dict-entries-list" id="code-editors-list"></div>
-                    </div>
-                  </div>
-                </div>
-              </div>
-
-              <div class="settings-section-title">Appearance</div>
+              <div class="settings-section-title">App</div>
               <div class="card-raised settings-card">
                 <div class="settings-row bare">
                   <div class="row-label">
                     <div class="label">Theme</div>
-                    <div class="sub">System follows your Windows light/dark setting</div>
+                    <div class="sub">System matches Windows</div>
                   </div>
                   <div class="segmented" id="theme" data-value="system">
                     <button data-value="light">Light</button>
@@ -663,26 +661,8 @@
                 <div class="divider"></div>
                 <div class="settings-row bare">
                   <div class="row-label">
-                    <div class="label">Pill position</div>
-                    <div class="sub">Where the dictation pill sits on screen</div>
-                  </div>
-                  <div class="anchor-grid" id="overlay-position" data-value="bottom-center">
-                    <button data-value="top-left" aria-label="Top left"></button>
-                    <button data-value="top-center" aria-label="Top center"></button>
-                    <button data-value="top-right" aria-label="Top right"></button>
-                    <button data-value="middle-left" aria-label="Middle left"></button>
-                    <button data-value="middle-center" aria-label="Middle center"></button>
-                    <button data-value="middle-right" aria-label="Middle right"></button>
-                    <button data-value="bottom-left" aria-label="Bottom left"></button>
-                    <button data-value="bottom-center" aria-label="Bottom center"></button>
-                    <button data-value="bottom-right" aria-label="Bottom right"></button>
-                  </div>
-                </div>
-                <div class="divider"></div>
-                <div class="settings-row bare">
-                  <div class="row-label">
                     <div class="label">Zoom</div>
-                    <div class="sub">Scale the app window &mdash; or use Ctrl +, Ctrl &minus;, Ctrl 0</div>
+                    <div class="sub">Or press Ctrl +, Ctrl &minus; and Ctrl 0</div>
                   </div>
                   <div class="zoom-control">
                     <button class="zoom-btn" id="zoom-out" title="Zoom out (Ctrl −)">&minus;</button>
@@ -691,21 +671,7 @@
                     <button class="zoom-reset" id="zoom-reset" title="Reset to 100% (Ctrl 0)">Reset</button>
                   </div>
                 </div>
-              </div>
-
-              <div class="settings-section-title">Sound</div>
-              <div class="card-raised settings-card">
-                <div class="toggle-row">
-                  <div class="row-label">
-                    <div class="label">Dictation sounds</div>
-                    <div class="sub">A soft tick when recording starts and stops</div>
-                  </div>
-                  <button class="switch" id="sound-sounds" role="switch" aria-checked="true"><span class="knob"></span></button>
-                </div>
-              </div>
-
-              <div class="settings-section-title">Startup</div>
-              <div class="card-raised settings-card">
+                <div class="divider"></div>
                 <div class="toggle-row">
                   <span class="label">Launch Sotto at login</span>
                   <button class="switch" id="launch-login" role="switch" aria-checked="true"><span class="knob"></span></button>
@@ -715,10 +681,7 @@
                   <span class="label">Start hidden in the tray</span>
                   <button class="switch" id="start-hidden" role="switch" aria-checked="true"><span class="knob"></span></button>
                 </div>
-              </div>
-
-              <div class="settings-section-title">Updates</div>
-              <div class="card-raised settings-card">
+                <div class="divider"></div>
                 <div class="settings-row bare">
                   <div class="row-label">
                     <div class="label">Sotto <span class="mono-inline" id="app-version"></span></div>
@@ -749,7 +712,7 @@
                 <div class="toggle-row">
                   <div class="row-label">
                     <div class="label">Keep history</div>
-                    <div class="sub">Saves the History list on this device so it survives a restart. Off by default, capped.</div>
+                    <div class="sub">Keep the History list after Sotto restarts. It stays on this device.</div>
                   </div>
                   <button class="switch" id="history-persist-toggle" role="switch" aria-checked="false"><span class="knob"></span></button>
                 </div>
@@ -779,7 +742,7 @@
                 <div class="toggle-row">
                   <div class="row-label">
                     <div class="label">Keep recordings</div>
-                    <div class="sub">Saves each dictation's audio and text for later comparison. Off by default, capped in size.</div>
+                    <div class="sub">Save each dictation&rsquo;s audio and text on this device, to compare later</div>
                   </div>
                   <button class="switch" id="retention-enabled-toggle" role="switch" aria-checked="false"><span class="knob"></span></button>
                 </div>
@@ -798,6 +761,112 @@
                   <span class="link-change" id="open-recordings-folder">Open folder</span>
                 </div>
               </div>
+
+              <!-- Labs (#130): everything that's off by default while it's
+                   new. A switch sets its config flag by name (set_lab_flag);
+                   the feature's page, card or list shows only while it's on. -->
+              <div class="settings-section-title">Labs</div>
+              <div class="card-raised settings-card">
+                <div class="toggle-row">
+                  <div class="row-label">
+                    <div class="label">Transforms</div>
+                    <div class="sub">Select text in any app and press a shortcut to rewrite it</div>
+                  </div>
+                  <button class="switch" data-lab="transforms_enabled" role="switch" aria-checked="false" aria-label="Transforms"><span class="knob"></span></button>
+                </div>
+                <div class="divider"></div>
+                <div class="toggle-row">
+                  <div class="row-label">
+                    <div class="label">Scratchpad</div>
+                    <div class="sub">A private page for notes you dictate instead of typing them into an app</div>
+                  </div>
+                  <button class="switch" data-lab="scratchpad" role="switch" aria-checked="false" aria-label="Scratchpad"><span class="knob"></span></button>
+                </div>
+                <div class="divider"></div>
+                <div class="toggle-row">
+                  <div class="row-label">
+                    <div class="label">Lecture capture</div>
+                    <div class="sub">Turn a long talk into a timestamped transcript. Start it from Home or the tray.</div>
+                  </div>
+                  <button class="switch" data-lab="lecture_mode" role="switch" aria-checked="false" aria-label="Lecture capture"><span class="knob"></span></button>
+                </div>
+                <div class="divider"></div>
+                <div class="toggle-row">
+                  <div class="row-label">
+                    <div class="label">Calibrate</div>
+                    <div class="sub">Read sentences with your trained words, and fix what Sotto mishears</div>
+                  </div>
+                  <button class="switch" data-lab="calibration" role="switch" aria-checked="false" aria-label="Calibrate"><span class="knob"></span></button>
+                </div>
+                <div class="divider"></div>
+                <div class="toggle-row">
+                  <div class="row-label">
+                    <div class="label">Voice correction</div>
+                    <div class="sub">Say &ldquo;correction: Sotto, not soda&rdquo; to fix what you just said</div>
+                  </div>
+                  <button class="switch" data-lab="voice_correction" role="switch" aria-checked="false" aria-label="Voice correction"><span class="knob"></span></button>
+                </div>
+                <div class="divider"></div>
+                <div class="toggle-row">
+                  <div class="row-label">
+                    <div class="label">Backtrack</div>
+                    <div class="sub">Say &ldquo;scratch that&rdquo; to delete what you just said</div>
+                  </div>
+                  <button class="switch" data-lab="backtrack" role="switch" aria-checked="false" aria-label="Backtrack"><span class="knob"></span></button>
+                </div>
+                <div class="divider"></div>
+                <div class="toggle-row">
+                  <div class="row-label">
+                    <div class="label">Auto tone</div>
+                    <div class="sub">AI polish matches the text already in the field. It&rsquo;s read on this device and never saved.</div>
+                  </div>
+                  <button class="switch" data-lab="auto_tone" role="switch" aria-checked="false" aria-label="Auto tone"><span class="knob"></span></button>
+                </div>
+                <div class="divider"></div>
+                <div class="toggle-row">
+                  <div class="row-label">
+                    <div class="label">Variable names</div>
+                    <div class="sub">In a code editor, say &ldquo;camel case user name&rdquo; to type userName</div>
+                  </div>
+                  <button class="switch" data-lab="variable_recognition" role="switch" aria-checked="false" aria-label="Variable names"><span class="knob"></span></button>
+                </div>
+                <div id="code-editors-section" hidden>
+                  <div class="settings-row bare" style="flex-direction:column; align-items:stretch; gap:10px; padding-top:0">
+                    <div class="page-head-row">
+                      <div class="row-label">
+                        <div class="label">Code editors</div>
+                        <div class="sub">Variable names work in these apps</div>
+                      </div>
+                      <span class="link-change" id="code-editors-add">+ Add app</span>
+                    </div>
+                    <div class="card-recessed dict-entries-container" style="margin-bottom:0">
+                      <div class="dict-entries-list" id="code-editors-list"></div>
+                    </div>
+                  </div>
+                </div>
+                <div class="divider"></div>
+                <!-- No switch: an empty list is auto-send off. -->
+                <div class="settings-row bare" style="flex-direction:column; align-items:stretch; gap:10px">
+                  <div class="page-head-row">
+                    <div class="row-label">
+                      <div class="label">Auto-send</div>
+                      <div class="sub">Sotto presses Enter after your text lands in these apps</div>
+                    </div>
+                    <span class="link-change" id="auto-send-add">+ Add app</span>
+                  </div>
+                  <div class="card-recessed dict-entries-container" style="margin-bottom:0">
+                    <div class="dict-entries-list" id="auto-send-list"></div>
+                  </div>
+                </div>
+                <div class="divider"></div>
+                <div class="toggle-row">
+                  <div class="row-label">
+                    <div class="label">Save memory in the tray</div>
+                    <div class="sub">Sotto uses less memory while it waits in the tray. Takes effect after a restart.</div>
+                  </div>
+                  <button class="switch" data-lab="lazy_windows" role="switch" aria-checked="false" aria-label="Save memory in the tray"><span class="knob"></span></button>
+                </div>
+              </div>
             </div>
         
         </div>
@@ -808,13 +877,13 @@
     <div class="modal-scrim" id="hotkey-modal" hidden>
       <div class="modal-card" role="dialog" aria-labelledby="hotkey-modal-title">
         <div class="modal-head">
-          <span class="modal-title" id="hotkey-modal-title">Choose your dictation hotkey</span>
+          <span class="modal-title" id="hotkey-modal-title">Choose your dictation key</span>
           <button class="winbtn" id="hotkey-modal-close" title="Cancel"><svg width="10" height="10"><line x1="1" y1="1" x2="9" y2="9" /><line x1="9" y1="1" x2="1" y2="9" /></svg></button>
         </div>
         <div class="modal-body">
           <div class="capture" id="hotkey-capture" tabindex="0">
             <div class="capture-title" id="capture-title">Press any key or mouse button</div>
-            <div class="capture-sub" id="capture-sub">Focus this box, then tap the key you want. Streamdeck / macro pads work if they emit a standard key.</div>
+            <div class="capture-sub" id="capture-sub">Click here, then press the key you want. A Stream Deck or macro pad works if it sends a standard key.</div>
           </div>
           <div class="hotkey-list-head">or pick from the list</div>
           <div class="hotkey-list" id="hotkey-list"></div>
@@ -836,13 +905,13 @@
           </div>
           <div>
             <div class="settings-section-title">What it does</div>
-            <textarea class="dict-edit-input" id="transform-prompt" dir="auto" rows="3" placeholder="An instruction for the local model, e.g. Make it warmer and more casual." style="width:100%;resize:vertical"></textarea>
+            <textarea class="dict-edit-input" id="transform-prompt" dir="auto" rows="3" placeholder="Tell it what to do, e.g. Make it warmer and more casual." style="width:100%;resize:vertical"></textarea>
           </div>
           <div>
             <div class="settings-section-title">Shortcut</div>
             <div class="capture" id="transform-capture" tabindex="0">
               <div class="capture-title transform-keys" id="transform-capture-keys" style="justify-content:center">Press the shortcut</div>
-              <div class="capture-sub" id="transform-capture-sub">Focus this box, then press Ctrl, Alt or Win plus one key.</div>
+              <div class="capture-sub" id="transform-capture-sub">Click here, then press Ctrl, Alt or Win plus one key.</div>
             </div>
           </div>
           <div class="toggle-row" style="padding:0">

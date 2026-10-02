@@ -407,12 +407,12 @@ pub struct Config {
     pub phonetic_correction: bool,
     /// Voice correction (#20): "correction: Claude, not clawed" right after a
     /// dictation fixes that dictation instead of being typed. Off by default
-    /// while it's new, and `config.toml` only: no Settings row yet.
+    /// while it's new; a Settings > Labs switch (#130).
     #[serde(default)]
     pub voice_correction: bool,
     /// Backtrack (#26): a take that is only "scratch that", "undo that" or
     /// "delete that" deletes the last dictation instead of being typed. Off
-    /// by default while it's new; `config.toml` only.
+    /// by default while it's new; a Settings > Labs switch.
     #[serde(default)]
     pub backtrack: bool,
     /// Glyphs spoken quote commands ("open quote"/"quote ... unquote")
@@ -444,8 +444,8 @@ pub struct Config {
     /// characters before the caret in the focused field (UI Automation, on the
     /// machine; never a password field or a terminal) so polish matches its
     /// register. A per-app tone still wins; the field's text stands in for
-    /// `tone`. Never logged or stored. Off by default while it's new;
-    /// `config.toml` only, read at launch.
+    /// `tone`. Never logged or stored. Off by default while it's new; a
+    /// Settings > Labs switch, read at each take.
     #[serde(default)]
     pub auto_tone: bool,
     /// Auto-send (#21): apps, as `stats::app_name()` gives them, where Enter
@@ -455,17 +455,17 @@ pub struct Config {
     pub auto_send: Vec<String>,
     /// Variable recognition (#27): in a code editor, "camel case user name"
     /// types userName (also pascal, snake, kebab and constant case; see
-    /// `polish::apply_casing_commands`). Off by default while it's new;
-    /// `config.toml` only, read at launch.
+    /// `polish::apply_casing_commands`). Off by default while it's new; a
+    /// Settings > Labs switch.
     #[serde(default)]
     pub variable_recognition: bool,
     /// The apps variable recognition runs in, as `stats::app_name()` gives
     /// them: VS Code by default (its `Code.exe` is named "VS Code"), plus any
-    /// added in Settings > Dictation.
+    /// added in Settings > Labs.
     #[serde(default = "default_code_editors")]
     pub code_editors: Vec<String>,
-    /// Arms the Transform chords (#18). Off by default while the feature is
-    /// new: the page shows, but no chord fires until this is on.
+    /// Arms the Transform chords (#18) and shows their page. Off by default
+    /// while the feature is new; a Settings > Labs switch.
     #[serde(default)]
     pub transforms_enabled: bool,
     /// Select-and-rewrite actions, each on its own chord.
@@ -473,12 +473,12 @@ pub struct Config {
     pub transforms: Vec<Transform>,
     /// The Pronunciation page's Calibrate card (#22): read sentences built
     /// from your trained words, and each one Sotto heard differently can be
-    /// added as a correction. Off by default while it's new; config-only.
+    /// added as a correction. Off by default while it's new; a Labs switch.
     #[serde(default)]
     pub calibration: bool,
     /// Scratchpad (#19): a private pad page in the main window. A take spoken
     /// into it lands there instead of being typed. Off by default while it's
-    /// new; `config.toml` only.
+    /// new; a Settings > Labs switch.
     #[serde(default)]
     pub scratchpad: bool,
     /// The chord that opens and closes the pad, parsed like a Transform's.
@@ -491,14 +491,14 @@ pub struct Config {
     /// Lecture mode (#23): long-form capture to a timestamped transcript in
     /// `data_dir()/lectures/`, started and stopped from the tray menu and
     /// Home. Nothing is typed (see `lecture.rs`). Off by default while it's
-    /// new; `config.toml` only, read at launch.
+    /// new; a Settings > Labs switch.
     #[serde(default)]
     pub lecture_mode: bool,
     /// Lazy windows (#13): build the main window and the tray menu when they
     /// are opened and destroy them when they close, so their WebView2 renderers
     /// aren't held while Sotto sits in the tray (see `app_windows.rs`). Off by
-    /// default until it's been checked on a real install; `config.toml` only,
-    /// read at launch.
+    /// default until it's been checked on a real install; a Settings > Labs
+    /// switch, read at launch.
     #[serde(default)]
     pub lazy_windows: bool,
     /// Start minimized to the tray (no window shown on launch).
@@ -834,6 +834,24 @@ impl Config {
         data_dir().join("config.toml")
     }
 
+    /// A Settings > Labs switch (#130): the features that are off by default
+    /// while they're new, by their config name. This match is the allow-list:
+    /// any other name, `set_lab_flag` can't set.
+    pub fn lab_flag(&mut self, name: &str) -> Option<&mut bool> {
+        Some(match name {
+            "transforms_enabled" => &mut self.transforms_enabled,
+            "scratchpad" => &mut self.scratchpad,
+            "lecture_mode" => &mut self.lecture_mode,
+            "calibration" => &mut self.calibration,
+            "voice_correction" => &mut self.voice_correction,
+            "backtrack" => &mut self.backtrack,
+            "auto_tone" => &mut self.auto_tone,
+            "variable_recognition" => &mut self.variable_recognition,
+            "lazy_windows" => &mut self.lazy_windows,
+            _ => return None,
+        })
+    }
+
     /// Load config from disk, creating a default file on first run.
     pub fn load_or_init() -> anyhow::Result<Self> {
         let path = Self::path();
@@ -1050,6 +1068,24 @@ max_mb = 250
         // An emptied list stays empty: the default fills a missing key only.
         let cfg: Config = toml::from_str(&format!("{old}code_editors = []\n")).unwrap();
         assert!(cfg.code_editors.is_empty());
+    }
+
+    #[test]
+    fn a_labs_switch_sets_its_own_flag_and_no_other_key() {
+        let labs = [
+            "transforms_enabled", "scratchpad", "lecture_mode", "calibration", "voice_correction",
+            "backtrack", "auto_tone", "variable_recognition", "lazy_windows",
+        ];
+        let mut cfg = Config::default();
+        for name in labs {
+            *cfg.lab_flag(name).unwrap() = true;
+        }
+        assert!(cfg.transforms_enabled && cfg.scratchpad && cfg.lecture_mode && cfg.calibration);
+        assert!(cfg.voice_correction && cfg.backtrack && cfg.auto_tone && cfg.variable_recognition && cfg.lazy_windows);
+        // Settings that aren't experimental, and made-up keys, are refused.
+        for name in ["start_hidden", "persist_history", "stats_enabled", "sound_enabled", "hotkey", "", "Scratchpad"] {
+            assert!(cfg.lab_flag(name).is_none(), "{name}");
+        }
     }
 
     #[test]
