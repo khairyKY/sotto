@@ -45,7 +45,7 @@ const mock = {
   history: [
     // Arabic-first and code-switched samples keep bidi rendering (#42) checkable in the preview.
     // raw/tier/fallback exist for this session's rows only (#25); the last two stand in for rows reloaded from history.jsonl.
-    { time: "2:31 PM", text: "افتح الـ terminal وشغّل الـ build", raw: "يعني افتح ال terminal و شغّل ال build", tier: "ai", fallback: "" },
+    { time: "2:31 PM", text: "افتح الـ terminal وشغّل الـ build", raw: "يعني افتح ال terminal و شغّل ال build", tier: "rules", fallback: "arabic" },
     { time: "2:20 PM", text: "الاجتماع الساعة اتناشر ونص", raw: "الاجتماع الساعة اتناشر ونص", tier: "rules", fallback: "short" },
     { time: "2:14 PM", text: "Let's ship the overlay states first.", raw: "um so let's let's ship the overlay states first", tier: "ai", fallback: "" },
     { time: "1:58 PM", text: "you@example.com", raw: "my main email", tier: "rules", fallback: "llm-error" },
@@ -1136,10 +1136,10 @@ function diffHtml(a, b) {
 // and "Use what I said" (raw to the clipboard; see copy_original).
 // Why AI mode kept the Rules result: polish.rs's `fallback` codes, in words.
 const AI_SKIPPED = {
-  short: "too short for AI", "no-op": "already clean", unavailable: "AI isn't downloaded yet",
-  empty: "AI gave no answer", "llm-error": "AI failed", "line-breaks": "AI lost your line breaks",
-  identifiers: "AI changed code names", "dropped-words": "AI dropped words", "new-words": "AI added words",
-  "example-leak": "AI added words",
+  arabic: "AI polish is off for Arabic", short: "too short for AI", "no-op": "already clean",
+  unavailable: "AI isn't downloaded yet", empty: "AI gave no answer", "llm-error": "AI failed",
+  "line-breaks": "AI lost your line breaks", identifiers: "AI changed code names",
+  "dropped-words": "AI dropped words", "new-words": "AI added words", "example-leak": "AI added words",
 };
 function reviewPanel(e) {
   const panel = document.createElement("div");
