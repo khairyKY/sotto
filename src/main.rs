@@ -426,6 +426,12 @@ struct SettingsPayload {
     transform_defaults: Vec<config::Transform>,
     /// Shows the Pronunciation page's Calibrate card (#22).
     calibration: bool,
+    /// The rest of Settings > Labs (#130), as `Config::lab_flag` names them.
+    scratchpad: bool,
+    voice_correction: bool,
+    backtrack: bool,
+    auto_tone: bool,
+    lazy_windows: bool,
     /// Lecture mode (#23): shows Home's card and the tray item, whether a
     /// lecture is being captured now, and the transcripts' folder ("" until
     /// the first one is written).
@@ -521,7 +527,7 @@ fn get_settings(state: tauri::State<'_, AppState>) -> SettingsPayload {
                 id: "parakeet-v3".into(),
                 name: "Parakeet v3".into(),
                 variant: "· English".into(),
-                meta: "NVIDIA · int8 quantized".into(),
+                meta: "NVIDIA".into(),
                 state: if parakeet_installed { "installed" } else { "download" }.into(),
                 size: parakeet_size,
                 selected: cfg.asr.model == "parakeet-v3",
@@ -530,7 +536,7 @@ fn get_settings(state: tauri::State<'_, AppState>) -> SettingsPayload {
                 id: "whisper-turbo".into(),
                 name: "Whisper turbo".into(),
                 variant: "· 99 languages".into(),
-                meta: "OpenAI · large-v3-turbo q5_0".into(),
+                meta: "OpenAI".into(),
                 state: if whisper_installed { "installed" } else { "download" }.into(),
                 size: whisper_size,
                 selected: cfg.asr.model == "whisper-turbo",
@@ -539,7 +545,7 @@ fn get_settings(state: tauri::State<'_, AppState>) -> SettingsPayload {
                 id: "egyptian-small".into(),
                 name: "Egyptian Arabic".into(),
                 variant: "· عامية + English".into(),
-                meta: "Whisper small · code-switch tuned".into(),
+                meta: "Whisper small, tuned for Egyptian speech".into(),
                 state: if egyptian_installed { "installed" } else { "download" }.into(),
                 size: egyptian_size,
                 selected: cfg.asr.model == "egyptian-small",
@@ -570,6 +576,11 @@ fn get_settings(state: tauri::State<'_, AppState>) -> SettingsPayload {
         transforms: c.transforms.lock().unwrap().clone(),
         transform_defaults: config::default_transforms(),
         calibration: cfg.calibration,
+        scratchpad: cfg.scratchpad,
+        voice_correction: cfg.voice_correction,
+        backtrack: cfg.backtrack,
+        auto_tone: cfg.auto_tone,
+        lazy_windows: cfg.lazy_windows,
         lecture_mode: cfg.lecture_mode,
         lecture: c.lecture.load(Ordering::Relaxed),
         lectures_dir: Some(lecture::dir()).filter(|d| d.is_dir()).map(|d| d.display().to_string()).unwrap_or_default(),
@@ -824,12 +835,35 @@ fn set_transforms(transforms: Vec<config::Transform>, state: tauri::State<'_, Ap
     cfg.transforms = list;
     let _ = cfg.save();
 }
+/// A Settings > Labs switch (#130), and the Transforms page's own. Only the
+/// flags `Config::lab_flag` names. Each takes effect at once, except
+/// `lazy_windows`, which is read at launch.
 #[tauri::command]
-fn set_transforms_enabled(enabled: bool, state: tauri::State<'_, AppState>) {
-    state.controls.transforms_enabled.store(enabled, Ordering::Relaxed);
-    let mut cfg = state.cfg.lock().unwrap();
-    cfg.transforms_enabled = enabled;
-    let _ = cfg.save();
+fn set_lab_flag(name: String, on: bool, app: tauri::AppHandle, state: tauri::State<'_, AppState>) {
+    // A copy out of the lock (#127): the menu resize below is a window call.
+    let cfg = {
+        let mut cfg = state.cfg.lock().unwrap();
+        let Some(flag) = cfg.lab_flag(&name) else { return };
+        *flag = on;
+        let _ = cfg.save();
+        cfg.clone()
+    };
+    let c = &state.controls;
+    match name.as_str() {
+        "transforms_enabled" => c.transforms_enabled.store(on, Ordering::Relaxed),
+        "variable_recognition" => *c.code_editors.lock().unwrap() = if on { cfg.code_editors } else { Vec::new() },
+        "scratchpad" => scratchpad::init(&cfg),
+        "lecture_mode" => {
+            // Off mid-lecture: nothing would be left to stop it from.
+            if !on {
+                let _ = state.tx.send(DictationEvent::Lecture(false));
+            }
+            if let Some(w) = app.get_webview_window("menu") {
+                app_windows::fit_menu(&w, on);
+            }
+        }
+        _ => {}
+    }
 }
 #[tauri::command]
 fn set_launch_login(enabled: bool) {
@@ -1243,7 +1277,7 @@ fn main() -> anyhow::Result<()> {
         .manage(state)
         .invoke_handler(tauri::generate_handler![
             get_settings, set_hotkey, set_activation, set_polish, set_threshold,
-            set_dictionary, set_tone, set_app_tones, set_auto_send, set_code_editors, set_transforms, set_transforms_enabled, set_launch_login, set_start_hidden, set_theme, copy_text,
+            set_dictionary, set_tone, set_app_tones, set_auto_send, set_code_editors, set_transforms, set_lab_flag, set_launch_login, set_start_hidden, set_theme, copy_text,
             set_overlay_position, set_overlay_always_visible, get_overlay_settings, start_dictation, stop_dictation, set_lecture, mark_overlay_idle,
             set_asr_model, set_asr_language,
             open_url, check_update, install_update, retry_last, cancel_dictation, dismiss_take,
@@ -1275,11 +1309,7 @@ fn main() -> anyhow::Result<()> {
                 harden_utility_window(&w, false);
                 // An Alt+F4 on it hides it, as for the main window (#124).
                 app_windows::keep_menu(&w);
-                // The lecture item (#23) is one more 33px row than
-                // tauri.conf.json's 380 has room for.
-                if cfg.lecture_mode {
-                    let _ = w.set_size(tauri::LogicalSize::new(230.0, 413.0));
-                }
+                app_windows::fit_menu(&w, cfg.lecture_mode);
             }
             if let Some(w) = app.get_webview_window("settings") {
                 if (cfg.zoom - 1.0).abs() > f64::EPSILON {
@@ -1682,7 +1712,6 @@ fn spawn_pipeline(
     let take_info = controls.take_info.clone();
     let polish_mode = controls.polish_mode.clone();
     let chunking = cfg.chunked_transcription;
-    let auto_tone = cfg.auto_tone;
     let (work_tx, work_rx) = crossbeam_channel::unbounded::<Work>();
     // True while a Pronunciation-Trainer peek transcription is in flight, so
     // the audio thread never piles a second one behind it — see Work::Peek.
@@ -2083,6 +2112,7 @@ fn spawn_pipeline(
                             // Auto tone (#28): read the field's text off this
                             // thread, for the AI tier only (nothing else uses it).
                             let ai = PolishMode::from_u8(polish_mode.load(Ordering::Relaxed)) == PolishMode::Ai;
+                            let auto_tone = app.state::<AppState>().cfg.lock().unwrap().auto_tone;
                             take_context = (auto_tone && ai).then(|| uia::spawn_read(focus_target.load(Ordering::Relaxed)));
                             // Warm the LLM sidecar while the user speaks.
                             let _ = work_tx.send(Work::Prewarm);

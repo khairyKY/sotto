@@ -135,11 +135,7 @@ pub fn build(
     // From here on, what `main`'s setup does to the ones Tauri builds at launch.
     if label == "menu" {
         crate::harden_utility_window(&w, false);
-        // The lecture item (#23) is one more 33px row than tauri.conf.json's
-        // 380 has room for.
-        if lecture_mode {
-            let _ = w.set_size(tauri::LogicalSize::new(230.0, 413.0));
-        }
+        fit_menu(&w, lecture_mode);
     } else {
         if (zoom - 1.0).abs() > f64::EPSILON {
             let _ = w.set_zoom(zoom.clamp(crate::ZOOM_MIN, crate::ZOOM_MAX));
@@ -192,6 +188,12 @@ pub fn keep_menu(w: &WebviewWindow) {
             let _ = closing.hide();
         }
     });
+}
+
+/// The tray menu's height: the lecture item (#23) is one more 33px row than
+/// tauri.conf.json's 380 has room for.
+pub fn fit_menu(w: &WebviewWindow, lecture_mode: bool) {
+    let _ = w.set_size(tauri::LogicalSize::new(230.0, if lecture_mode { 413.0 } else { 380.0 }));
 }
 
 /// Opens the main window, on `page` if one is given: the tray icon, a tray
