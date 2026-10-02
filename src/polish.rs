@@ -479,6 +479,21 @@ pub(crate) fn is_arabic(c: char) -> bool {
     matches!(c, '\u{0600}'..='\u{06FF}' | '\u{0750}'..='\u{077F}' | '\u{08A0}'..='\u{08FF}' | '\u{FB50}'..='\u{FDFF}' | '\u{FE70}'..='\u{FEFC}')
 }
 
+/// One spelling for comparing Arabic words (#115): an engine writes the same
+/// word with or without hamza on its alef, with final ى or ي, ة or ه, with or
+/// without marks and tatweel. `None` drops a mark or tatweel; every other
+/// letter, case included, comes back as is. For comparing only: what gets
+/// typed keeps the engine's spelling.
+pub(crate) fn fold(c: char) -> Option<char> {
+    match c {
+        'أ' | 'إ' | 'آ' | 'ٱ' => Some('ا'),
+        'ى' => Some('ي'),
+        'ة' => Some('ه'),
+        '\u{0640}' | '\u{064B}'..='\u{065F}' | '\u{0670}' => None,
+        c => Some(c),
+    }
+}
+
 /// An AI rewrite must keep at least this share of its input's content words
 /// (#65). Measured on the recordings review (#5): every clean AI take lost
 /// at most one content word (97%+ kept); the three that dropped clauses kept
@@ -488,14 +503,15 @@ const MIN_KEPT_PCT: usize = 96;
 /// (vocabulary words aside). Clean takes added at most one (a respelling).
 const MAX_NEW_WORDS: usize = 2;
 
-/// The words a rewrite has to keep, lowercased. Skips what cleanup may
+/// The words a rewrite has to keep, lowercased and folded (`fold`, #115:
+/// a respelled Arabic word is kept, not lost). Skips what cleanup may
 /// legitimately change: function words, fillers (the prompt's own "like" /
 /// "يعني" too), numbers in digits or words (the model may reformat them),
 /// contractions, and one-letter ASR fragments.
 pub(crate) fn content_words(s: &str) -> Vec<String> {
     s.split(|c: char| !(c.is_alphanumeric() || matches!(c, '\'' | '’')))
         .filter(|w| w.chars().count() > 1 && !w.contains(['\'', '’']) && !w.contains(|c: char| c.is_ascii_digit()))
-        .map(str::to_lowercase)
+        .map(|w| w.chars().filter_map(fold).collect::<String>().to_lowercase())
         .filter(|w| {
             !FUNCTION_WORDS.contains(&w.as_str())
                 && !FILLERS.contains(&w.as_str())
@@ -635,7 +651,7 @@ const FORMATTING_COMMANDS: &[(&str, &str)] = &[("new paragraph", "\n\n"), ("new 
 fn apply_formatting_commands(raw: &str) -> String {
     let mut text = raw.to_string();
     for (phrase, brk) in FORMATTING_COMMANDS {
-        text = replace_whole_ci(&text, phrase, brk).0;
+        text = replace_whole_ci(&text, phrase, brk, false).0;
     }
     // An ASR that hears the command as its own sentence punctuates it
     // ("list. New line. Apples."), which left ". Apples." on the new line
@@ -1162,25 +1178,42 @@ fn replace_and_trim_before(hay: &str, needle: &str, rep: &str) -> String {
 }
 
 /// First whole-word, case-insensitive occurrence of `needle` in `hay`, as a
-/// byte range into `hay`. Same boundary rule as `replace_whole_ci` (kept
-/// independent rather than sharing code with it — `replace_whole_ci`'s
-/// left-boundary check relies on scanning the ORIGINAL string with a single
-/// global index, and slicing into it mid-scan would silently break that
-/// check at the slice's own start).
+/// byte range into `hay` (see `word_matches`).
 pub(crate) fn find_whole_ci(hay: &str, needle: &str) -> Option<(usize, usize)> {
-    let hay_lc = hay.to_ascii_lowercase();
-    let needle_lc = needle.to_ascii_lowercase();
-    let mut i = 0;
-    while i <= hay_lc.len() {
-        let start = i + hay_lc[i..].find(&needle_lc)?;
-        let end = start + needle_lc.len();
-        if is_edge(&hay[..start], &hay[end..]) {
-            return Some((start, end));
+    word_matches(hay, needle, false).first().copied()
+}
+
+/// Every whole-word match of `needle` in `hay`, left to right and not
+/// overlapping, as byte ranges into `hay`. Compared folded: ASCII case and
+/// Arabic spelling (`fold`, #115) ignored, so on text with no Arabic the
+/// ranges are exactly those of a `to_ascii_lowercase` compare. A match takes
+/// the marks on its own last letter with it. `particles`: see `is_edge`.
+fn word_matches(hay: &str, needle: &str, particles: bool) -> Vec<(usize, usize)> {
+    let key = |c: char| fold(c).map(|c| c.to_ascii_lowercase());
+    let needle: String = needle.chars().filter_map(key).collect();
+    // The folded hay, and for each of its bytes where its letter sits in `hay`.
+    let (mut f, mut at) = (String::with_capacity(hay.len()), Vec::with_capacity(hay.len() + 1));
+    for (i, c) in hay.char_indices() {
+        if let Some(k) = key(c) {
+            f.push(k);
+            at.resize(f.len(), i);
         }
-        let ch_len = hay[start..].chars().next().map_or(1, |c| c.len_utf8());
-        i = start + ch_len;
     }
-    None
+    at.push(hay.len());
+    let mut found = Vec::new();
+    let mut i = 0;
+    while !needle.is_empty() {
+        let Some(rel) = f[i..].find(&needle) else { break };
+        let (start, end) = (i + rel, i + rel + needle.len());
+        if is_edge(&f[..start], &f[end..], particles) {
+            found.push((at[start], at[end]));
+            i = end;
+        } else {
+            // Boundary failed: step one letter and keep scanning.
+            i = start + f[start..].chars().next().map_or(1, char::len_utf8);
+        }
+    }
+    found
 }
 
 /// Trim whitespace AND a leading/trailing comma. Parakeet punctuates a
@@ -1406,7 +1439,9 @@ fn unmask_from(text: &str, made: &[String], first: usize) -> String {
 /// of it matches, unless the term is one ordinary English word ("Cursor",
 /// "Notion"): then only the trained casing does, or every "cursor" would come
 /// out capitalized, `dictionary_safe`'s trap again. Longest term first, so
-/// "Nuvanto Flow" is taken whole before "Flow".
+/// "Nuvanto Flow" is taken whole before "Flow". Matched like a Word entry
+/// (#115): behind Arabic particles and in any Arabic spelling, which comes
+/// back as heard, never respelled to the term's.
 fn mask_terms(text: &str, terms: &[String], made: &mut Vec<String>) -> String {
     let mut terms: Vec<&str> = terms.iter().map(|t| t.trim()).filter(|t| !t.is_empty()).collect();
     terms.sort_unstable();
@@ -1421,13 +1456,15 @@ fn mask_terms(text: &str, terms: &[String], made: &mut Vec<String>) -> String {
         let exact = !term.contains(' ') && is_real_word(&english, &term.to_lowercase());
         loop {
             let found = if exact {
-                text.match_indices(term).map(|(s, _)| (s, s + term.len())).find(|&(s, e)| is_edge(&text[..s], &text[e..]))
+                text.match_indices(term).map(|(s, _)| (s, s + term.len())).find(|&(s, e)| is_edge(&text[..s], &text[e..], false))
             } else {
-                find_whole_ci(&text, term)
+                word_matches(&text, term, true).first().copied()
             };
             let Some((start, end)) = found else { break };
+            let heard = &text[start..end];
+            let back = if heard.eq_ignore_ascii_case(term) { term } else { heard }.to_string();
             text.replace_range(start..end, placeholder(made.len()).encode_utf8(&mut [0; 4]));
-            made.push(term.to_string());
+            made.push(back);
         }
     }
     text
@@ -1856,7 +1893,12 @@ fn apply_dictionary(text: &str, dict: &[(Vec<String>, String, EntryKind)], only:
         }
         for spoken in phrases {
             if !spoken.trim().is_empty() {
-                let (next, n) = replace_whole_ci(&out, spoken, replacement);
+                // A Word entry fires behind Arabic particles (#115), unless it
+                // writes an Arabic word in Latin: that is a name (نور -> Nour),
+                // and النور is "the light", not Nour (#98).
+                let name = spoken.chars().any(is_arabic) && !replacement.chars().any(is_arabic);
+                let particles = only == EntryKind::Word && !name;
+                let (next, n) = replace_whole_ci(&out, spoken, replacement, particles);
                 out = next;
                 hits += n;
             }
@@ -1865,45 +1907,37 @@ fn apply_dictionary(text: &str, dict: &[(Vec<String>, String, EntryKind)], only:
     (out, hits)
 }
 
-fn replace_whole_ci(hay: &str, needle: &str, rep: &str) -> (String, usize) {
-    let hay_lc = hay.to_ascii_lowercase();
-    let needle_lc = needle.to_ascii_lowercase();
-
+/// `rep` in place of each `word_matches` match. Whatever sits around a match,
+/// an attached particle included, stays as heard.
+fn replace_whole_ci(hay: &str, needle: &str, rep: &str, particles: bool) -> (String, usize) {
+    let found = word_matches(hay, needle, particles);
     let mut out = String::with_capacity(hay.len());
-    let mut count = 0;
-    let mut i = 0;
-    while i <= hay_lc.len() {
-        match hay_lc[i..].find(&needle_lc) {
-            Some(rel) => {
-                let start = i + rel;
-                let end = start + needle_lc.len();
-                if is_edge(&hay[..start], &hay[end..]) {
-                    out.push_str(&hay[i..start]);
-                    out.push_str(rep);
-                    count += 1;
-                    i = end;
-                } else {
-                    // Boundary failed — emit one char and keep scanning.
-                    let ch_len = hay[start..].chars().next().map_or(1, |c| c.len_utf8());
-                    out.push_str(&hay[i..start + ch_len]);
-                    i = start + ch_len;
-                }
-            }
-            None => {
-                out.push_str(&hay[i..]);
-                break;
-            }
-        }
+    let mut last = 0;
+    for &(start, end) in &found {
+        out.push_str(&hay[last..start]);
+        out.push_str(rep);
+        last = end;
     }
-    (out, count)
+    out.push_str(&hay[last..]);
+    (out, found.len())
 }
 
 /// A match between `before` and `after` is a whole word: no letter or digit
 /// of any script touches it. ASCII-only letters let an Arabic entry fire
-/// inside a longer Arabic word (#98). ASCII lowering keeps the offsets valid
-/// in the original text.
-fn is_edge(before: &str, after: &str) -> bool {
+/// inside a longer Arabic word (#98). With `particles` (#115), Arabic
+/// particles may be glued on in front, alone or stacked (وبال, لل): و ف ب ل
+/// ك, then the article ال, with a word edge before them (in folded text).
+///
+/// ponytail: letters, not a lexicon, so a word that only looks like
+/// particles + the entry (برد, "cold", for an entry رد) matches too.
+/// Upgrade path: a stem list, if that shows up in real takes.
+fn is_edge(before: &str, after: &str, particles: bool) -> bool {
     let word = |c: Option<char>| c.is_some_and(char::is_alphanumeric);
+    let before = if particles {
+        before.strip_suffix("ال").unwrap_or(before).trim_end_matches(['و', 'ف', 'ب', 'ل', 'ك'])
+    } else {
+        before
+    };
     !word(before.chars().next_back()) && !word(after.chars().next())
 }
 
@@ -2668,6 +2702,128 @@ mod tests {
     }
 
     #[test]
+    fn fold_reads_arabic_spelling_variants_as_one() {
+        let folded = |s: &str| s.chars().filter_map(fold).collect::<String>();
+        for (said, plain) in [
+            ("أيه", "ايه"),
+            ("إيه", "ايه"),
+            ("آخر", "اخر"),
+            ("ٱلكتاب", "الكتاب"),
+            ("على", "علي"),
+            ("مدرسة", "مدرسه"),
+            ("كُشَرِيّ", "كشري"),
+            ("كوشـــري", "كوشري"),
+            ("Build ok", "Build ok"),
+        ] {
+            assert_eq!(folded(said), plain, "{said}");
+        }
+    }
+
+    #[test]
+    fn dictionary_matches_arabic_behind_particles_and_in_any_spelling() {
+        let dict: Vec<_> = [("كوشري", "كشري"), ("ايه", "إيه"), ("zor x", "Zorvex"), ("terminal", "Terminal"), ("build", "Build")]
+            .into_iter()
+            .map(|(said, to)| (vec![said.to_string()], to.to_string(), EntryKind::Word))
+            .collect();
+        for (take, typed, hits) in [
+            // The measured misses (Phase B audit, dict-4..7): the particle stays as heard.
+            ("جبت كوشري امبارح", "جبت كشري امبارح", 1),
+            ("جبت الكوشري وبالكوشري ده شبعت", "جبت الكشري وبالكشري ده شبعت", 2),
+            ("قد ايه", "قد إيه", 1),
+            ("قد أيه", "قد إيه", 1),
+            ("فكوشري، لكوشري، للكوشري، وكوشرى", "فكشري، لكشري، للكشري، وكشري", 4),
+            // Marks on the particle stay; the entry is typed exactly as written.
+            ("وَبِالكُوشَرِي", "وَبِالكشري", 1),
+            // Never inside a longer stem, nor behind a letter that isn't a particle.
+            ("الكوشريات مكوشري", "الكوشريات مكوشري", 0),
+            // A Latin entry right after the article, with or without tatweel.
+            ("اسأل الـzor X عن الموضوع", "اسأل الـZorvex عن الموضوع", 1),
+            ("افتح الterminal وشغل الـbuild", "افتح الTerminal وشغل الـBuild", 2),
+            ("سterminal", "سterminal", 0),
+        ] {
+            assert_eq!(apply_dictionary(take, &dict, EntryKind::Word), (typed.into(), hits), "{take}");
+        }
+        // Snippets keep to whole words.
+        let snippet = vec![(vec!["عنواني".to_string()], "12 Example St".to_string(), EntryKind::Snippet)];
+        assert_eq!(apply_dictionary("وعنواني", &snippet, EntryKind::Snippet), ("وعنواني".into(), 0));
+    }
+
+    #[test]
+    fn english_matching_is_byte_for_byte_the_old_one() {
+        // `find_whole_ci` and `replace_whole_ci` as they were before #115.
+        fn old_find(hay: &str, needle: &str) -> Option<(usize, usize)> {
+            let hay_lc = hay.to_ascii_lowercase();
+            let needle_lc = needle.to_ascii_lowercase();
+            let mut i = 0;
+            while i <= hay_lc.len() {
+                let start = i + hay_lc[i..].find(&needle_lc)?;
+                let end = start + needle_lc.len();
+                if is_edge(&hay[..start], &hay[end..], false) {
+                    return Some((start, end));
+                }
+                i = start + hay[start..].chars().next().map_or(1, |c| c.len_utf8());
+            }
+            None
+        }
+        fn old_replace(hay: &str, needle: &str, rep: &str) -> (String, usize) {
+            let hay_lc = hay.to_ascii_lowercase();
+            let needle_lc = needle.to_ascii_lowercase();
+            let (mut out, mut count, mut i) = (String::new(), 0, 0);
+            while i <= hay_lc.len() {
+                match hay_lc[i..].find(&needle_lc) {
+                    Some(rel) => {
+                        let (start, end) = (i + rel, i + rel + needle_lc.len());
+                        if is_edge(&hay[..start], &hay[end..], false) {
+                            out.push_str(&hay[i..start]);
+                            out.push_str(rep);
+                            count += 1;
+                            i = end;
+                        } else {
+                            let ch_len = hay[start..].chars().next().map_or(1, |c| c.len_utf8());
+                            out.push_str(&hay[i..start + ch_len]);
+                            i = start + ch_len;
+                        }
+                    }
+                    None => {
+                        out.push_str(&hay[i..]);
+                        break;
+                    }
+                }
+            }
+            (out, count)
+        }
+        for (hay, needle) in [
+            ("use Gee Pee Tee now, GEE PEE TEE", "gee pee tee"),
+            ("arrow, arrows, ARROW. sparrow arrow", "arrow"),
+            ("aaa aa a-aa", "aa"),
+            ("a-a-a", "a-a"),
+            ("René met ren. RENé", "ren"),
+            ("café CAFÉ Café", "café"),
+            ("open the Flow tab, not the overflow", "flow"),
+            ("quote, unquote quoted", "quote"),
+            ("new line new  line\nnew line", "new line"),
+            ("x", "x"),
+            ("", "word"),
+        ] {
+            for particles in [false, true] {
+                assert_eq!(replace_whole_ci(hay, needle, "<R>", particles), old_replace(hay, needle, "<R>"), "{hay:?} / {needle:?}");
+            }
+            assert_eq!(find_whole_ci(hay, needle), old_find(hay, needle), "{hay:?} / {needle:?}");
+        }
+    }
+
+    #[test]
+    fn mask_terms_keeps_the_heard_arabic_spelling() {
+        let terms = ["كشري".to_string(), "Zorvex".to_string()];
+        let mut made = Vec::new();
+        let masked = mask_terms("جبت كشرى والكشري من الـZorvex", &terms, &mut made);
+        // Each is masked, behind its particle too, and comes back as heard.
+        assert_eq!(made, ["كشرى", "كشري", "Zorvex"]);
+        assert!(!masked.contains("كشر") && !masked.contains("Zorvex"));
+        assert_eq!(unmask(&masked, &made), "جبت كشرى والكشري من الـZorvex");
+    }
+
+    #[test]
     fn aliases_all_map_to_one_replacement() {
         // The exact bug Khairy hit: "my main email" fired, "my primary email"
         // didn't, because only one spoken phrase could point at an address.
@@ -2902,6 +3058,13 @@ mod tests {
         // The filler the prompt names may still go, and so may one English word.
         assert_eq!(rewrite_guard("يعني the build failed again", "The build failed again.", &[]), None);
         assert_eq!(rewrite_guard("the build totally failed again today", "The build failed again today.", &[]), None);
+    }
+
+    #[test]
+    fn rewrite_guard_keeps_a_respelled_arabic_word() {
+        // The same word in another spelling (#115): kept, not lost.
+        assert_eq!(rewrite_guard("the build failed أمبارح so we roll back", "The build failed امبارح, so we roll back.", &[]), None);
+        assert_eq!(rewrite_guard("the build failed امبارح so we roll back", "The build failed, so we roll back.", &[]), Some("dropped-words"));
     }
 
     #[test]

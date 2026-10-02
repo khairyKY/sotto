@@ -2550,14 +2550,14 @@ fn config_for_log(cfg: &Config) -> Config {
 }
 
 /// True if `text` says `target`: its words appear in `text` in a row, whole
-/// words only, ignoring case and the punctuation around each word. The
-/// trainer's one match rule (#49): the peek's glow and the sample's
-/// hit/miss both ask this, so "Claude." can't light "Got it" and then count
-/// as a miss.
+/// words only, ignoring case, Arabic spelling (`polish::fold`, #115) and the
+/// punctuation around each word. The trainer's one match rule (#49): the
+/// peek's glow and the sample's hit/miss both ask this, so "Claude." can't
+/// light "Got it" and then count as a miss.
 fn heard_word(text: &str, target: &str) -> bool {
     let words = |s: &str| -> Vec<String> {
         s.split_whitespace()
-            .map(|w| w.trim_matches(|c: char| !c.is_alphanumeric()).to_lowercase())
+            .map(|w| w.trim_matches(|c: char| !c.is_alphanumeric()).chars().filter_map(polish::fold).collect::<String>().to_lowercase())
             .filter(|w| !w.is_empty())
             .collect()
     };
@@ -3517,6 +3517,18 @@ mod tests {
         // Arabic has no case; its words still match whole.
         assert!(heard_word("قول كشري.", "كشري"));
         assert!(!heard_word("كشريات", "كشري"));
+    }
+
+    #[test]
+    fn arabic_spellings_count_as_the_same_word() {
+        // The trainer (#115): a right hearing in another spelling is a hit.
+        assert!(heard_word("قد أيه؟", "ايه"));
+        assert!(heard_word("جبت كشرى", "كُشري"));
+        assert!(!heard_word("جبت الكشري", "كشري")); // particles are for Word entries only
+        // The seam: both sides heard the overlap, in different spellings. It
+        // splices once; the joining words keep the first side's spelling.
+        assert_eq!(join_text("انا عارف قد أيه الموضوع", "قد ايه الموضوع ده مهم.", true), "انا عارف قد أيه الموضوع ده مهم.");
+        assert!(asr::same_word("إيه،", "ايه") && !asr::same_word("ـ", "ـ"));
     }
 
     #[test]
