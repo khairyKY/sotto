@@ -1418,7 +1418,16 @@ fn collapse_stutters<'a>(tokens: &[&'a str]) -> Vec<&'a str> {
         // starts a new sentence ("I saw him. Him and I left"), not a
         // stutter — commas don't count, since a stutter is often
         // transcribed with a pause comma in between ("the, the store").
-        let new_sentence = out.last().is_some_and(|p: &&str| p.ends_with(['.', '!', '?']));
+        let new_sentence = out.last().is_some_and(|p: &&str| p.ends_with(['.', '!', '?', '؟', '؛']));
+        // Arabic says a word twice on purpose (#111): "كده كده" is "either
+        // way" where "كده" is "like this", and "شوية شوية", "واحدة واحدة",
+        // "جدا جدا", "لا لا" all mean the pair. The doubling is open-ended
+        // (any noun can be dealt out "بيت بيت"), so a list like
+        // `LEGIT_DOUBLES` can't hold it, and the two mistakes aren't equal: a
+        // real stutter left in ("في في مشكلة") is a repeat the user sees and
+        // deletes, a collapsed pair is a changed meaning they don't. So an
+        // Arabic-script token is never collapsed.
+        let arabic = core.chars().any(is_arabic);
         // A token that OPENS a quoted span is a hard boundary too, same
         // idea as new_sentence: "and I <quote>I am the leader..." tokenizes
         // to "I" then a quote-glued "\"I" (no space between the glyph
@@ -1432,7 +1441,7 @@ fn collapse_stutters<'a>(tokens: &[&'a str]) -> Vec<&'a str> {
         // collapse combined on real input.
         let starts_quoted = tok.starts_with('"') || tok.starts_with('\u{201C}');
         let exempt = LEGIT_DOUBLES.iter().any(|w| w.eq_ignore_ascii_case(core));
-        if !is_numeric && !new_sentence && !starts_quoted && !exempt {
+        if !is_numeric && !new_sentence && !starts_quoted && !exempt && !arabic {
             if let Some(prev) = out.last() {
                 let prev_core = prev.trim_matches(|c: char| !c.is_alphanumeric());
                 if !prev_core.is_empty() && prev_core.eq_ignore_ascii_case(core) {
@@ -1901,6 +1910,34 @@ mod tests {
         assert_eq!(rules("this is very very important"), "This is very very important");
         assert_eq!(rules("he had had enough"), "He had had enough");
         assert_eq!(rules("no no that's wrong"), "No no that's wrong");
+    }
+
+    #[test]
+    fn stutter_collapse_never_touches_arabic() {
+        // #111: each pair means the pair. Through the whole Rules tier, so
+        // Harper's own repetition lint is covered too.
+        let (p, _) = trained(&[]);
+        for same in [
+            "كده كده هنخلص الشغل النهارده",
+            "شوية شوية هتتعود على الموضوع",
+            "امشي واحدة واحدة يا معلم",
+            "لا لا مش كده خالص",
+            "لا، لا مش كده",
+            "الموضوع ده مهم جدا جدا",
+            "يلا يلا نمشي",
+            "بس بس كفاية",
+            "ايوه ايوه صح",
+            "ليه؟ ليه عملت كده",
+            // What never collapsing gives up: a real stutter stays, in view.
+            "في في مشكلة في الـ server",
+        ] {
+            assert_eq!(p.polish(same).text, same);
+        }
+        // ؟ and ؛ end a sentence for Latin words too; English is as before.
+        assert_eq!(rules("okay؟ okay you said that"), "Okay؟ okay you said that");
+        assert_eq!(rules("done؛ done means merged"), "Done؛ done means merged");
+        assert_eq!(rules("الـ build build فشل"), "الـ build فشل");
+        assert_eq!(rules("we should go to the the store"), "We should go to the store");
     }
 
     #[test]
