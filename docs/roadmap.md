@@ -59,6 +59,10 @@ Rules can't fix real grammar; the AI tier can and its warm cost is ~1.7 s.
 - A short English grammar QA pass: 10–15 deliberately messy dictations,
   before/after, checked by Kai — the MVP bar is "grammar fully delivered",
   and only a human reads that bar.
+- **2026-09-30 (#29):** the machine half exists: `sotto.exe --polish-qa` runs a
+  fixed set of invented dictations (`tests/polish-qa/cases.jsonl`) through the
+  real chain and checks properties of each output. Its known limits are marked
+  in the set; Kai's read is still the bar.
 
 ### E2 — latency that doesn't scale with take length — **DONE 2026-08-09**
 

@@ -368,6 +368,9 @@ impl Polisher {
                 return Err("llm-error");
             }
         };
+        // What the model wrote, refused or not: debug only, like the
+        // transcript trail (#48). `--polish-qa` reads a refusal from it.
+        tracing::debug!(model = %text, "AI polish output");
         if let Some(reason) = rewrite_guard(rules, &text, &vocabulary) {
             return Err(reason);
         }
@@ -487,7 +490,7 @@ const MAX_NEW_WORDS: usize = 2;
 /// legitimately change: function words, fillers (the prompt's own "like" /
 /// "يعني" too), numbers in digits or words (the model may reformat them),
 /// contractions, and one-letter ASR fragments.
-fn content_words(s: &str) -> Vec<String> {
+pub(crate) fn content_words(s: &str) -> Vec<String> {
     s.split(|c: char| !(c.is_alphanumeric() || matches!(c, '\'' | '’')))
         .filter(|w| w.chars().count() > 1 && !w.contains(['\'', '’']) && !w.contains(|c: char| c.is_ascii_digit()))
         .map(str::to_lowercase)
@@ -1162,7 +1165,7 @@ fn replace_and_trim_before(hay: &str, needle: &str, rep: &str) -> String {
 /// left-boundary check relies on scanning the ORIGINAL string with a single
 /// global index, and slicing into it mid-scan would silently break that
 /// check at the slice's own start).
-fn find_whole_ci(hay: &str, needle: &str) -> Option<(usize, usize)> {
+pub(crate) fn find_whole_ci(hay: &str, needle: &str) -> Option<(usize, usize)> {
     let hay_lc = hay.to_ascii_lowercase();
     let needle_lc = needle.to_ascii_lowercase();
     let mut i = 0;

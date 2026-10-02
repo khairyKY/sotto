@@ -47,10 +47,10 @@ calls they'd normally make.
 
 - `cargo run -- --transcribe <file.wav>` — run ASR on a 16kHz mono WAV and print the text.
 - `cargo run -- --polish "<raw text>"` — force the AI polish path on arbitrary text and print raw vs. polished.
+- `cargo run -- --polish-qa [cases.jsonl]` — run the fixed AI-polish QA set (`tests/polish-qa/cases.jsonl`, format in `src/polish_qa.rs`) and print a pass/fail table; exits non-zero on a failure that isn't a marked known limit. Uses default settings, only `[llm]` comes from `config.toml`, so run it with a temp `SOTTO_DATA_DIR` holding the model (and a free `llm.port`) to stay off the installed app's sidecar.
 - `SOTTO_LOG=debug cargo run` — more verbose logging (default `info`).
 
-These are the only two CLI flags Sotto has (`src/main.rs` around line 998);
-there is no `--overlay-demo` or `--settings` flag — the overlay and settings
+There is no `--overlay-demo` or `--settings` flag — the overlay and settings
 windows are the Tauri app's normal windows now, not standalone dev modes.
 
 ## Config
