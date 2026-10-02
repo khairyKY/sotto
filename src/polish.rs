@@ -1191,6 +1191,10 @@ pub(crate) fn find_whole_ci(hay: &str, needle: &str) -> Option<(usize, usize)> {
 fn word_matches(hay: &str, needle: &str, particles: bool) -> Vec<(usize, usize)> {
     let key = |c: char| fold(c).map(|c| c.to_ascii_lowercase());
     let needle: String = needle.chars().filter_map(key).collect();
+    // ponytail: particles only for entries of 3+ letters. A 2-letter one
+    // (رد, دي) is mostly the tail of a common word behind a particle-looking
+    // letter (برد, بدي); a stem list is the upgrade if a 2-letter entry is wanted.
+    let particles = particles && needle.chars().count() >= 3;
     // The folded hay, and for each of its bytes where its letter sits in `hay`.
     let (mut f, mut at) = (String::with_capacity(hay.len()), Vec::with_capacity(hay.len() + 1));
     for (i, c) in hay.char_indices() {
@@ -1929,8 +1933,9 @@ fn replace_whole_ci(hay: &str, needle: &str, rep: &str, particles: bool) -> (Str
 /// ك, then the article ال, with a word edge before them (in folded text).
 ///
 /// ponytail: letters, not a lexicon, so a word that only looks like
-/// particles + the entry (برد, "cold", for an entry رد) matches too.
-/// Upgrade path: a stem list, if that shows up in real takes.
+/// particles + the entry matches too. `word_matches` keeps particles off for
+/// 2-letter entries, where that is most of the risk (برد, "cold", for رد).
+/// Upgrade path: a stem list, if a miss shows up in real takes.
 fn is_edge(before: &str, after: &str, particles: bool) -> bool {
     let word = |c: Option<char>| c.is_some_and(char::is_alphanumeric);
     let before = if particles {
@@ -2699,6 +2704,14 @@ mod tests {
         assert_eq!(fix("كلمت نور about sotto النهارده"), ("كلمت Nour about Sotto النهارده".into(), 2));
         // Accented Latin letters are word letters too.
         assert_eq!(fix("René met ren."), ("René met Wren.".into(), 1));
+    }
+
+    #[test]
+    fn a_two_letter_arabic_entry_never_fires_behind_a_particle() {
+        let dict = vec![(vec!["رد".to_string()], "ردّ".to_string(), EntryKind::Word)];
+        // برد is "cold", not ب + رد; on its own the entry still fires.
+        assert_eq!(apply_dictionary("الجو برد النهارده", &dict, EntryKind::Word).0, "الجو برد النهارده");
+        assert_eq!(apply_dictionary("ابعت رد بسرعة", &dict, EntryKind::Word).0, "ابعت ردّ بسرعة");
     }
 
     #[test]
