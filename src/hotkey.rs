@@ -31,6 +31,9 @@ pub enum DictationEvent {
     /// Lecture capture (#23) on or off, from the tray menu or Home. Never
     /// from a key: it has no hotkey, so it can't collide with dictation's.
     Lecture(bool),
+    /// An engine was picked in Settings, or a download landed (#118): load
+    /// the speech model now, not at the next hotkey press.
+    LoadModel,
 }
 
 /// A hotkey binding source — either a keyboard key or a mouse button. The

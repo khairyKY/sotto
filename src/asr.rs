@@ -6,7 +6,8 @@
 //! `asr.idle_unload_secs` without work, and loaded again at the next hotkey
 //! press (#12). The transcribe thread owns the one `Asr` and calls `sync`
 //! between takes, so an engine picked in Settings takes over on the next take
-//! (#10). ONNX Runtime (used by Parakeet) is loaded dynamically at runtime from
+//! (#10), and is loaded as soon as it is picked and on disk (#118). ONNX
+//! Runtime (used by Parakeet) is loaded dynamically at runtime from
 //! `onnxruntime.dll` (see `main::init_ort`).
 
 use crate::config::{self, VocabEntry};
@@ -47,6 +48,50 @@ static LAST_ENGINE: Mutex<String> = Mutex::new(String::new());
 pub fn last_engine() -> Option<String> {
     let engine = LAST_ENGINE.lock().unwrap().clone();
     (!engine.is_empty()).then_some(engine)
+}
+
+/// What an engine's model is doing, for its row in Settings (#118).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Load {
+    /// Not in memory: not loaded yet, idle-unloaded (#12), or not on disk.
+    Idle,
+    Loading,
+    Ready,
+}
+
+/// The engine the transcribe thread runs and what its model is doing: the
+/// `asr-load` event's payload.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+pub struct LoadState {
+    pub engine: String,
+    pub state: Load,
+}
+
+/// The last `LoadState` told, for a Settings window built after the event (#13).
+static LOAD: Mutex<Option<LoadState>> = Mutex::new(None);
+
+pub fn load_state() -> Option<LoadState> {
+    LOAD.lock().unwrap().clone()
+}
+
+/// Record what the model is doing. `Some` when that is news, for the caller
+/// to emit.
+pub fn set_load(engine: &str, state: Load) -> Option<LoadState> {
+    let next = LoadState { engine: engine.to_string(), state };
+    let mut last = LOAD.lock().unwrap();
+    if last.as_ref() == Some(&next) {
+        return None;
+    }
+    *last = Some(next.clone());
+    Some(next)
+}
+
+/// Whether there is a model to load now (#118): not in memory, and its files
+/// are on disk. A picked engine that is still downloading has nothing to
+/// load yet, so its row says nothing about loading.
+fn wants_load(loaded: bool, present: bool) -> bool {
+    !loaded && present
 }
 
 /// Which engine `sync` should run (#10): the configured one, except while its
@@ -260,6 +305,16 @@ impl Asr {
         idle_wait(self.model.is_some(), self.idle_unload_secs)
     }
 
+    /// `Ready` with the model in memory, else `Idle`.
+    pub fn load(&self) -> Load {
+        if self.model.is_some() { Load::Ready } else { Load::Idle }
+    }
+
+    /// Whether `preload` has a model to load.
+    pub fn wants_load(&self) -> bool {
+        wants_load(self.model.is_some(), config::asr_model_present(&self.engine))
+    }
+
     /// Free the model's memory (#12). The next `preload` or `transcribe`
     /// loads it again.
     pub fn unload(&mut self) {
@@ -353,8 +408,9 @@ impl Asr {
 
     /// Load the model now instead of on the first dictation. It costs ~5s, and
     /// paying that *after* the user has already spoken is the worst-feeling
-    /// delay in the app. Called on the worker thread at startup and at every
-    /// hotkey press (a no-op while loaded); a failure here is fine and
+    /// delay in the app. Called on the worker thread at startup, when an
+    /// engine is picked or its download lands (#118), and at every hotkey
+    /// press (a no-op while loaded); a failure here is fine and
     /// silent — the model may simply not be downloaded yet, and `transcribe`
     /// will retry lazily.
     pub fn preload(&mut self) {
@@ -603,8 +659,31 @@ mod tests {
         assert_eq!(asr.prompt.as_deref(), Some("Zorvex.")); // used at the next load
         assert_eq!(asr.whisper_beam, 3); // likewise
         assert_eq!(asr.idle_wait(), Duration::from_secs(60));
+        assert_eq!(asr.load(), Load::Ready);
+        assert!(!asr.wants_load(), "in memory: a pick or a hotkey press reloads nothing");
         asr.unload();
         assert!(asr.model.is_none());
         assert_eq!(asr.idle_wait(), Duration::MAX);
+        assert_eq!(asr.load(), Load::Idle, "Settings stops saying Ready (#118)");
+    }
+
+    #[test]
+    fn a_picked_engine_loads_once_its_files_are_on_disk() {
+        assert!(wants_load(false, true), "picked and on disk: load it now");
+        assert!(!wants_load(false, false), "still downloading: nothing to load, nothing to say");
+        assert!(!wants_load(true, true), "already in memory");
+    }
+
+    #[test]
+    fn settings_hears_each_change_of_load_state_once() {
+        let told = |state| set_load("whisper-turbo", state).map(|s| serde_json::to_string(&s).unwrap());
+        assert_eq!(told(Load::Loading).as_deref(), Some(r#"{"engine":"whisper-turbo","state":"loading"}"#));
+        assert_eq!(told(Load::Loading), None, "no news");
+        assert_eq!(told(Load::Ready).as_deref(), Some(r#"{"engine":"whisper-turbo","state":"ready"}"#));
+        // A window built now still learns it (#13).
+        assert_eq!(load_state(), Some(LoadState { engine: "whisper-turbo".into(), state: Load::Ready }));
+        // Another engine's model is news even in the same state.
+        assert!(set_load("parakeet-v3", Load::Ready).is_some());
+        assert_eq!(told(Load::Idle).as_deref(), Some(r#"{"engine":"whisper-turbo","state":"idle"}"#));
     }
 }

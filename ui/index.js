@@ -45,6 +45,7 @@ const mock = {
   ],
   asrModel: "parakeet-v3",
   asrLanguage: "auto",
+  asrLoad: { engine: "parakeet-v3", state: "ready" },
   historyPersist: false,
   // Transforms (#18): items are config::Transform as is, hence keep_words.
   transformsEnabled: false,
@@ -86,7 +87,7 @@ const mock = {
 async function invoke(cmd, args) {
   if (hasTauri) return T.core.invoke(cmd, args);
   console.log("[mock invoke]", cmd, args || "");
-  if (cmd === "set_asr_model") mock.models.forEach(m => { m.selected = m.id === args.model; });
+  if (cmd === "set_asr_model") { mock.models.forEach(m => { m.selected = m.id === args.model; }); mockLoad(args.model); }
   if (cmd === "download_assets") mockDownload();
   if (cmd === "set_transforms") mock.transforms = args.transforms;
   if (cmd === "set_transforms_enabled") mock.transformsEnabled = args.enabled;
@@ -1605,6 +1606,20 @@ let downloadingModelId = null;
 let downloadProgress = null; // { name, pct } | null while downloadingModelId is set
 let downloadError = null;
 let modelsCache = [];
+// What the speech model is doing (#118): { engine, state: "idle" | "loading" |
+// "ready" }, from get_settings at boot and the asr-load event after.
+let asrLoad = null;
+function onAsrLoad(load) {
+  asrLoad = load;
+  renderModels(modelsCache);
+}
+
+// Browser preview only: an installed engine loads as soon as it's picked.
+function mockLoad(id) {
+  if (mock.models.find(m => m.id === id)?.state !== "installed") return;
+  onAsrLoad({ engine: id, state: "loading" });
+  setTimeout(() => onAsrLoad({ engine: id, state: "ready" }), 1800);
+}
 
 function renderModels(models) {
   modelsCache = models;
@@ -1631,6 +1646,10 @@ function renderModels(models) {
       metaOverride = downloadProgress ? `Downloading ${escapeHtml(downloadProgress.name)}&hellip;` : "Starting download&hellip;";
     } else if (m.selected && m.state === "installed") {
       rightStatus = `<span class="model-badge">ACTIVE</span>`;
+      // Loaded when picked (#118); idle-unloaded, it just says what it is.
+      const load = asrLoad && asrLoad.engine === m.id ? asrLoad.state : "idle";
+      if (load === "loading") metaOverride = "Loading&hellip;";
+      if (load === "ready") metaOverride = `Ready${m.meta ? ` &middot; ${escapeHtml(m.meta)}` : ""}`;
     } else if (m.state === "installed") {
       rightStatus = `<button class="btn btn-outline model-select-btn" style="font-size:11px; padding:4px 10px; border-radius:6px;">Use this</button>`;
     } else if (m.state === "download") {
@@ -1664,8 +1683,9 @@ function renderModels(models) {
 }
 
 // Picking a model (installed switch, or a not-yet-downloaded Download click)
-// changes which engine is configured. The next dictation loads it (#10); a
-// Download keeps the old engine transcribing until the files land.
+// changes which engine is configured. It loads at once, or once its files
+// land (#118), and asr-load tells the row; a Download keeps the old engine
+// transcribing until then.
 async function selectAsrModel(id, alsoDownload) {
   await invoke("set_asr_model", { model: id });
   if (alsoDownload) {
@@ -1947,6 +1967,7 @@ function mockDownload() {
       clearInterval(tick);
       m.state = "installed";
       assetEvents["assets-ready"](true);
+      mockLoad(m.id); // the backend loads what landed (#118)
     }
   }, 150);
 }
@@ -2113,6 +2134,7 @@ async function boot() {
   $("code-editors-section").hidden = !s.variableRecognition;
   codeEditors.apps = [...(s.codeEditors || [])];
   renderAppList(codeEditors);
+  asrLoad = s.asrLoad || null;
   renderModels(s.models || []);
   if ($("asr-language-select")) {
     $("asr-language-select").value = s.asrLanguage || "auto";
@@ -2330,6 +2352,7 @@ async function boot() {
     T.event.listen("paused-changed", () => loadHome());
     T.event.listen("lecture-changed", () => loadHome());
     T.event.listen("scratchpad-updated", (e) => { pad.rows = e.payload || []; renderPad(); });
+    T.event.listen("asr-load", (e) => onAsrLoad(e.payload || null));
     T.event.listen("navigate", (e) => goTo(e.payload));
     // Fires on every worker outcome — null once a take is delivered, retried,
     // or dismissed, which is what actually takes the card off the screen.
