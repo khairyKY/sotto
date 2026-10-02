@@ -87,18 +87,21 @@ fn transform_prompt(instruction: &str) -> String {
 }
 
 /// A worked example of correcting a misheard name, injected as real
-/// conversation turns (not described in the system prompt) whenever the
-/// vocabulary clause is non-empty. This is the piece that actually makes
-/// the correction reliable — measured against the real sidecar model
-/// (Qwen2.5 1.5B), *describing* the rule ("clawed means Claude, always fix
-/// it") left every test case untouched; *showing* one before/after pair
-/// fixed it, and correctly generalized to entries with no dedicated example
-/// of their own (a separate "High's flaw" -> "Kai's Flow" case, never
-/// demonstrated here, still got corrected once this example was in
-/// context). Deliberately fixed and generic — not built from the user's own
-/// `vocabulary` list, which usually won't contain "Claude" — because it's
-/// teaching the model a *pattern* to apply to whatever the list actually
-/// contains, not a specific substitution.
+/// conversation turns (not described in the system prompt) when the take
+/// holds a known mishearing of a trained word. This is the piece that
+/// actually makes the correction reliable — measured against the real
+/// sidecar model (Qwen2.5 1.5B), *describing* the rule ("clawed means Claude,
+/// always fix it") left every test case untouched; *showing* one
+/// before/after pair fixed it.
+///
+/// A template since #29: `vocab_correction_example` writes the take's own
+/// mishearing and word into these two sentences. They used to go out as
+/// written, with every take of anyone who had a vocabulary, to teach the
+/// pattern. Measured on the QA set, with trained words that aren't Claude,
+/// what they taught was "a name here means Claude": a take holding a trained
+/// word, heard right, came back with "Claude" in its place (3 runs of 3),
+/// and so did one holding a mishearing of another word (2 takes of 3). The
+/// guard caught those as a leak only because Claude wasn't trained too.
 ///
 /// The second pair extends the lesson to "code" — an ordinary word that's
 /// ALSO one of Claude's real mishearings, unlike "clawed" which never means
@@ -117,14 +120,28 @@ pub const VOCAB_EXAMPLE: [(&str, &str); 2] = [
     ("can you ask code to fix this for me", "Can you ask Claude to fix this for me?"),
 ];
 
-fn vocab_correction_example() -> [Message; 4] {
-    let [(u1, a1), (u2, a2)] = VOCAB_EXAMPLE;
-    [
-        Message { role: "user", content: u1.to_string() },
-        Message { role: "assistant", content: a1.to_string() },
-        Message { role: "user", content: u2.to_string() },
-        Message { role: "assistant", content: a2.to_string() },
-    ]
+/// The mishearing in each `VOCAB_EXAMPLE` question, which `heard` swaps out.
+const EXAMPLE_HEARD: [&str; 2] = ["clawed", "code"];
+
+/// `VOCAB_EXAMPLE` as conversation turns, one sentence for each of the first
+/// two `(mishearing, word)` pairs in `heard`. The caller lists the known
+/// mishearings the take actually holds, then the other known mishearings of
+/// those same words, so the model is shown the very swap it is about to
+/// make. No mishearing in the take, no example.
+///
+/// Measured (#29, 15 takes with a vocabulary, 6 runs): all 90 right, against
+/// 5 or 6 of 15 with the fixed pairs. Two things that were tried and lost:
+/// the same mishearing in both sentences ("quill on" twice) also turned a
+/// later "quill pen" into "Quillon pen", 2 runs of 3; and one sentence alone
+/// left "clawed wrote the email" as "Clawed", 3 runs of 6. A second
+/// mishearing of the same word in the second sentence does neither.
+fn vocab_correction_example(heard: &[(String, String)]) -> Vec<Message> {
+    let mut messages = Vec::with_capacity(4);
+    for ((mishearing, word), ((question, answer), slot)) in heard.iter().zip(VOCAB_EXAMPLE.iter().zip(EXAMPLE_HEARD)) {
+        messages.push(Message { role: "user", content: question.replace(slot, mishearing) });
+        messages.push(Message { role: "assistant", content: answer.replace("Claude", word) });
+    }
+    messages
 }
 
 struct Inner {
@@ -187,7 +204,7 @@ impl Llm {
     /// Rewrite `raw` via the LLM, optionally re-voiced per `tone` (an
     /// instruction sentence, or "" for none). Returns `Err` on any failure so
     /// the caller can fall back to rules-based cleanup.
-    pub fn polish(&self, raw: &str, tone: &str, vocabulary: &str) -> Result<String> {
+    pub fn polish(&self, raw: &str, tone: &str, vocabulary: &str, heard: &[(String, String)]) -> Result<String> {
         {
             let mut g = self.inner.lock().unwrap();
             self.ensure_spawned(&mut g)?;
@@ -206,7 +223,7 @@ impl Llm {
         // is free for English and only prevents a real cut-off for Arabic.
         let words = raw.split_whitespace().count() as u32;
         let max_tokens = (words * 4 + 24).min(self.cfg.max_tokens);
-        let out = self.request_with_timeout(raw, max_tokens, tone, vocabulary)?;
+        let out = self.request_with_timeout(raw, max_tokens, tone, vocabulary, heard)?;
 
         self.inner.lock().unwrap().last_used = Instant::now();
         Ok(clean_output(&out))
@@ -297,11 +314,16 @@ impl Llm {
     }
 
     /// The dictation clean-up conversation, POSTed by `complete`.
-    fn request_with_timeout(&self, raw: &str, max_tokens: u32, tone: &str, vocabulary: &str) -> Result<String> {
+    fn request_with_timeout(
+        &self,
+        raw: &str,
+        max_tokens: u32,
+        tone: &str,
+        vocabulary: &str,
+        heard: &[(String, String)],
+    ) -> Result<String> {
         let mut messages = vec![Message { role: "system", content: system_prompt(tone, vocabulary) }];
-        if !vocabulary.trim().is_empty() {
-            messages.extend(vocab_correction_example());
-        }
+        messages.extend(vocab_correction_example(heard));
         messages.push(Message { role: "user", content: raw.to_string() });
         self.complete(messages, max_tokens)
     }
@@ -391,7 +413,9 @@ mod tests {
 
     #[test]
     fn vocab_correction_example_is_two_user_assistant_pairs() {
-        let msgs = vocab_correction_example();
+        assert!(vocab_correction_example(&[]).is_empty(), "no mishearing in the take, nothing to show");
+        let heard = [("clawed".to_string(), "Claude".to_string()), ("code".to_string(), "Claude".to_string())];
+        let msgs = vocab_correction_example(&heard);
         assert_eq!(msgs.len(), 4);
         assert_eq!(msgs[0].role, "user");
         assert_eq!(msgs[1].role, "assistant");
@@ -401,6 +425,25 @@ mod tests {
         // guards against a future edit accidentally reversing a pair.
         assert!(msgs[1].content.contains("Claude"));
         assert!(msgs[3].content.contains("Claude"));
+    }
+
+    #[test]
+    fn vocab_correction_example_is_rebuilt_around_the_mishearings_in_the_take() {
+        let pair = |h: &str, w: &str| (h.to_string(), w.to_string());
+        let text = |heard: &[(String, String)]| -> Vec<String> {
+            vocab_correction_example(heard).into_iter().map(|m| m.content).collect()
+        };
+        // One mishearing in the take: one sentence, showing that swap.
+        assert_eq!(
+            text(&[pair("loom deck", "Lumedeck")]),
+            ["loom deck is really helpful today", "Lumedeck is really helpful today."]
+        );
+        // Two: one sentence each. A third has no sentence, and no "Claude" is left.
+        let three = text(&[pair("loom deck", "Lumedeck"), pair("core bath", "Korvath"), pair("quill on", "Quillon")]);
+        assert_eq!(three[1], "Lumedeck is really helpful today.");
+        assert_eq!(three[2], "can you ask core bath to fix this for me");
+        assert_eq!(three[3], "Can you ask Korvath to fix this for me?");
+        assert!(!three.concat().contains("Claude") && !three.concat().contains("clawed"));
     }
 
     #[test]
