@@ -18,7 +18,7 @@
 use crate::config::{EntryKind, LlmConfig, PolishMode, VocabEntry};
 use crate::llm::Llm;
 use crate::Controls;
-use harper_core::linting::{Lint, LintGroup, LintKind, Linter};
+use harper_core::linting::{Lint, LintGroup, LintKind, Linter, Suggestion};
 use harper_core::spell::{Dictionary, FstDictionary};
 use harper_core::{Dialect, Document, remove_overlaps};
 use std::cell::RefCell;
@@ -219,6 +219,25 @@ impl Polisher {
             raw
         };
 
+        // The user's own spellings (#113): each trained word and Word-entry
+        // replacement in the take is masked like an identifier while the
+        // tiers run, so tier0 and Harper can't respell it ("Heliboard" ->
+        // "Headboard") and the AI tier has to hand it back as is. It comes
+        // back as trained, however it was heard, and before the snippet
+        // pass, which may key on it. Off cleans nothing, so masks nothing.
+        let idents = made.len();
+        let protected;
+        let raw = if self.mode() == PolishMode::Off {
+            raw
+        } else {
+            let mut terms: Vec<String> = self.controls.vocabulary.lock().unwrap().iter().map(|e| e.word.clone()).collect();
+            if replacements_on {
+                terms.extend(dict.iter().filter(|(_, _, kind)| *kind == EntryKind::Word).map(|(_, to, _)| to.clone()));
+            }
+            protected = mask_terms(raw, &terms, &mut made);
+            protected.as_str()
+        };
+
         let (cleaned, tier, fallback) = match self.mode() {
             // Tone rewrites voice, which only the AI tier can do — Rules just
             // strips/fixes, it can't re-voice a sentence. `tone` is unused on
@@ -245,6 +264,7 @@ impl Polisher {
         // a tier0/AI correction — and BEFORE the snippet pass below, so
         // corrected-words and dict-hits don't double-count the same word.
         let corrected_words = changed_words(raw, &cleaned);
+        let cleaned = unmask_from(&cleaned, &made, idents);
         let (text, snippet_hits) = if dict.is_empty() || !replacements_on {
             (cleaned, 0)
         } else {
@@ -357,18 +377,34 @@ fn run_harper(linter: &mut LintGroup, text: &str) -> String {
     let mut lints = linter.lint(&doc);
     remove_overlaps(&mut lints); // drops overlapping spans, keeps higher priority
 
+    let mut chars: Vec<char> = text.chars().collect();
+    let english = FstDictionary::curated();
     let mut fixes: Vec<&Lint> = lints
         .iter()
         .filter(|l| SAFE_LINT_KINDS.contains(&l.lint_kind) && l.suggestions.len() == 1)
+        .filter(|l| !respells_a_name(l, &chars, &english))
         .collect();
     // Back-to-front so an earlier edit can't shift a later span.
     fixes.sort_by(|a, b| b.span.start.cmp(&a.span.start));
 
-    let mut chars: Vec<char> = text.chars().collect();
     for lint in fixes {
         lint.suggestions[0].apply(lint.span, &mut chars);
     }
     chars.into_iter().collect()
+}
+
+/// Would `lint` rewrite a word Harper's dictionary doesn't know into other
+/// letters (#113)? Such a word is a name, not a typo: a speech engine writes
+/// words, it doesn't mistype them. Measured: "Heliboard" -> "Headboard",
+/// "qwen" -> "q wen", "vanto" -> "van to", "basha" -> "bash a". Fixing its
+/// casing ("github" -> "GitHub") is still fine.
+fn respells_a_name(lint: &Lint, chars: &[char], english: &FstDictionary) -> bool {
+    let word: String = lint.span.get_content(chars).iter().collect();
+    let real = |w: &str| is_real_word(english, w);
+    if word.is_empty() || !word.chars().all(char::is_alphanumeric) || real(&word) || real(&word.to_lowercase()) {
+        return false;
+    }
+    !matches!(&lint.suggestions[0], Suggestion::ReplaceWith(to) if to.iter().collect::<String>().eq_ignore_ascii_case(&word))
 }
 
 /// Mechanical `LintKind`s safe to auto-apply without a human glancing at
@@ -1250,17 +1286,55 @@ fn apply_casing_commands(text: &str) -> (String, Vec<String>) {
 /// Put `apply_casing_commands`' identifiers back in place of their
 /// placeholders.
 fn unmask(text: &str, made: &[String]) -> String {
-    if made.is_empty() {
+    unmask_from(text, made, 0)
+}
+
+/// `unmask` for the placeholders from `first` on, leaving the earlier ones
+/// masked: the trained words `mask_terms` added after the identifiers.
+fn unmask_from(text: &str, made: &[String], first: usize) -> String {
+    if made.len() <= first {
         return text.to_string();
     }
     let mut out = String::with_capacity(text.len());
     for c in text.chars() {
-        match (c as u32).checked_sub(0xE000).and_then(|i| made.get(i as usize)) {
+        match (c as u32).checked_sub(0xE000).map(|i| i as usize).filter(|&i| i >= first).and_then(|i| made.get(i)) {
             Some(ident) => out.push_str(ident),
             None => out.push(c),
         }
     }
     out
+}
+
+/// Mask every whole-word occurrence of a `term` (#113), one placeholder
+/// each, and push the term so `unmask` writes it back as trained. Any casing
+/// of it matches, unless the term is one ordinary English word ("Cursor",
+/// "Notion"): then only the trained casing does, or every "cursor" would come
+/// out capitalized, `dictionary_safe`'s trap again. Longest term first, so
+/// "Nuvanto Flow" is taken whole before "Flow".
+fn mask_terms(text: &str, terms: &[String], made: &mut Vec<String>) -> String {
+    let mut terms: Vec<&str> = terms.iter().map(|t| t.trim()).filter(|t| !t.is_empty()).collect();
+    terms.sort_unstable();
+    terms.dedup();
+    terms.sort_by_key(|t| std::cmp::Reverse(t.len()));
+    let mut text = text.to_string();
+    if terms.is_empty() {
+        return text;
+    }
+    let english = FstDictionary::curated();
+    for term in terms {
+        let exact = !term.contains(' ') && is_real_word(&english, &term.to_lowercase());
+        loop {
+            let found = if exact {
+                text.match_indices(term).map(|(s, _)| (s, s + term.len())).find(|&(s, e)| is_edge(&text[..s], &text[e..]))
+            } else {
+                find_whole_ci(&text, term)
+            };
+            let Some((start, end)) = found else { break };
+            text.replace_range(start..end, placeholder(made.len()).encode_utf8(&mut [0; 4]));
+            made.push(term.to_string());
+        }
+    }
+    text
 }
 
 /// Mask the AI tier's rewrite again, so the snippet pass can't touch the
@@ -2078,6 +2152,81 @@ mod tests {
         // applies on top of its output — the two tiers compose.
         let cleaned = tier0("um I went to the the store");
         assert_eq!(harper(&cleaned), "I went to the store");
+    }
+
+    // ── #113: the user's spellings, and names nobody trained ─────────
+    /// Rules mode with `words` trained.
+    fn trained(words: &[&str]) -> (Polisher, Controls) {
+        let cfg = crate::config::Config::default();
+        let controls = crate::Controls::from_config(&cfg);
+        controls.polish_mode.store(PolishMode::Rules.as_u8(), Ordering::Relaxed);
+        *controls.vocabulary.lock().unwrap() =
+            words.iter().map(|w| VocabEntry { word: w.to_string(), ..Default::default() }).collect();
+        (Polisher::new(controls.clone(), cfg.llm.clone()), controls)
+    }
+
+    #[test]
+    fn harper_never_respells_a_trained_word() {
+        let (p, _) = trained(&["Heliboard", "Qwen"]);
+        let same = "I installed Heliboard and tried Qwen today";
+        assert_eq!(p.polish(same).text, same);
+        // The phonetic corrector's fix stands; "kwen" is too short for it.
+        assert_eq!(p.polish("download heleboard and try kwen").text, "Download Heliboard and try kwen");
+        // Heard in lowercase, written as trained, in either script's company.
+        assert_eq!(p.polish("نزّل heliboard وجرّب qwen").text, "نزّل Heliboard وجرّب Qwen");
+        assert_eq!(p.polish("heliboard and QWEN both work").text, "Heliboard and Qwen both work");
+    }
+
+    #[test]
+    fn harper_never_respells_a_name_it_does_not_know() {
+        let (p, _) = trained(&[]);
+        for same in ["نزّل heliboard وجرّب qwen على onnx", "افتح new ده vanto flow دلوقتي"] {
+            assert_eq!(p.polish(same).text, same);
+        }
+        assert_eq!(p.polish("yalla ya basha inshallah bokra").text, "Yalla ya basha inshallah bokra");
+        // Casing is not respelling, and a real word's lints are untouched.
+        assert_eq!(p.polish("push it to github").text, "Push it to GitHub");
+        assert_eq!(p.polish("I went to the the store.").text, "I went to the store.");
+    }
+
+    #[test]
+    fn a_trained_ordinary_word_keeps_the_casing_it_was_heard_in() {
+        // "Cursor" the editor is trained; "cursor" the caret is still a word.
+        let (p, _) = trained(&["Cursor"]);
+        assert_eq!(p.polish("move the cursor to the top in Cursor").text, "Move the cursor to the top in Cursor");
+    }
+
+    #[test]
+    fn a_word_entry_replacement_is_protected_and_a_snippet_still_keys_on_a_trained_word() {
+        let (p, controls) = trained(&["Heliboard"]);
+        *controls.dictionary.lock().unwrap() = vec![
+            (vec!["zor X".into()], "Zorvecks".into(), EntryKind::Word),
+            (vec!["heliboard link".into()], "example.com/heliboard".into(), EntryKind::Snippet),
+        ];
+        // Made by the entry, and written by the ASR on its own in lowercase.
+        assert_eq!(p.polish("ask zor X about it then ask zorvecks again").text, "Ask Zorvecks about it then ask Zorvecks again");
+        assert_eq!(p.polish("send me the heliboard link").text, "Send me the example.com/heliboard");
+        // The master switch off: entries don't fire, so they recase nothing.
+        controls.replacements_enabled.store(false, Ordering::Relaxed);
+        assert_eq!(p.polish("ask zorvecks again").text, "Ask zorvecks again");
+    }
+
+    #[test]
+    fn mask_terms_takes_the_longest_term_whole_and_each_occurrence() {
+        let terms = ["Flow".to_string(), "Nuvanto Flow".to_string(), " ".to_string()];
+        let mut made = vec!["userName".to_string()]; // an identifier, masked earlier
+        let masked = mask_terms("open nuvanto flow and the Flow tab, not the overflow", &terms, &mut made);
+        assert_eq!(made, ["userName", "Nuvanto Flow", "Flow"]);
+        assert_eq!(unmask_from(&masked, &made, 1), "open Nuvanto Flow and the Flow tab, not the overflow");
+        // "flow" is an ordinary word: lowercase, it is left as said.
+        let mut made = Vec::new();
+        assert_eq!(mask_terms("the flow is fine", &terms, &mut made), "the flow is fine");
+        assert!(made.is_empty());
+        // Placeholders before `first` stay masked.
+        let made = vec!["userName".to_string(), "Qwen".to_string()];
+        let text = format!("{} runs {}", placeholder(0), placeholder(1));
+        assert_eq!(unmask_from(&text, &made, 1), format!("{} runs Qwen", placeholder(0)));
+        assert_eq!(unmask(&text, &made), "userName runs Qwen");
     }
 
     #[test]
