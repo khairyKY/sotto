@@ -806,7 +806,9 @@ fn parse_number_run(words: &[&str]) -> Option<NumberRun> {
                 if group_has_small && group % 10 != 0 {
                     break;
                 }
-                if group_has_small && !(20..=99).contains(&group) {
+                // `% 100`: the ten may sit on a hundred. Without it "one
+                // hundred twenty eight" came out "120 8" (#29).
+                if group_has_small && !(20..=99).contains(&(group % 100)) {
                     break;
                 }
                 group += n;
@@ -844,7 +846,7 @@ fn parse_number_run(words: &[&str]) -> Option<NumberRun> {
                 // don't count "and" as producing; keep scanning
             }
             OrdUnit(n) => {
-                if group_has_small && !(20..=99).contains(&group) {
+                if group_has_small && (group % 10 != 0 || !(20..=99).contains(&(group % 100))) {
                     break;
                 }
                 group += n;
@@ -969,7 +971,21 @@ fn number_words(toks: &[&str]) -> Vec<String> {
         }
 
         // "the next one", "that one", "a new one": the pronoun, not a count (#66).
-        if run.consumed == 1 && core_refs[i] == "one" && pronoun_one(&core_refs[..i]) {
+        // Nor is it a count before an ordinal ("one second", "one third"), or
+        // as the one English word between Arabic ones (#114).
+        if run.consumed == 1 && core_refs[i] == "one" {
+            let ordinal_next = core_refs.get(i + 1).is_some_and(|w| matches!(classify_number(w), Some(NumTok::OrdUnit(_) | NumTok::OrdTerm(_))));
+            if pronoun_one(&core_refs[..i]) || ordinal_next || arabic_around(toks, i) {
+                out.push(toks[i].to_string());
+                i += 1;
+                continue;
+            }
+        }
+
+        // A lone ordinal is a figure only where one is written (#114): see
+        // `ordinal_figure`. After a number word it is a compound ("twenty
+        // second") and never gets here.
+        if run.ordinal && run.consumed == 1 && !ordinal_figure(toks, &core_refs, i) {
             out.push(toks[i].to_string());
             i += 1;
             continue;
@@ -980,6 +996,36 @@ fn number_words(toks: &[&str]) -> Vec<String> {
         i += run.consumed;
     }
     out
+}
+
+const MONTHS: [&str; 12] = [
+    "january", "february", "march", "april", "may", "june", "july", "august", "september", "october", "november",
+    "december",
+];
+
+/// Nouns that are numbered, so an ordinal before one is written as a figure:
+/// "3rd floor", "2nd quarter", "5th Avenue".
+const NUMBERED: &[&str] =
+    &["floor", "grade", "quarter", "century", "edition", "anniversary", "birthday", "avenue", "street", "percentile"];
+
+/// Is the lone ordinal at `i` written as a figure (#114)? Only next to its
+/// month ("March fifteenth", "the fifteenth of March") or before a numbered
+/// noun. Anywhere else it is a word: "wait a second", "at first", "first
+/// draft", "First, the budget". A month named "May" has to be capitalized to
+/// count on its own: "you may first want to" has no date in it.
+fn ordinal_figure(toks: &[&str], cores: &[&str], i: usize) -> bool {
+    let month = |j: usize| cores.get(j).is_some_and(|w| MONTHS.contains(w) && (*w != "may" || split_affixes(toks[j]).1 == "May"));
+    (i > 0 && month(i - 1))
+        || month(i + 1)
+        || (cores.get(i + 1) == Some(&"of") && cores.get(i + 2).is_some_and(|w| MONTHS.contains(w)))
+        || cores.get(i + 1).is_some_and(|w| NUMBERED.contains(w))
+}
+
+/// Is the token at `i` an island in Arabic: every neighbour it has is in
+/// Arabic script?
+fn arabic_around(toks: &[&str], i: usize) -> bool {
+    let mut sides = [i.checked_sub(1).map(|j| toks[j]), toks.get(i + 1).copied()].into_iter().flatten().peekable();
+    sides.peek().is_some() && sides.all(|t| t.chars().any(is_arabic))
 }
 
 /// Words right after which a lone "one" is the pronoun, never a count.
@@ -2307,13 +2353,55 @@ mod tests {
 
     #[test]
     fn numbers_ordinals_take_the_right_suffix() {
-        assert_eq!(normalize_numbers("first"), "1st");
-        assert_eq!(normalize_numbers("second"), "2nd");
-        assert_eq!(normalize_numbers("third"), "3rd");
-        assert_eq!(normalize_numbers("fourth"), "4th");
-        assert_eq!(normalize_numbers("eleventh"), "11th"); // 11-13 are always -th
+        assert_eq!(normalize_numbers("March first"), "March 1st");
+        assert_eq!(normalize_numbers("the second of June"), "the 2nd of June");
+        assert_eq!(normalize_numbers("third floor"), "3rd floor");
+        assert_eq!(normalize_numbers("July fourth"), "July 4th");
+        assert_eq!(normalize_numbers("the eleventh of May"), "the 11th of May"); // 11-13 are always -th
         assert_eq!(normalize_numbers("twenty first"), "21st");
-        assert_eq!(normalize_numbers("twentieth"), "20th");
+        assert_eq!(normalize_numbers("the twentieth century"), "the 20th century");
+    }
+
+    #[test]
+    fn numbers_leave_a_lone_ordinal_a_word() {
+        // #114's list, and the QA set's (#29).
+        for s in [
+            "wait a second",
+            "give me one second",
+            "the second one",
+            "this is the first draft",
+            "at first I thought so",
+            "First, the budget. Second, the hiring plan. Third, the office move.",
+            "okay so first we load the data",
+            "pack a first aid kit",
+            "one third of the class",
+            "you may first want to check",
+            "it is due on the fifteenth",
+            "استنى second واحدة بس",
+            "ده الـ first draft بتاعي",
+            "خد one وانا هاخد الـ second",
+        ] {
+            assert_eq!(normalize_numbers(s), s);
+        }
+        assert_eq!(normalize_numbers("wait a second I need one more minute"), "wait a second I need 1 more minute");
+        // Where a figure is written: a compound, a date, a numbered noun.
+        assert_eq!(normalize_numbers("the twenty second of May"), "the 22nd of May");
+        assert_eq!(normalize_numbers("due on march fifteenth"), "due on march 15th");
+        assert_eq!(normalize_numbers("on May first, the second quarter starts"), "on May 1st, the 2nd quarter starts");
+        // A count between Arabic words is still a count, unless it is "one".
+        assert_eq!(normalize_numbers("عايز three نسخ من الملف"), "عايز 3 نسخ من الملف");
+    }
+
+    #[test]
+    fn numbers_a_ten_and_a_unit_join_after_a_hundred() {
+        // Was "120 8": the ten-then-unit check forgot the hundred (#29).
+        assert_eq!(normalize_numbers("one hundred twenty eight"), "128");
+        assert_eq!(normalize_numbers("three hundred and forty five units"), "345 units");
+        assert_eq!(normalize_numbers("two thousand nine hundred ninety nine"), "2999");
+        assert_eq!(normalize_numbers("the one hundred twenty third"), "the 123rd");
+        // Still two numbers: a unit after a unit, a teen after a hundred's unit.
+        assert_eq!(normalize_numbers("one hundred five six"), "105 6");
+        assert_eq!(normalize_numbers("twenty three fourth street"), "23 4th street");
     }
 
     #[test]
@@ -2487,7 +2575,7 @@ mod tests {
         ] {
             assert_eq!(normalize_numbers(s), s);
         }
-        assert_eq!(normalize_numbers("pick the third one"), "pick the 3rd one");
+        assert_eq!(normalize_numbers("pick the third one"), "pick the third one");
     }
 
     #[test]
