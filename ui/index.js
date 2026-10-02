@@ -1313,7 +1313,7 @@ function pronAddSampleRow(word, heard, matched) {
 async function pronAddCorrection(word, heard, btn) {
   const arabic = /\p{Script=Arabic}/u.test(heard);
   const confirmed = arabic
-    ? confirm(`Every “${heard}” you say becomes “${word}”. Add it to your Dictionary?\n\nYou can switch it off there. Cancel keeps it as a hint only.`)
+    ? confirm(`Every “${heard}” you say will be typed as “${word}”, in every app. Add this to your Dictionary?\n\nYou can switch it off there. Choose Cancel to only help Sotto hear “${word}”.`)
     : undefined;
   const exact = await invoke("add_pronunciation_correction", { word, heard, confirmed });
   const s = await getSettings();
@@ -1330,6 +1330,7 @@ async function pronAddCorrection(word, heard, btn) {
   note.className = "pron-learned";
   note.textContent = exact ? "Learned" : "Learned as a hint";
   if (!exact && !arabic) note.title = `“${heard}” has a real word in it, so Sotto won't change it everywhere. It's kept as a hint.`;
+  if (!exact && arabic) note.title = `Sotto listens for “${word}”, but leaves “${heard}” as you said it.`;
   btn.replaceWith(note);
 }
 
