@@ -459,13 +459,16 @@ impl Asr {
     }
 }
 
-/// Two transcript words are the same once case and edge punctuation are
-/// ignored ("The" / "the,"). Punctuation-only tokens never match.
+/// Two transcript words are the same once case, edge punctuation and Arabic
+/// spelling (`polish::fold`, #115) are ignored ("The" / "the,", "أيه" /
+/// "ايه"). Punctuation-only tokens never match.
 pub fn same_word(a: &str, b: &str) -> bool {
-    fn bare(w: &str) -> &str {
-        w.trim_matches(|c: char| !c.is_alphanumeric())
+    fn bare(w: &str) -> String {
+        let w = w.trim_matches(|c: char| !c.is_alphanumeric());
+        w.chars().filter_map(crate::polish::fold).map(|c| c.to_ascii_lowercase()).collect()
     }
-    !bare(a).is_empty() && bare(a).eq_ignore_ascii_case(bare(b))
+    let a = bare(a);
+    !a.is_empty() && a == bare(b)
 }
 
 /// A group of 1–3 words repeated this many times in a row is a decoding loop
