@@ -310,6 +310,7 @@ impl Polisher {
         self.mode() == PolishMode::Ai
             && self.llm.is_some()
             && word_count(raw) >= self.ai_min_words()
+            && !raw.chars().any(is_arabic)
     }
 
     /// Tier 1: route long-enough dictations through the LLM. `Err` names why
@@ -317,6 +318,15 @@ impl Polisher {
     /// tidy one, a missing sidecar, an LLM error, or an output
     /// `rewrite_guard` rejects.
     fn polish_ai(&self, raw: &str, rules: &str, tone: &str) -> Result<String, &'static str> {
+        // The model can't do Arabic (#112). Measured: with a trained
+        // vocabulary it answered in English on 22 of 22 Arabic or
+        // code-switched takes; without one the guard had to refuse 16 of 22;
+        // and the one Arabic word of an English take was dropped or
+        // translated, and delivered, 4 of 4. Any Arabic script keeps the
+        // rules result.
+        if raw.chars().any(is_arabic) {
+            return Err("arabic");
+        }
         if word_count(raw) < self.ai_min_words() {
             return Err("short"); // too short to be worth the round-trip
         }
@@ -447,6 +457,11 @@ fn word_count(s: &str) -> usize {
     s.split_whitespace().count()
 }
 
+/// Arabic script, presentation forms included.
+pub(crate) fn is_arabic(c: char) -> bool {
+    matches!(c, '\u{0600}'..='\u{06FF}' | '\u{0750}'..='\u{077F}' | '\u{08A0}'..='\u{08FF}' | '\u{FB50}'..='\u{FDFF}' | '\u{FE70}'..='\u{FEFC}')
+}
+
 /// An AI rewrite must keep at least this share of its input's content words
 /// (#65). Measured on the recordings review (#5): every clean AI take lost
 /// at most one content word (97%+ kept); the three that dropped clauses kept
@@ -475,11 +490,11 @@ fn content_words(s: &str) -> Vec<String> {
 
 /// Why an AI rewrite can't be trusted over the rules result, or `None` if it
 /// can (#65): it dropped words the speaker said, brought in words they
-/// didn't, or answered with the worked example's words (`llm::VOCAB_EXAMPLE`).
-/// Casing, punctuation, line breaks, fillers and number formatting never
-/// count (see `content_words`). A trained word may appear from nowhere and
-/// its known mishearings may vanish — that swap is the model's job. Logs
-/// counts only, never text (#48).
+/// didn't, answered with the worked example's words (`llm::VOCAB_EXAMPLE`),
+/// or lost a word of another script (#112). Casing, punctuation, line breaks,
+/// fillers and number formatting never count (see `content_words`). A trained
+/// word may appear from nowhere and its known mishearings may vanish — that
+/// swap is the model's job. Logs counts only, never text (#48).
 ///
 /// ponytail: a bag of words — it catches dropped clauses and invented text,
 /// not a self-correction flipped using the same words. Upgrade path: an
@@ -513,9 +528,13 @@ fn rewrite_guard(input: &str, output: &str, vocabulary: &[VocabEntry]) -> Option
             }
         }
     }
+    // One lost English word may be a filler the model was right to drop. A
+    // lost word in another script was dropped or translated (#112): "the
+    // build failed بكرة" came back without it, "the client قال" as "said".
+    let foreign_lost = have.iter().any(|(w, n)| *n > 0 && w.contains(|c: char| c.is_alphabetic() && c > '\u{024F}'));
     let reason = if leak {
         "example-leak"
-    } else if total - kept >= 2 && kept * 100 < total * MIN_KEPT_PCT {
+    } else if foreign_lost || (total - kept >= 2 && kept * 100 < total * MIN_KEPT_PCT) {
         "dropped-words"
     } else if new > MAX_NEW_WORDS {
         "new-words"
@@ -2704,6 +2723,39 @@ mod tests {
         assert_eq!(rewrite_guard(input, output, &[]), None); // two new words: a respelling's worth
         let output = "The garden desperately needs fresh cold water, and the fence needs paint.";
         assert_eq!(rewrite_guard(input, output, &[]), Some("new-words"));
+    }
+
+    #[test]
+    fn rewrite_guard_rejects_one_lost_word_of_another_script() {
+        // Dropped, and translated: each a single lost word, which English may lose.
+        let dropped = rewrite_guard("the build failed بكرة so we need a rollback plan", "The build failed. We need a rollback plan.", &[]);
+        assert_eq!(dropped, Some("dropped-words"));
+        let translated = rewrite_guard("the client قال the release is fine", "The client said the release is fine.", &[]);
+        assert_eq!(translated, Some("dropped-words"));
+        assert_eq!(rewrite_guard("the client قال the release is fine", "The client قال the release is fine.", &[]), None);
+        // The filler the prompt names may still go, and so may one English word.
+        assert_eq!(rewrite_guard("يعني the build failed again", "The build failed again.", &[]), None);
+        assert_eq!(rewrite_guard("the build totally failed again today", "The build failed again today.", &[]), None);
+    }
+
+    #[test]
+    fn a_take_with_arabic_script_never_goes_to_the_model() {
+        let cfg = crate::config::Config::default();
+        let controls = crate::Controls::from_config(&cfg);
+        controls.polish_mode.store(PolishMode::Ai.as_u8(), Ordering::Relaxed);
+        controls.ai_min_words.store(0, Ordering::Relaxed);
+        let p = Polisher::new(controls, cfg.llm.clone());
+        // One Arabic word in an English take, a code-switched take, an Arabic one.
+        for (take, rules) in [
+            ("um the build failed بكرة so we need a rollback plan", "The build failed بكرة so we need a rollback plan"),
+            ("um the client قال the release is fine", "The client قال the release is fine"),
+            ("um افتح الـ terminal وشغّل الـ build", "افتح الـ terminal وشغّل الـ build"),
+        ] {
+            let out = p.polish(take);
+            assert_eq!((out.text.as_str(), out.tier, out.fallback), (rules, "rules", "arabic"), "{take}");
+            assert!(!p.uses_ai_tier(take), "no Polishing state for {take}");
+        }
+        assert!(is_arabic('ب') && is_arabic('؟') && is_arabic('ﻻ') && !is_arabic('b') && !is_arabic('é'));
     }
 
     #[test]

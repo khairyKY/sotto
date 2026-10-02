@@ -136,6 +136,11 @@ repeated here. Summary of what exists today:
   (keep exact words + language, never translate, punctuate for the right
   script), and the token cap is `words*4` not `*3` so code-switched output
   doesn't truncate.
+  **2026-09-30: off for Arabic (#112).** Measured, the model still translated
+  or respelled Arabic and code-switched takes, and a lone Arabic word in an
+  English take was dropped or translated and delivered. A take holding any
+  Arabic script now keeps the Rules result (History: "AI skipped: arabic").
+  Whether Arabic gets an AI tier again is Kai's call.
 - **Verified on real dictation, not just synthesized test clips**: Khairy
   dictated live Egyptian Arabic + English code-switching through the
   `egyptian-small` engine. English words came out correctly in Latin script
