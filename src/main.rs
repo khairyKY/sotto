@@ -7,6 +7,7 @@
 // events, commands, and the tray. See docs/msvc-setup.md.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod app_windows;
 mod asr;
 mod assets;
 mod audio;
@@ -40,7 +41,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicU32, AtomicU64, AtomicU8, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
-use tauri::{Emitter, Manager};
+use tauri::{Emitter, Listener, Manager};
 use tracing_subscriber::fmt::writer::MakeWriterExt;
 
 /// Ignore captured clips shorter than this — almost always an accidental tap.
@@ -240,6 +241,15 @@ impl Controls {
 /// + the worker's event channel (so commands and the tray can drive it).
 struct AppState {
     controls: Controls,
+    /// Lock rule (#127): copy what you need out and drop the guard before a
+    /// window or tray call, or before taking another lock (the pattern
+    /// `app_windows::build` uses). Sync commands, tray clicks and window
+    /// events all run on the main thread and take this lock, so a thread that
+    /// holds it while it waits on the main thread (`hwnd`, `outer_size`,
+    /// `is_visible`, `tray.set_icon`, building a window) hangs the app: alive,
+    /// but `Responding: False`. The one lock taken under it is a `Controls`
+    /// mirror being set from it, never the other way round. `cfg.save()`
+    /// under it is fine.
     cfg: Mutex<Config>,
     tx: crossbeam_channel::Sender<DictationEvent>,
 }
@@ -393,6 +403,10 @@ struct SettingsPayload {
     asr_model: String,
     /// BCP-47 code, or "auto".
     asr_language: String,
+    /// What the speech model is doing (#118), as the `asr-load` event sends
+    /// it: `{ engine, state: "idle" | "loading" | "ready" }`. None until the
+    /// transcribe thread first says.
+    asr_load: Option<asr::LoadState>,
     /// "Keep recordings" master switch — drives the Data & privacy toggle.
     retention_enabled: bool,
     /// Configured size budget in MB, for the row's descriptive text.
@@ -424,7 +438,9 @@ struct SettingsPayload {
 // ── commands ───────────────────────────────────────────────────────────
 #[tauri::command]
 fn get_settings(state: tauri::State<'_, AppState>) -> SettingsPayload {
-    let cfg = state.cfg.lock().unwrap();
+    // A copy, not the guard (#127): the rest takes nine other locks, lists
+    // the audio devices and sizes the model folders.
+    let cfg = state.cfg.lock().unwrap().clone();
     let c = &state.controls;
     let idx = c.hotkey_idx.load(Ordering::Relaxed).min(hotkey::SUPPORTED_HOTKEYS.len() - 1);
     let hotkey_options: Vec<HotkeyOption> = hotkey::SUPPORTED_HOTKEYS
@@ -545,6 +561,7 @@ fn get_settings(state: tauri::State<'_, AppState>) -> SettingsPayload {
         zoom: cfg.zoom,
         asr_model: cfg.asr.model.clone(),
         asr_language: cfg.asr.language.clone(),
+        asr_load: asr::load_state(),
         retention_enabled: c.retention_enabled.load(Ordering::Relaxed),
         retention_max_mb: cfg.retention.max_mb,
         recordings_dir: recordings::recordings_dir().display().to_string(),
@@ -950,16 +967,23 @@ fn mark_overlay_idle(state: tauri::State<'_, AppState>) {
 
 /// Switch the configured ASR engine. Takes over on the next take, no restart
 /// (#10): the transcribe thread `sync`s from this config between takes, and
-/// the hotkey press that starts the next take loads the new model while the
-/// user speaks. A picked engine that's still downloading waits until its
-/// files land, and the old one keeps transcribing meanwhile.
+/// loads the new model as soon as it's picked (#118), not at the hotkey
+/// press that starts the next take. A picked engine that's still downloading
+/// waits until its files land, and the old one keeps transcribing meanwhile.
 #[tauri::command]
 fn set_asr_model(model: String, state: tauri::State<'_, AppState>) {
     let valid = model == "parakeet-v3" || model == "whisper-turbo" || model == "egyptian-small";
     if !valid { return; }
-    let mut cfg = state.cfg.lock().unwrap();
-    cfg.asr.model = model;
-    let _ = cfg.save();
+    let present = config::asr_model_present(&model);
+    {
+        let mut cfg = state.cfg.lock().unwrap();
+        cfg.asr.model = model;
+        let _ = cfg.save();
+    }
+    // Still downloading: `assets-ready` sends it when the files land.
+    if present {
+        let _ = state.tx.send(DictationEvent::LoadModel);
+    }
 }
 
 /// Set the expected dictation language ("auto" or a BCP-47 code). Applies
@@ -1047,7 +1071,8 @@ fn flag_transcription(text: String, state: tauri::State<'_, AppState>) {
     }
     // The row's raw transcript, for `--replay-flags` (#8).
     let raw = state.controls.history.raw_for(&text);
-    let cfg = state.cfg.lock().unwrap();
+    // A copy (#127): `asr::last_engine` takes a lock of its own.
+    let cfg = state.cfg.lock().unwrap().clone();
     bug_reports::record(&bug_reports::BugReport {
         t: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0),
         text,
@@ -1231,7 +1256,7 @@ fn main() -> anyhow::Result<()> {
             set_microphone, set_sound_enabled, set_zoom,
             set_replacements_enabled,
             set_formatting_commands, set_number_formatting, set_phonetic_correction, set_quote_style, set_pronunciation_target, add_pronunciation_correction,
-            menu_action,
+            menu_action, dismiss_window,
             assets::assets_status, assets::download_assets,
             scratchpad::scratchpad_state, scratchpad::scratchpad_page, scratchpad::scratchpad_delete,
             scratchpad::scratchpad_park, scratchpad::scratchpad_inject
@@ -1240,13 +1265,7 @@ fn main() -> anyhow::Result<()> {
             build_tray(app)?;
             // A second launch (Start menu, shortcut) lands here (#61).
             let handle = app.handle().clone();
-            single_instance::on_wake(move || {
-                if let Some(w) = handle.get_webview_window("settings") {
-                    let _ = w.unminimize();
-                    let _ = w.show();
-                    let _ = w.set_focus();
-                }
-            });
+            single_instance::on_wake(move || app_windows::open_settings(&handle, None));
             if let Some(w) = app.get_webview_window("overlay") {
                 let _ = w.set_ignore_cursor_events(true);
                 position_overlay(&w, &cfg.overlay.position);
@@ -1258,6 +1277,8 @@ fn main() -> anyhow::Result<()> {
             }
             if let Some(w) = app.get_webview_window("menu") {
                 harden_utility_window(&w, false);
+                // An Alt+F4 on it hides it, as for the main window (#124).
+                app_windows::keep_menu(&w);
                 // The lecture item (#23) is one more 33px row than
                 // tauri.conf.json's 380 has room for.
                 if cfg.lecture_mode {
@@ -1274,6 +1295,14 @@ fn main() -> anyhow::Result<()> {
                     let _ = w.show();
                 }
             }
+            // Lazy windows (#13): those two go again, unless launch is showing one.
+            app_windows::set_lazy(cfg.lazy_windows);
+            if cfg.lazy_windows {
+                app_windows::at_launch(app.handle());
+            } else if let Some(w) = app.get_webview_window("settings") {
+                // The only main window there will be: an Alt+F4 hides it (#124).
+                app_windows::track(&w);
+            }
             spawn_pipeline(app.handle().clone(), controls.clone(), cfg.clone(), tx.clone(), rx.clone());
             spawn_overlay_hittest(
                 app.handle().clone(),
@@ -1282,6 +1311,12 @@ fn main() -> anyhow::Result<()> {
                 controls.overlay_position.clone(),
             );
             spawn_update_check(app.handle().clone());
+            // A download that lands is a model to load (#118): the engine
+            // picked with Download, or a first run's.
+            let landed = tx.clone();
+            app.listen("assets-ready", move |_| {
+                let _ = landed.send(DictationEvent::LoadModel);
+            });
             assets::spawn_provision_if_missing(app.handle().clone());
             tracing::info!("Sotto ready — hold the hotkey and speak");
             Ok(())
@@ -1306,35 +1341,13 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
                     button: tauri::tray::MouseButton::Left,
                     button_state: tauri::tray::MouseButtonState::Up,
                     ..
-                } => {
-                    if let Some(w) = tray.app_handle().get_webview_window("settings") {
-                        let _ = w.show();
-                        let _ = w.set_focus();
-                    }
-                }
+                } => app_windows::open_settings(tray.app_handle(), None),
                 tauri::tray::TrayIconEvent::Click {
                     button: tauri::tray::MouseButton::Right,
                     button_state: tauri::tray::MouseButtonState::Up,
                     position,
                     ..
-                } => {
-                    if let Some(w) = tray.app_handle().get_webview_window("menu") {
-                        // Use the window's real size (already physical px) so
-                        // this never drifts from tauri.conf.json / menu.html —
-                        // hardcoded 230x260 here is what chipped the menu.
-                        let (mw, mh) = w
-                            .outer_size()
-                            .map(|s| (s.width as f64, s.height as f64))
-                            .unwrap_or((230.0, 380.0));
-                        let x = (position.x - mw + 10.0) as i32;
-                        let y = (position.y - mh - 5.0) as i32;
-                        let _ = w.set_position(tauri::PhysicalPosition::new(x, y));
-                        harden_utility_window(&w, false);
-                        let _ = w.show();
-                        harden_utility_window(&w, false);
-                        let _ = w.set_focus();
-                    }
-                }
+                } => app_windows::open_menu(tray.app_handle(), position),
                 _ => {}
             }
         })
@@ -1362,13 +1375,15 @@ fn menu_action(app: tauri::AppHandle, action: String) {
         let on = !state.controls.lecture.load(Ordering::Relaxed);
         set_lecture(on, state);
     } else {
-        if let Some(w) = app.get_webview_window("settings") {
-            let _ = w.show();
-            let _ = w.set_focus();
-            // "settings" too: it's a modal now, and navigate() is what opens it.
-            let _ = w.emit("navigate", action);
-        }
+        app_windows::open_settings(&app, Some(action));
     }
+}
+
+/// A window's own close: the main window's ✕, the tray menu on a click away
+/// or a pick. Hidden, or with lazy windows (#13) destroyed.
+#[tauri::command]
+async fn dismiss_window(window: tauri::WebviewWindow) {
+    app_windows::dismiss(&window);
 }
 
 #[derive(serde::Serialize)]
@@ -1709,7 +1724,7 @@ fn spawn_pipeline(
             // Warm the ASR model before serving work, so the first dictation
             // doesn't eat the ~5s load. Anything that arrives meanwhile just
             // queues on the channel.
-            asr.preload();
+            load_asr(&app, &mut asr);
             // Same reasoning for Harper's lint set (~640 ms).
             polisher.warm_rules();
             // The last dictation, kept in memory so Escape/error is
@@ -1732,6 +1747,7 @@ fn spawn_pipeline(
                     Err(crossbeam_channel::RecvTimeoutError::Timeout) => {
                         if lecture::may_unload(listening.load(Ordering::Relaxed), lecture_on.load(Ordering::Relaxed)) {
                             asr.unload();
+                            publish_asr(&app, &asr, false);
                         }
                         continue;
                     }
@@ -1742,7 +1758,11 @@ fn spawn_pipeline(
                 // holds chunk text, so every chunk of a take and its tail go
                 // through one engine.
                 if partials.is_empty() {
-                    asr.sync(&app.state::<AppState>().cfg.lock().unwrap());
+                    // A copy, in its own statement: an engine switch frees the
+                    // old model inside `sync`, and every Settings command and
+                    // the audio thread wait on this lock (#127).
+                    let cfg = app.state::<AppState>().cfg.lock().unwrap().clone();
+                    asr.sync(&cfg);
                 }
                 if !ai_ready && llm::Llm::is_available() {
                     tracing::info!("AI polish assets landed, picking them up without a restart");
@@ -1822,8 +1842,13 @@ fn spawn_pipeline(
                     // sends meanwhile waits in the queue behind it.
                     Work::Prewarm => {
                         polisher.prewarm();
-                        asr.preload();
+                        load_asr(&app, &mut asr);
                     }
+                    // An engine picked in Settings, or a download that landed
+                    // (#118): the `sync` above switched to it, unless a take
+                    // holds chunk text, and then the next hotkey press loads
+                    // it as before. The sidecar isn't this one's to start.
+                    Work::LoadAsr => load_asr(&app, &mut asr),
                     Work::Peek { id, samples, target } => {
                         // Transcribe the take-so-far; if the trained word is in
                         // it, tell the UI to ignite the glow. Best-effort — a
@@ -1862,6 +1887,9 @@ fn spawn_pipeline(
                     // mid-lecture takes over at its next chunk (`sync` above).
                     Work::Lecture(piece) => lecture::write(|s| asr.transcribe(s), piece, &mut lecture_prev),
                 }
+                // Whatever that did to the model (an engine switch dropped
+                // it, a transcript loaded it), Settings hears it (#118).
+                publish_asr(&app, &asr, false);
             }
         });
     }
@@ -2192,9 +2220,31 @@ fn spawn_pipeline(
                 DictationEvent::Scratchpad(a) => {
                     let _ = work_tx.send(Work::Scratchpad(a));
                 }
+                DictationEvent::LoadModel => {
+                    let _ = work_tx.send(Work::LoadAsr);
+                }
             }
         }
     });
+}
+
+/// Load the speech model if it isn't in memory, telling Settings first: the
+/// load is the slow part (1.5-4.7 s, or 31-80 s on a cold GPU cache).
+fn load_asr(app: &tauri::AppHandle, asr: &mut asr::Asr) {
+    if asr.wants_load() {
+        publish_asr(app, asr, true);
+    }
+    asr.preload();
+    publish_asr(app, asr, false);
+}
+
+/// Tell Settings' model row what the speech model is doing (#118), when that
+/// changed: `asr-load`, and `get_settings` for a window built later.
+fn publish_asr(app: &tauri::AppHandle, asr: &asr::Asr, loading: bool) {
+    let state = if loading { asr::Load::Loading } else { asr.load() };
+    if let Some(news) = asr::set_load(asr.engine(), state) {
+        let _ = app.emit("asr-load", news);
+    }
 }
 
 /// Work handed from the audio thread to the transcribe thread. `id` ties a
@@ -2215,6 +2265,8 @@ enum Work {
     Scratchpad(scratchpad::Action),
     /// Spin the LLM sidecar up while the user is still speaking.
     Prewarm,
+    /// Load the speech model now (#118): an engine was picked, or landed.
+    LoadAsr,
     /// Pronunciation Trainer: transcribe the take-so-far mid-recording and,
     /// if `target` is in it, fire "word-detected" so the UI can ignite the
     /// glow the instant the model hears the word — not just on mic level.
@@ -2994,9 +3046,10 @@ fn run_backtrack(
     }
 }
 
-/// Re-select the last dictation (Shift+Left × its length), copy it with
+/// Re-select the last dictation (`correction::reselect`: Shift+arrow over its
+/// caret stops, in whichever direction its paragraph runs), copy it with
 /// Ctrl+Insert, and type `fixed` over it only if the copy is that dictation.
-/// `transform::run` owns the clipboard around the copy.
+/// `transform::run` owns the clipboard around each copy.
 fn retype(old: &str, fixed: &str, hwnd: isize, suppressed: &Arc<AtomicBool>, injection_mode: InjectionMode) -> bool {
     let Ok(mut clip) = transform::SystemClipboard::new() else {
         return false;
@@ -3007,20 +3060,34 @@ fn retype(old: &str, fixed: &str, hwnd: isize, suppressed: &Arc<AtomicBool>, inj
     if !inject::wait_for_modifiers_released(Duration::from_secs(2)) {
         return false;
     }
-    let n = old.chars().count();
     suppressed.store(true, Ordering::SeqCst);
-    let outcome = transform::run(
-        &mut clip,
-        || inject::select_back(n).and_then(|()| inject::send_ctrl_insert()),
-        |copied| correction::same_text(copied, old).then(|| fixed.to_string()),
-        // An empty `fixed` is a backtrack (#26): delete the selection.
-        |out| if out.is_empty() { inject::press_backspace() } else { inject::inject_text(out, injection_mode) },
+    let replaced = correction::reselect(
+        old,
+        |arrow, n| {
+            let mut other = String::new();
+            let outcome = transform::run(
+                &mut clip,
+                || inject::select(arrow, n).and_then(|()| inject::send_ctrl_insert()),
+                |copied| {
+                    let same = correction::same_text(copied, old);
+                    if !same {
+                        other = copied.to_string();
+                    }
+                    same.then(|| fixed.to_string())
+                },
+                // An empty `fixed` is a backtrack (#26): delete the selection.
+                |out| if out.is_empty() { inject::press_backspace() } else { inject::inject_text(out, injection_mode) },
+            );
+            (outcome, other)
+        },
+        // Leave the caret where it was.
+        |arrow| {
+            let _ = inject::press_arrow(arrow);
+        },
     );
-    // Leave the caret where it was.
-    let _ = inject::press_right(correction::caret_back(&outcome));
     std::thread::sleep(Duration::from_millis(30)); // our own keys pass the hook while suppressed
     suppressed.store(false, Ordering::SeqCst);
-    outcome == transform::Outcome::Replaced
+    replaced
 }
 
 fn emit_state(app: &tauri::AppHandle, s: &str) {

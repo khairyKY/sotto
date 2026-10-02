@@ -12,6 +12,8 @@ function applyTheme(theme) {
     document.documentElement.dataset.theme = theme;
   }
 }
+// A menu built on demand (#13) is shown as it loads: themed before it paints.
+if (window.__SOTTO_OPENED) applyTheme(window.__SOTTO_OPENED.theme);
 
 // A lecture being captured (#23) outranks "Paused" in the header: the
 // microphone is open either way.
@@ -26,7 +28,8 @@ function setPauseUI(paused) {
 
 // Pull live state (theme, paused, retry availability). The menu window
 // persists across opens — it's hidden, not destroyed — so this must run on
-// every show, not just once at load.
+// every show, not just once at load. (With lazy windows, #13, it is destroyed,
+// and `dismiss_window` is what decides.)
 async function refreshState() {
   if (!hasTauri) return;
   try {
@@ -54,7 +57,7 @@ if (hasTauri) {
   // Refresh on every show; hide when clicking away.
   currentWin.onFocusChanged((event) => {
     if (event.payload) refreshState();
-    else currentWin.hide();
+    else invoke("dismiss_window");
   });
 }
 
@@ -73,7 +76,7 @@ document.querySelectorAll(".menu-item").forEach(item => {
         const nowPaused = !document.getElementById("pause-item").classList.contains("checked");
         setPauseUI(nowPaused);
       } else {
-        currentWin.hide();
+        invoke("dismiss_window");
       }
     } else {
       console.log("Mock Action:", action);

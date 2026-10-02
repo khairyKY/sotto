@@ -238,5 +238,22 @@ The updater workflow (bump version → sign → publish to GitHub Releases so ev
 
 ---
 
+## 🙏 Models & Components
+
+Sotto's own code is covered by the license below. The models and runtime it downloads on first launch are other people's work, under their own licenses:
+
+| What | By | License |
+| :--- | :--- | :--- |
+| [Parakeet TDT 0.6b v3](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3) (default speech-to-text, int8 ONNX export) | NVIDIA | CC-BY-4.0 |
+| [Whisper large-v3-turbo](https://huggingface.co/openai/whisper-large-v3-turbo) (GGML from [whisper.cpp](https://huggingface.co/ggerganov/whisper.cpp)) | OpenAI | MIT |
+| [Code-switched Egyptian Arabic Whisper small](https://huggingface.co/IbrahimAmin/code-switched-egyptian-arabic-whisper-small) (converted to GGML) | Ibrahim Amin; a fine-tune of OpenAI's whisper-small | Apache-2.0 |
+| [Qwen2.5-1.5B-Instruct](https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct) (AI polish, GGUF) | Alibaba Cloud | Apache-2.0 |
+| [llama.cpp](https://github.com/ggml-org/llama.cpp) (runs the polish model; ships with NVIDIA CUDA runtime libraries) | the llama.cpp authors | MIT; CUDA libraries under NVIDIA's license |
+| [whisper.cpp](https://github.com/ggml-org/whisper.cpp) (runs the Whisper engines) | the whisper.cpp authors | MIT |
+| [ONNX Runtime](https://github.com/microsoft/onnxruntime) (runs Parakeet) | Microsoft | MIT |
+| [Harper](https://github.com/Automattic/harper) (grammar checks in the rules tier) | Automattic | Apache-2.0 |
+
+---
+
 ## ⚖️ License
 All rights reserved. The source is public for transparency, not for reuse. See [LICENSE](./LICENSE).

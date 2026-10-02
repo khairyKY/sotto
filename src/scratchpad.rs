@@ -26,6 +26,7 @@ const CAP: usize = 200;
 static CHORD: Mutex<Option<Chord>> = Mutex::new(None);
 /// The pad is the page in front in the main window, as the page reports it.
 /// Hiding the window leaves it set: the page is still the pad when it shows.
+/// A window rebuilt by lazy windows (#13) reports afresh once it has loaded.
 static OPEN: AtomicBool = AtomicBool::new(false);
 /// The window that was focused when the chord opened the pad: where a row's
 /// inject types.
@@ -67,13 +68,16 @@ fn main_window(app: &AppHandle) -> Option<(tauri::WebviewWindow, isize)> {
 /// `process_take`'s routing: does a take spoken into window `target` go to
 /// the pad instead of being typed?
 pub fn catches(app: &AppHandle, target: isize) -> bool {
-    lands_in_pad(OPEN.load(Ordering::Relaxed), target, main_window(app).map_or(0, |(_, h)| h))
+    let pad = main_window(app).map_or_else(crate::app_windows::main_hwnd, |(_, h)| h);
+    lands_in_pad(OPEN.load(Ordering::Relaxed), target, pad)
 }
 
 /// Only a take spoken into the pad itself: the pad page open, and the main
 /// window the one it was spoken into. A take spoken into any other app is
 /// typed there, pad open or not. One still in flight when the chord hid the
 /// pad still lands in it: its window is hidden, and typing there would lose it.
+/// With lazy windows (#13) that window is gone by then, so `catches` falls
+/// back to the handle it had.
 fn lands_in_pad(open: bool, target: isize, pad: isize) -> bool {
     open && target != 0 && target == pad
 }
@@ -97,10 +101,10 @@ pub fn land(app: &AppHandle, text: &str) -> bool {
 /// any take being delivered, with the hotkey listener muted while we press
 /// keys (`suppressed`, see `hotkey::run_listener`).
 pub fn run(app: &AppHandle, action: Action, suppressed: &Arc<AtomicBool>, mode: InjectionMode) {
-    let Some((w, pad)) = main_window(app) else { return };
+    let Some((w, pad)) = main_window(app).or_else(|| built_for(app, &action)) else { return };
     match action {
         Action::Toggle if OPEN.load(Ordering::Relaxed) && inject::capture_focus() == pad => {
-            let _ = w.hide();
+            crate::app_windows::dismiss(&w);
             inject::restore_focus(TARGET.load(Ordering::Relaxed));
         }
         Action::Toggle => {
@@ -130,13 +134,27 @@ pub fn run(app: &AppHandle, action: Action, suppressed: &Arc<AtomicBool>, mode: 
                 return;
             }
             inject::restore_focus(target);
-            let _ = w.hide();
+            crate::app_windows::dismiss(&w);
             suppressed.store(true, Ordering::SeqCst);
             let typed = inject::inject_text(&text, mode).is_ok();
             suppressed.store(false, Ordering::SeqCst);
             crate::emit_state(app, if typed { "done" } else { "kept" });
         }
     }
+}
+
+/// Lazy windows (#13): the chord is also what builds the main window, already
+/// on the pad page. This is the worker thread, so the build can wait here.
+fn built_for(app: &AppHandle, action: &Action) -> Option<(tauri::WebviewWindow, isize)> {
+    if *action != Action::Toggle || !crate::app_windows::lazy(app) {
+        return None;
+    }
+    // A window being built may take the foreground: note who had it first.
+    if !inject::foreground_is_ours() {
+        TARGET.store(inject::capture_focus(), Ordering::Relaxed);
+    }
+    crate::app_windows::build(app, "settings", Some("scratchpad"), |_| {});
+    main_window(app)
 }
 
 // ── the store ──────────────────────────────────────────────────────────

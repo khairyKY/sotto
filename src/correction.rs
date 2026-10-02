@@ -7,11 +7,14 @@
 //! command arrives the caret may have moved. `main.rs`'s `run_correction`
 //! only retypes after a copy of the re-selected span proves it is that
 //! dictation, unchanged (`same_text`); anything else leaves the document
-//! alone and puts the fix on the clipboard.
+//! alone and puts the fix on the clipboard. `reselect` is the walk back over
+//! it, in either paragraph direction.
 //!
 //! Backtrack (#26) shares the memory and the guard: "scratch that" deletes
 //! the last dictation, once the same copy proves it's still there.
 
+use crate::inject::Arrow;
+use crate::transform::Outcome;
 use harper_core::spell::{Dictionary, FstDictionary};
 use std::sync::Mutex;
 
@@ -150,21 +153,102 @@ pub fn same_text(copied: &str, injected: &str) -> bool {
     copied.replace('\r', "") == injected.replace('\r', "")
 }
 
-/// Right presses that put the caret back after a retype that didn't happen
-/// (#96). One collapses whatever Shift+Left selected to its end, which is
-/// where the caret was: a span that isn't the dictation (`Kept`), and one the
-/// copy came back empty from (`NothingSelected`, an app without Ctrl+Insert or
-/// a slow clipboard). Shift+Left selects in every text field, and the console
-/// line editors where it only moves the caret skip the key path
-/// (`is_terminal`). ponytail: an unknown field that ignores Shift is left
-/// with the caret n-1 back; walking it back × n would instead push every
-/// Ctrl+Insert failure n-1 past the caret, and Shift+Right × n can leave a
-/// live selection the next dictation types over.
-pub fn caret_back(outcome: &crate::transform::Outcome) -> usize {
-    match outcome {
-        crate::transform::Outcome::Replaced => 0,
-        crate::transform::Outcome::Kept | crate::transform::Outcome::NothingSelected => 1,
+/// The fewest Shift+arrow presses that walk over `text`: its characters,
+/// less the ones no editor stops at on their own. A letter and the marks on
+/// it are one stop ("شغّل" is 4 characters and 3 stops), and so is a line
+/// break however it is stored.
+///
+/// Editors disagree past that (#121 spike). Chromium, VS Code's editor and
+/// the Win32 edit control take a marked letter in one press; RichEdit stops
+/// at each Arabic mark; the edit control stops inside an emoji sequence the
+/// others take whole. So this is the low count, and `more_stops` adds the
+/// rest once a copy shows how far the walk got.
+/// ponytail: the marks a dictation can hold, not Unicode's grapheme rules
+/// (`unicode-segmentation`, already in the lock through Tauri, if it ever
+/// matters). A miscount fails the copy check, so nothing is typed.
+pub fn caret_stops(text: &str) -> usize {
+    let mut prev = '\0';
+    text.chars()
+        .filter(|&c| {
+            let rides = rides(c) || prev == '\u{200D}' || (prev == '\r' && c == '\n');
+            prev = c;
+            !rides
+        })
+        .count()
+}
+
+/// A character drawn on the one before it: Latin accents, Arabic harakat
+/// (whole ranges: a sign counted as a mark only costs one more walk), the
+/// joiners, variation selectors, emoji skin tones and flag letters.
+fn rides(c: char) -> bool {
+    matches!(c,
+        '\u{0300}'..='\u{036F}'
+        | '\u{0610}'..='\u{061A}' | '\u{064B}'..='\u{065F}' | '\u{0670}' | '\u{06D6}'..='\u{06ED}' | '\u{08D3}'..='\u{08FF}'
+        | '\u{200C}' | '\u{200D}' | '\u{FE00}'..='\u{FE0F}' | '\u{1F3FB}'..='\u{1F3FF}' | '\u{1F1E6}'..='\u{1F1FF}')
+}
+
+/// How many more stops to walk when the copy is only the tail of the
+/// dictation: the editor has more stops than `caret_stops` counted, and what
+/// is missing says how far is left. `None` for any other copy.
+pub fn more_stops(copied: &str, injected: &str) -> Option<usize> {
+    let (copied, injected) = (copied.replace('\r', ""), injected.replace('\r', ""));
+    let missing = injected.strip_suffix(copied.as_str()).filter(|m| !m.is_empty() && !copied.is_empty())?;
+    Some(caret_stops(missing).max(1))
+}
+
+/// Re-select the dictation `old`, which should end at the caret, and replace
+/// it. `walk(arrow, n)` grows the selection `n` stops with Shift+arrow,
+/// copies it, and replaces it only if the copy is `old`; it returns how that
+/// went, and the copy when it was something else. `press` is the bare arrow.
+/// True once replaced.
+///
+/// Shift+Left walks back over text in a left-to-right paragraph, whatever
+/// script the text is in. In a right-to-left paragraph (an Arabic chat box,
+/// a field set to right-to-left) it walks forward and Shift+Right walks back
+/// (#121 spike: Chromium, the Win32 edit control and RichEdit all agree).
+/// Nothing outside the field says which it is, so Left goes first, then
+/// Right from the same caret. A copy that is the tail of `old` means the walk
+/// stopped short, and it goes on for as long as each copy is a longer tail.
+///
+/// A walk that replaced nothing puts the caret back:
+/// - A span that isn't the dictation (`Kept`): the other arrow, once,
+///   collapses it onto the end the walk started from.
+/// - An empty copy after Shift+Left: nothing. Either the caret had nowhere to
+///   go (the end of a right-to-left paragraph, where a press would walk one
+///   stop into the dictation), or the app selected and couldn't copy, and the
+///   Shift+Right walk retraces that stop for stop. A field that ignores Shift
+///   gets its caret walked back the same way.
+/// - An empty copy after Shift+Right: Left then Right, which collapses
+///   whatever an app with no Ctrl+Insert copy still has selected, and
+///   otherwise ends where it began.
+///
+/// ponytail: the second walk costs a right-to-left paragraph the ~0.5 s the
+/// first waits on an empty clipboard; read the paragraph's direction (UIA)
+/// if that ever matters. And an app with no copy, in a right-to-left
+/// paragraph, ends one stop inside the dictation with nothing selected. The
+/// console line editors skip the key path (`is_terminal`).
+pub fn reselect(
+    old: &str,
+    mut walk: impl FnMut(Arrow, usize) -> (Outcome, String),
+    mut press: impl FnMut(Arrow),
+) -> bool {
+    for arrow in [Arrow::Left, Arrow::Right] {
+        let (mut steps, mut reached) = (caret_stops(old).max(1), 0);
+        let outcome = loop {
+            let (outcome, copied) = walk(arrow, steps);
+            match more_stops(&copied, old) {
+                Some(more) if outcome == Outcome::Kept && copied.len() > reached => (steps, reached) = (more, copied.len()),
+                _ => break outcome,
+            }
+        };
+        match outcome {
+            Outcome::Replaced => return true,
+            Outcome::Kept => press(arrow.other()),
+            Outcome::NothingSelected if arrow == Arrow::Right => [Arrow::Left, Arrow::Right].into_iter().for_each(&mut press),
+            Outcome::NothingSelected => {}
+        }
     }
+    false
 }
 
 /// Console hosts where Shift+Left is a screen selection, not an edit: typing
@@ -285,11 +369,257 @@ mod tests {
     }
 
     #[test]
-    fn a_retype_that_didnt_happen_collapses_the_selection_to_the_caret() {
-        use crate::transform::Outcome;
-        assert_eq!(caret_back(&Outcome::Replaced), 0);
-        assert_eq!(caret_back(&Outcome::Kept), 1);
-        // Shift+Left selected, the copy came back empty: one Right, not × n (#96).
-        assert_eq!(caret_back(&Outcome::NothingSelected), 1);
+    fn caret_stops_count_a_letter_with_its_marks_once() {
+        // The counts Chromium, VS Code's editor and the Win32 edit control
+        // needed in the #121 spike.
+        assert_eq!(caret_stops("I asked clawed to help."), 23);
+        assert_eq!(caret_stops("قال كلود كده"), 12);
+        assert_eq!(caret_stops("افتح الـ terminal وشغّل الـ build"), 32, "33 characters, one a shadda");
+        assert_eq!(caret_stops("مَرحَباً"), 5, "8 characters, 3 of them harakat");
+        assert_eq!(caret_stops("لا لا"), 5, "lam-alef is drawn as one shape and is still two stops");
+        assert_eq!(caret_stops("cafe\u{301} ok"), 7);
+        assert_eq!(caret_stops("ship it 🚀 now"), 13, "one stop, two UTF-16 units");
+        assert_eq!(caret_stops("سطر\nتاني"), 8);
+        assert_eq!(caret_stops("سطر\r\nتاني"), 8, "a stored CRLF is one stop");
+        // Emoji sequences: never more than the editors that take them whole
+        // (Chromium: 8; a flag's two letters both ride, so one under).
+        assert_eq!(caret_stops("ok 👍🏽 👨\u{200D}👩\u{200D}👧 🇪🇬"), 7);
+        assert_eq!(caret_stops(""), 0);
+    }
+
+    #[test]
+    fn a_copy_that_is_the_dictations_tail_says_how_far_is_left() {
+        let old = "مَرحَباً يا Claude";
+        // RichEdit after 15 presses: the first letter, its mark and the next letter are missing.
+        assert_eq!(more_stops("حَباً يا Claude", old), Some(2));
+        // The walk landed between a letter and its mark: still one press to go.
+        assert_eq!(more_stops("\u{64E}رحَباً يا Claude", old), Some(1));
+        assert_eq!(more_stops("Second.", "First line.\nSecond."), Some(12));
+        assert_eq!(more_stops("line.\r\nSecond.", "First line.\nSecond."), Some(6), "a CRLF editor's copy");
+        // The dictation itself, nothing, or other text: no more walking.
+        assert_eq!(more_stops(old, old), None);
+        assert_eq!(more_stops("", old), None);
+        assert_eq!(more_stops("يا Claude more", old), None);
+    }
+
+    /// A text field as the #121 spike found them. `rtl`: a right-to-left
+    /// paragraph, where Left walks forward. `per_char`: RichEdit, which stops
+    /// at each mark. `copies`: has a Ctrl+Insert copy.
+    struct Field {
+        text: String,
+        anchor: usize,
+        caret: usize,
+        rtl: bool,
+        per_char: bool,
+        copies: bool,
+    }
+
+    impl Field {
+        /// `before`, with the caret after it, then `after`.
+        fn new(before: &str, after: &str, rtl: bool, per_char: bool) -> Self {
+            Self { text: format!("{before}{after}"), anchor: before.len(), caret: before.len(), rtl, per_char, copies: true }
+        }
+
+        fn step(&mut self, arrow: Arrow) {
+            let mark = |c: char| ('\u{064B}'..='\u{0652}').contains(&c);
+            if (arrow == Arrow::Left) != self.rtl {
+                let mut back = self.text[..self.caret].chars().rev();
+                while let Some(c) = back.next() {
+                    self.caret -= c.len_utf8();
+                    if self.per_char || !mark(c) {
+                        break;
+                    }
+                }
+            } else {
+                let mut ahead = self.text[self.caret..].chars().peekable();
+                while let Some(c) = ahead.next() {
+                    self.caret += c.len_utf8();
+                    if self.per_char || !ahead.peek().is_some_and(|&c| mark(c)) {
+                        break;
+                    }
+                }
+            }
+        }
+
+        fn walk(&mut self, arrow: Arrow, n: usize, old: &str, fixed: &str) -> (Outcome, String) {
+            (0..n).for_each(|_| self.step(arrow));
+            let span = self.anchor.min(self.caret)..self.anchor.max(self.caret);
+            let copied = if self.copies { self.text[span.clone()].to_string() } else { String::new() };
+            if copied.trim().is_empty() {
+                (Outcome::NothingSelected, String::new())
+            } else if same_text(&copied, old) {
+                self.text.replace_range(span.clone(), fixed);
+                (self.anchor, self.caret) = (span.start + fixed.len(), span.start + fixed.len());
+                (Outcome::Replaced, String::new())
+            } else {
+                (Outcome::Kept, copied)
+            }
+        }
+
+        /// The bare arrow: collapses a selection to that side, else moves.
+        fn press(&mut self, arrow: Arrow) {
+            if self.anchor == self.caret {
+                self.step(arrow);
+            } else if (arrow == Arrow::Right) != self.rtl {
+                self.caret = self.anchor.max(self.caret);
+            } else {
+                self.caret = self.anchor.min(self.caret);
+            }
+            self.anchor = self.caret;
+        }
+
+        fn retype(&mut self, old: &str, fixed: &str) -> bool {
+            let field = std::cell::RefCell::new(self);
+            reselect(old, |arrow, n| field.borrow_mut().walk(arrow, n, old, fixed), |arrow| field.borrow_mut().press(arrow))
+        }
+    }
+
+    #[test]
+    fn reselects_the_dictation_in_either_paragraph_direction_or_leaves_everything_as_it_was() {
+        let old = "افتح الـ terminal وشغّل الـ build"; // one shadda: 32 stops, 33 in RichEdit
+        let fixed = "افتح الـ terminal وشغّل الـ test";
+        for (rtl, per_char) in [(false, false), (false, true), (true, false), (true, true)] {
+            let case = format!("rtl={rtl} per_char={per_char}");
+            // At the end of the text, and with more after the caret.
+            for after in ["", " بعد كده"] {
+                let mut field = Field::new(&format!("X {old}"), after, rtl, per_char);
+                assert!(field.retype(old, fixed), "{case} after={after:?}");
+                assert_eq!(field.text, format!("X {fixed}{after}"), "{case}");
+            }
+            // English in the same paragraph, and a backtrack (#26) of it.
+            let mut field = Field::new("X I asked clawed to help.", "", rtl, per_char);
+            assert!(field.retype("I asked clawed to help.", ""), "{case}");
+            assert_eq!(field.text, "X ");
+            // Something typed after it, or it's gone: nothing replaced,
+            // nothing left selected, the caret where it was.
+            for (before, after) in [(format!("X {old} more"), ""), (format!("X {old} more"), " tail"), ("X ".to_string(), "")] {
+                for copies in [true, false] {
+                    let case = format!("{case} copies={copies} before={before:?} after={after:?}");
+                    let mut field = Field::new(&before, after, rtl, per_char);
+                    field.copies = copies;
+                    assert!(!field.retype(old, fixed), "{case}");
+                    assert_eq!(field.text, format!("{before}{after}"), "{case}");
+                    assert_eq!(field.anchor, field.caret, "{case}");
+                    // The ceiling: no copy and right-to-left ends one stop in.
+                    let off = if !copies && rtl { 1 } else { 0 };
+                    assert_eq!(field.caret, before.len() - off, "{case}");
+                }
+            }
+        }
+    }
+
+    /// `reselect` against the real controls, without touching focus or the
+    /// clipboard: a Win32 edit control and a RichEdit, each in left-to-right
+    /// and right-to-left reading order, in a window that is never shown. Keys
+    /// go in as WM_KEYDOWN on the owning thread, Shift through that thread's
+    /// key state, and the "copy" reads the selection. Run by hand:
+    /// `cargo test --bin sotto reselects_in_real -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn reselects_in_real_edit_controls() {
+        use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
+        use windows::Win32::UI::Input::KeyboardAndMouse::{GetKeyboardState, SetKeyboardState};
+        use windows::Win32::UI::WindowsAndMessaging::*;
+        use windows::core::{HSTRING, PCWSTR, w};
+        const EM_GETSEL: u32 = 0x00B0;
+        const EM_SETSEL: u32 = 0x00B1;
+        const EM_REPLACESEL: u32 = 0x00C2;
+        #[link(name = "kernel32")]
+        unsafe extern "system" {
+            fn LoadLibraryW(name: PCWSTR) -> isize;
+        }
+
+        fn text(edit: HWND) -> Vec<u16> {
+            let mut buf = vec![0u16; 4096];
+            let n = unsafe { GetWindowTextW(edit, &mut buf) };
+            buf.truncate(n as usize);
+            buf
+        }
+        fn selection(edit: HWND) -> (usize, usize) {
+            let (mut start, mut end) = (0u32, 0u32);
+            unsafe { SendMessageW(edit, EM_GETSEL, Some(WPARAM(&mut start as *mut u32 as usize)), Some(LPARAM(&mut end as *mut u32 as isize))) };
+            (start as usize, end as usize)
+        }
+        fn key(edit: HWND, arrow: Arrow, n: usize, shift: bool) {
+            let (vk, scan) = if arrow == Arrow::Left { (0x25, 0x4B) } else { (0x27, 0x4D) };
+            let mut keys = [0u8; 256];
+            unsafe {
+                GetKeyboardState(&mut keys).unwrap();
+                (keys[0x10], keys[0xA0]) = if shift { (0x80, 0x80) } else { (0, 0) };
+                SetKeyboardState(&keys).unwrap();
+                for _ in 0..n {
+                    SendMessageW(edit, WM_KEYDOWN, Some(WPARAM(vk)), Some(LPARAM(1 | scan << 16 | 1 << 24)));
+                    SendMessageW(edit, WM_KEYUP, Some(WPARAM(vk)), Some(LPARAM(1 | scan << 16 | 1 << 24 | 3 << 30)));
+                }
+                (keys[0x10], keys[0xA0]) = (0, 0);
+                SetKeyboardState(&keys).unwrap();
+            }
+        }
+        // `before`, the caret, `after`; then what `reselect` made of it: the
+        // arrow and walks that replaced it, the text, the selection.
+        let run = |edit: HWND, before: &str, after: &str, old: &str, fixed: &str| {
+            let caret = before.encode_utf16().count();
+            unsafe {
+                SetWindowTextW(edit, &HSTRING::from(format!("{before}{after}"))).unwrap();
+                SendMessageW(edit, EM_SETSEL, Some(WPARAM(caret)), Some(LPARAM(caret as isize)));
+            }
+            let (mut walks, mut via) = (0, None);
+            reselect(
+                old,
+                |arrow, n| {
+                    key(edit, arrow, n, true);
+                    walks += 1;
+                    let (all, (start, end)) = (text(edit), selection(edit));
+                    let copied = String::from_utf16_lossy(&all[start.min(all.len())..end.min(all.len())]);
+                    if copied.trim().is_empty() {
+                        (Outcome::NothingSelected, String::new())
+                    } else if same_text(&copied, old) {
+                        unsafe { SendMessageW(edit, EM_REPLACESEL, Some(WPARAM(1)), Some(LPARAM(HSTRING::from(fixed).as_ptr() as isize))) };
+                        via = Some((arrow, walks));
+                        (Outcome::Replaced, String::new())
+                    } else {
+                        (Outcome::Kept, copied)
+                    }
+                },
+                |arrow| key(edit, arrow, 1, false),
+            );
+            (via, String::from_utf16_lossy(&text(edit)), selection(edit))
+        };
+
+        let old = "افتح الـ terminal وشغّل الـ build"; // one shadda
+        let fixed = "افتح الـ terminal وشغّل الـ test";
+        let marked = "مَرحَباً يا Claude"; // three harakat
+        unsafe { LoadLibraryW(w!("Msftedit.dll")) };
+        for class in [w!("EDIT"), w!("RICHEDIT50W")] {
+            for rtl in [false, true] {
+                let case = format!("{} rtl={rtl}", unsafe { class.to_string().unwrap() });
+                let edit = unsafe {
+                    let host = CreateWindowExW(WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW, w!("STATIC"), w!(""), WS_POPUP, -10000, -10000, 600, 200, None, None, None, None).unwrap();
+                    let ex = if rtl { WS_EX_RTLREADING | WS_EX_RIGHT } else { WINDOW_EX_STYLE(0) };
+                    CreateWindowExW(ex, class, w!(""), WS_CHILD | WINDOW_STYLE(ES_MULTILINE as u32), 0, 0, 600, 200, Some(host), None, None, None).unwrap()
+                };
+                let at = |s: &str| s.encode_utf16().count();
+                // At the end of the text, with more after the caret, and
+                // text whose marks the two controls count differently.
+                for (dictated, after) in [(old, ""), (old, " بعد كده"), (marked, "")] {
+                    let before = format!("X {dictated}");
+                    let (via, now, _) = run(edit, &before, after, dictated, fixed);
+                    println!("{case} {dictated:?} after={after:?}: {via:?}");
+                    // Left walks back in left-to-right reading order, Right in right-to-left.
+                    assert_eq!(via.map(|(arrow, _)| arrow), Some(if rtl { Arrow::Right } else { Arrow::Left }), "{case} {dictated:?} after={after:?}");
+                    assert_eq!(now, format!("X {fixed}{after}"), "{case}");
+                }
+                // Something typed after it: untouched, caret where it was.
+                for after in ["", " tail"] {
+                    let before = format!("X {old} more");
+                    let (via, now, sel) = run(edit, &before, after, old, fixed);
+                    println!("{case} typed-after after={after:?} caret={sel:?} (was {})", at(&before));
+                    assert_eq!(via, None, "{case}");
+                    assert_eq!(now, format!("{before}{after}"), "{case}");
+                    assert_eq!(sel, (at(&before), at(&before)), "{case} after={after:?}");
+                }
+                unsafe { DestroyWindow(GetParent(edit).unwrap()).unwrap() };
+            }
+        }
     }
 }

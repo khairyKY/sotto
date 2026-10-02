@@ -204,25 +204,49 @@ pub fn send_ctrl_c() -> anyhow::Result<()> {
 }
 
 /// Ctrl+Insert: a copy that is never an interrupt. A voice correction's (#20)
-/// check of what `select_back` grabbed, where Ctrl+C would stop whatever a
+/// check of what `select` grabbed, where Ctrl+C would stop whatever a
 /// terminal is running.
 pub fn send_ctrl_insert() -> anyhow::Result<()> {
     send_ctrl(VK_INSERT)
 }
 
-/// Shift+Left × `n`: select the `n` characters before the caret, a voice
+/// The arrow a re-select walks with. Which one goes back over the text
+/// depends on the paragraph it sits in (`correction::reselect`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Arrow {
+    Left,
+    Right,
+}
+
+impl Arrow {
+    pub fn other(self) -> Self {
+        match self {
+            Arrow::Left => Arrow::Right,
+            Arrow::Right => Arrow::Left,
+        }
+    }
+
+    fn key(self) -> VIRTUAL_KEY {
+        match self {
+            Arrow::Left => VK_LEFT,
+            Arrow::Right => VK_RIGHT,
+        }
+    }
+}
+
+/// Shift+arrow × `n`: grow the selection by `n` caret stops, a voice
 /// correction's re-grab of the last injection. One key per `SendInput` with
 /// a 1ms gap, for the same reason as `inject_unicode`.
-pub fn select_back(n: usize) -> anyhow::Result<()> {
+pub fn select(arrow: Arrow, n: usize) -> anyhow::Result<()> {
     send(&[vk_input(VK_SHIFT, false)])?;
-    let walked = press(VK_LEFT, n);
+    let walked = press(arrow.key(), n);
     send(&[vk_input(VK_SHIFT, true)])?;
     walked
 }
 
-/// Right × `n`: 1 collapses a selection to its end.
-pub fn press_right(n: usize) -> anyhow::Result<()> {
-    press(VK_RIGHT, n)
+/// The bare arrow: collapses a selection to that side.
+pub fn press_arrow(arrow: Arrow) -> anyhow::Result<()> {
+    press(arrow.key(), 1)
 }
 
 /// Enter: an auto-send (#21) after a dictation lands.

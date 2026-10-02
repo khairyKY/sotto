@@ -2,6 +2,10 @@
 
 const T = window.__TAURI__;
 const hasTauri = !!(T && T.core);
+// The backend hands a window it builds its theme and first page (app_windows.rs):
+// one built on demand (#13) is shown as it loads, before get_settings has
+// answered, and the `navigate` fired at it found nobody listening yet.
+const opened = window.__SOTTO_OPENED || {};
 
 const mock = {
   hotkey: "ControlRight",
@@ -41,6 +45,7 @@ const mock = {
   ],
   asrModel: "parakeet-v3",
   asrLanguage: "auto",
+  asrLoad: { engine: "parakeet-v3", state: "ready" },
   historyPersist: false,
   // Transforms (#18): items are config::Transform as is, hence keep_words.
   transformsEnabled: false,
@@ -82,7 +87,7 @@ const mock = {
 async function invoke(cmd, args) {
   if (hasTauri) return T.core.invoke(cmd, args);
   console.log("[mock invoke]", cmd, args || "");
-  if (cmd === "set_asr_model") mock.models.forEach(m => { m.selected = m.id === args.model; });
+  if (cmd === "set_asr_model") { mock.models.forEach(m => { m.selected = m.id === args.model; }); mockLoad(args.model); }
   if (cmd === "download_assets") mockDownload();
   if (cmd === "set_transforms") mock.transforms = args.transforms;
   if (cmd === "set_transforms_enabled") mock.transformsEnabled = args.enabled;
@@ -163,7 +168,7 @@ if (hasTauri && T.window) {
   $("win-max").onclick = () => w.toggleMaximize();
   $("win-close").onclick = () => {
     invoke("set_pronunciation_target", { word: null });
-    w.hide();
+    invoke("dismiss_window"); // hidden, or destroyed with lazy windows (#13)
   };
 } else {
   $("win-close").onclick = () => window.close();
@@ -1601,6 +1606,20 @@ let downloadingModelId = null;
 let downloadProgress = null; // { name, pct } | null while downloadingModelId is set
 let downloadError = null;
 let modelsCache = [];
+// What the speech model is doing (#118): { engine, state: "idle" | "loading" |
+// "ready" }, from get_settings at boot and the asr-load event after.
+let asrLoad = null;
+function onAsrLoad(load) {
+  asrLoad = load;
+  renderModels(modelsCache);
+}
+
+// Browser preview only: an installed engine loads as soon as it's picked.
+function mockLoad(id) {
+  if (mock.models.find(m => m.id === id)?.state !== "installed") return;
+  onAsrLoad({ engine: id, state: "loading" });
+  setTimeout(() => onAsrLoad({ engine: id, state: "ready" }), 1800);
+}
 
 function renderModels(models) {
   modelsCache = models;
@@ -1627,6 +1646,10 @@ function renderModels(models) {
       metaOverride = downloadProgress ? `Downloading ${escapeHtml(downloadProgress.name)}&hellip;` : "Starting download&hellip;";
     } else if (m.selected && m.state === "installed") {
       rightStatus = `<span class="model-badge">ACTIVE</span>`;
+      // Loaded when picked (#118); idle-unloaded, it just says what it is.
+      const load = asrLoad && asrLoad.engine === m.id ? asrLoad.state : "idle";
+      if (load === "loading") metaOverride = "Loading&hellip;";
+      if (load === "ready") metaOverride = `Ready${m.meta ? ` &middot; ${escapeHtml(m.meta)}` : ""}`;
     } else if (m.state === "installed") {
       rightStatus = `<button class="btn btn-outline model-select-btn" style="font-size:11px; padding:4px 10px; border-radius:6px;">Use this</button>`;
     } else if (m.state === "download") {
@@ -1660,8 +1683,9 @@ function renderModels(models) {
 }
 
 // Picking a model (installed switch, or a not-yet-downloaded Download click)
-// changes which engine is configured. The next dictation loads it (#10); a
-// Download keeps the old engine transcribing until the files land.
+// changes which engine is configured. It loads at once, or once its files
+// land (#118), and asr-load tells the row; a Download keeps the old engine
+// transcribing until then.
 async function selectAsrModel(id, alsoDownload) {
   await invoke("set_asr_model", { model: id });
   if (alsoDownload) {
@@ -1943,6 +1967,7 @@ function mockDownload() {
       clearInterval(tick);
       m.state = "installed";
       assetEvents["assets-ready"](true);
+      mockLoad(m.id); // the backend loads what landed (#118)
     }
   }, 150);
 }
@@ -2011,6 +2036,7 @@ async function initAssets() {
   aiWaiting = (status.missing || []).some(n => /AI polish|llama/.test(n));
   loadHome();
   if (MOCK_FIRST_RUN) { mockDropped = true; mockDownload(); } // the backend auto-starts; the mock must too
+  if (status.error) assetEvents["asset-error"](status.error); // it stopped before this window was built (#13)
 }
 
 // ── alert card ──
@@ -2044,6 +2070,16 @@ function formatTime(date) {
   return `${hours}:${minutes} ${ampm}`;
 }
 
+function applyTheme(theme) {
+  if (theme === "system") {
+    const prefersDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
+    document.documentElement.dataset.theme = prefersDark ? "dark" : "light";
+  } else {
+    document.documentElement.dataset.theme = theme;
+  }
+}
+if (opened.theme) applyTheme(opened.theme); // before the first paint
+
 // ── boot ──
 async function boot() {
   const s = await getSettings();
@@ -2056,14 +2092,6 @@ async function boot() {
   renderTakeAlert(s.takeInfo || s.take_info || null);
 
   // Theme
-  function applyTheme(theme) {
-    if (theme === "system") {
-      const prefersDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
-      document.documentElement.dataset.theme = prefersDark ? "dark" : "light";
-    } else {
-      document.documentElement.dataset.theme = theme;
-    }
-  }
   const initTheme = s.theme || "system";
   applyTheme(initTheme);
   if (hasTauri && T.event) T.event.emit("theme-changed", initTheme);
@@ -2106,6 +2134,7 @@ async function boot() {
   $("code-editors-section").hidden = !s.variableRecognition;
   codeEditors.apps = [...(s.codeEditors || [])];
   renderAppList(codeEditors);
+  asrLoad = s.asrLoad || null;
   renderModels(s.models || []);
   if ($("asr-language-select")) {
     $("asr-language-select").value = s.asrLanguage || "auto";
@@ -2254,7 +2283,8 @@ async function boot() {
   renderDictPage(dictEntries);
   renderSnipPage(snipEntries);
   initTransforms(s);
-  loadScratchpad();
+  // A rebuilt window (#13) opens on Home: the backend may still think the pad is in front.
+  loadScratchpad().then(syncPad);
 
   // History data
   historyEntries = s.history || [];
@@ -2264,6 +2294,11 @@ async function boot() {
   pronVocabulary = (s.vocabulary || []).map(v => ({ word: v.word, heardAs: v.heardAs || [], recent: v.recent || [] }));
   $("cal-section").hidden = !s.calibration;
   loadPronunciation();
+
+  // A page the tray menu or the Scratchpad chord asks for.
+  const goTo = (page) => {
+    if (page && document.querySelector(`.nav-item[data-page="${CSS.escape(page)}"]`)) navigate(page);
+  };
 
   // Live event listeners
   if (hasTauri && T.event) {
@@ -2317,10 +2352,8 @@ async function boot() {
     T.event.listen("paused-changed", () => loadHome());
     T.event.listen("lecture-changed", () => loadHome());
     T.event.listen("scratchpad-updated", (e) => { pad.rows = e.payload || []; renderPad(); });
-    T.event.listen("navigate", (e) => {
-      const page = e.payload;
-      if (page && document.querySelector(`.nav-item[data-page="${page}"]`)) navigate(page);
-    });
+    T.event.listen("asr-load", (e) => onAsrLoad(e.payload || null));
+    T.event.listen("navigate", (e) => goTo(e.payload));
     // Fires on every worker outcome — null once a take is delivered, retried,
     // or dismissed, which is what actually takes the card off the screen.
     T.event.listen("take-changed", (e) => {
@@ -2333,5 +2366,6 @@ async function boot() {
 
   initUpdates();
   initAssets();
+  goTo(opened.page);
 }
 boot();

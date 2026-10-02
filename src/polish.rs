@@ -186,7 +186,9 @@ impl Polisher {
         // existed. `Snippet` entries (longer expansions — emails, addresses,
         // text blocks) stay AFTER polish, unchanged, so grammar rewriting
         // never gets a chance to mangle the expansion itself.
-        let dict = self.controls.dictionary.lock().unwrap();
+        // A copy (#127): the guard would be held through the AI tier below,
+        // and a dictionary saved in Settings meanwhile hangs the window on it.
+        let dict = self.controls.dictionary.lock().unwrap().clone();
         let replacements_on = self.controls.replacements_enabled.load(Ordering::Relaxed);
         let worded;
         let (raw, word_hits) = if dict.is_empty() || !replacements_on {
