@@ -218,6 +218,11 @@ Sotto is structured as a Tauri v2 application:
   cargo run -- --polish "<raw text>"
   ```
 
+- **QA the AI polish tier on the fixed set of invented dictations (`tests/polish-qa/`):**
+  ```powershell
+  cargo run -- --polish-qa
+  ```
+
 ### Cutting a release
 
 The updater workflow (bump version → sign → publish to GitHub Releases so every running app picks it up as a 16 MB update) is documented step-by-step in [`docs/updating.md`](./docs/updating.md).

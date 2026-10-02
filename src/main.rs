@@ -22,6 +22,7 @@ mod journal;
 mod lecture;
 mod llm;
 mod polish;
+mod polish_qa;
 mod recordings;
 mod scratchpad;
 mod single_instance;
@@ -1194,7 +1195,7 @@ fn init_logging(cli: bool) {
 
 // ── main ───────────────────────────────────────────────────────────────
 fn main() -> anyhow::Result<()> {
-    let cli = std::env::args().any(|a| ["--transcribe", "--lecture", "--polish", "--replay-flags", "--transform"].contains(&a.as_str()));
+    let cli = std::env::args().any(|a| ["--transcribe", "--lecture", "--polish", "--polish-qa", "--replay-flags", "--transform"].contains(&a.as_str()));
     init_logging(cli);
     init_ort();
 
@@ -1212,6 +1213,9 @@ fn main() -> anyhow::Result<()> {
     }
     if std::env::args().any(|a| a == "--replay-flags") {
         return run_replay_flags(arg_value("--replay-flags"));
+    }
+    if std::env::args().any(|a| a == "--polish-qa") {
+        return polish_qa::run_cli(arg_value("--polish-qa"));
     }
 
     let Some(_guard) = SingleInstanceGuard::acquire()? else {

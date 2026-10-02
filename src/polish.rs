@@ -18,7 +18,7 @@
 use crate::config::{EntryKind, LlmConfig, PolishMode, VocabEntry};
 use crate::llm::Llm;
 use crate::Controls;
-use harper_core::linting::{Lint, LintGroup, LintKind, Linter};
+use harper_core::linting::{Lint, LintGroup, LintKind, Linter, Suggestion};
 use harper_core::spell::{Dictionary, FstDictionary};
 use harper_core::{Dialect, Document, remove_overlaps};
 use std::cell::RefCell;
@@ -221,6 +221,25 @@ impl Polisher {
             raw
         };
 
+        // The user's own spellings (#113): each trained word and Word-entry
+        // replacement in the take is masked like an identifier while the
+        // tiers run, so tier0 and Harper can't respell it ("Heliboard" ->
+        // "Headboard") and the AI tier has to hand it back as is. It comes
+        // back as trained, however it was heard, and before the snippet
+        // pass, which may key on it. Off cleans nothing, so masks nothing.
+        let idents = made.len();
+        let protected;
+        let raw = if self.mode() == PolishMode::Off {
+            raw
+        } else {
+            let mut terms: Vec<String> = self.controls.vocabulary.lock().unwrap().iter().map(|e| e.word.clone()).collect();
+            if replacements_on {
+                terms.extend(dict.iter().filter(|(_, _, kind)| *kind == EntryKind::Word).map(|(_, to, _)| to.clone()));
+            }
+            protected = mask_terms(raw, &terms, &mut made);
+            protected.as_str()
+        };
+
         let (cleaned, tier, fallback) = match self.mode() {
             // Tone rewrites voice, which only the AI tier can do — Rules just
             // strips/fixes, it can't re-voice a sentence. `tone` is unused on
@@ -247,6 +266,7 @@ impl Polisher {
         // a tier0/AI correction — and BEFORE the snippet pass below, so
         // corrected-words and dict-hits don't double-count the same word.
         let corrected_words = changed_words(raw, &cleaned);
+        let cleaned = unmask_from(&cleaned, &made, idents);
         let (text, snippet_hits) = if dict.is_empty() || !replacements_on {
             (cleaned, 0)
         } else {
@@ -292,6 +312,7 @@ impl Polisher {
         self.mode() == PolishMode::Ai
             && self.llm.is_some()
             && word_count(raw) >= self.ai_min_words()
+            && !raw.chars().any(is_arabic)
     }
 
     /// Tier 1: route long-enough dictations through the LLM. `Err` names why
@@ -299,6 +320,15 @@ impl Polisher {
     /// tidy one, a missing sidecar, an LLM error, or an output
     /// `rewrite_guard` rejects.
     fn polish_ai(&self, raw: &str, rules: &str, tone: &str) -> Result<String, &'static str> {
+        // The model can't do Arabic (#112). Measured: with a trained
+        // vocabulary it answered in English on 22 of 22 Arabic or
+        // code-switched takes; without one the guard had to refuse 16 of 22;
+        // and the one Arabic word of an English take was dropped or
+        // translated, and delivered, 4 of 4. Any Arabic script keeps the
+        // rules result.
+        if raw.chars().any(is_arabic) {
+            return Err("arabic");
+        }
         if word_count(raw) < self.ai_min_words() {
             return Err("short"); // too short to be worth the round-trip
         }
@@ -317,7 +347,19 @@ impl Polisher {
 
         let vocabulary = self.controls.vocabulary.lock().unwrap().clone();
         let t = std::time::Instant::now();
-        let text = match llm.polish(rules, tone, &vocabulary_clause(&vocabulary)) {
+        // The known mishearings this take holds, for the worked example,
+        // then the other mishearings of those same words.
+        let (mut heard, mut spare) = (Vec::new(), Vec::new());
+        for e in &vocabulary {
+            let known = e.heard_as.iter().filter(|h| !h.trim().is_empty());
+            let (found, other): (Vec<_>, Vec<_>) = known.partition(|h| find_whole_ci(rules, h).is_some());
+            if !found.is_empty() {
+                heard.extend(found.into_iter().map(|h| (h.clone(), e.word.clone())));
+                spare.extend(other.into_iter().map(|h| (h.clone(), e.word.clone())));
+            }
+        }
+        heard.extend(spare);
+        let text = match llm.polish(rules, tone, &vocabulary_clause(&vocabulary), &heard) {
             Ok(text) if !text.trim().is_empty() => text,
             Ok(_) => {
                 tracing::warn!("AI polish returned empty text — using rules");
@@ -328,6 +370,9 @@ impl Polisher {
                 return Err("llm-error");
             }
         };
+        // What the model wrote, refused or not: debug only, like the
+        // transcript trail (#48). `--polish-qa` reads a refusal from it.
+        tracing::debug!(model = %text, "AI polish output");
         if let Some(reason) = rewrite_guard(rules, &text, &vocabulary) {
             return Err(reason);
         }
@@ -359,18 +404,34 @@ fn run_harper(linter: &mut LintGroup, text: &str) -> String {
     let mut lints = linter.lint(&doc);
     remove_overlaps(&mut lints); // drops overlapping spans, keeps higher priority
 
+    let mut chars: Vec<char> = text.chars().collect();
+    let english = FstDictionary::curated();
     let mut fixes: Vec<&Lint> = lints
         .iter()
         .filter(|l| SAFE_LINT_KINDS.contains(&l.lint_kind) && l.suggestions.len() == 1)
+        .filter(|l| !respells_a_name(l, &chars, &english))
         .collect();
     // Back-to-front so an earlier edit can't shift a later span.
     fixes.sort_by(|a, b| b.span.start.cmp(&a.span.start));
 
-    let mut chars: Vec<char> = text.chars().collect();
     for lint in fixes {
         lint.suggestions[0].apply(lint.span, &mut chars);
     }
     chars.into_iter().collect()
+}
+
+/// Would `lint` rewrite a word Harper's dictionary doesn't know into other
+/// letters (#113)? Such a word is a name, not a typo: a speech engine writes
+/// words, it doesn't mistype them. Measured: "Heliboard" -> "Headboard",
+/// "qwen" -> "q wen", "vanto" -> "van to", "basha" -> "bash a". Fixing its
+/// casing ("github" -> "GitHub") is still fine.
+fn respells_a_name(lint: &Lint, chars: &[char], english: &FstDictionary) -> bool {
+    let word: String = lint.span.get_content(chars).iter().collect();
+    let real = |w: &str| is_real_word(english, w);
+    if word.is_empty() || !word.chars().all(char::is_alphanumeric) || real(&word) || real(&word.to_lowercase()) {
+        return false;
+    }
+    !matches!(&lint.suggestions[0], Suggestion::ReplaceWith(to) if to.iter().collect::<String>().eq_ignore_ascii_case(&word))
 }
 
 /// Mechanical `LintKind`s safe to auto-apply without a human glancing at
@@ -413,6 +474,11 @@ fn word_count(s: &str) -> usize {
     s.split_whitespace().count()
 }
 
+/// Arabic script, presentation forms included.
+pub(crate) fn is_arabic(c: char) -> bool {
+    matches!(c, '\u{0600}'..='\u{06FF}' | '\u{0750}'..='\u{077F}' | '\u{08A0}'..='\u{08FF}' | '\u{FB50}'..='\u{FDFF}' | '\u{FE70}'..='\u{FEFC}')
+}
+
 /// An AI rewrite must keep at least this share of its input's content words
 /// (#65). Measured on the recordings review (#5): every clean AI take lost
 /// at most one content word (97%+ kept); the three that dropped clauses kept
@@ -426,7 +492,7 @@ const MAX_NEW_WORDS: usize = 2;
 /// legitimately change: function words, fillers (the prompt's own "like" /
 /// "يعني" too), numbers in digits or words (the model may reformat them),
 /// contractions, and one-letter ASR fragments.
-fn content_words(s: &str) -> Vec<String> {
+pub(crate) fn content_words(s: &str) -> Vec<String> {
     s.split(|c: char| !(c.is_alphanumeric() || matches!(c, '\'' | '’')))
         .filter(|w| w.chars().count() > 1 && !w.contains(['\'', '’']) && !w.contains(|c: char| c.is_ascii_digit()))
         .map(str::to_lowercase)
@@ -441,11 +507,11 @@ fn content_words(s: &str) -> Vec<String> {
 
 /// Why an AI rewrite can't be trusted over the rules result, or `None` if it
 /// can (#65): it dropped words the speaker said, brought in words they
-/// didn't, or answered with the worked example's words (`llm::VOCAB_EXAMPLE`).
-/// Casing, punctuation, line breaks, fillers and number formatting never
-/// count (see `content_words`). A trained word may appear from nowhere and
-/// its known mishearings may vanish — that swap is the model's job. Logs
-/// counts only, never text (#48).
+/// didn't, answered with the worked example's words (`llm::VOCAB_EXAMPLE`),
+/// or lost a word of another script (#112). Casing, punctuation, line breaks,
+/// fillers and number formatting never count (see `content_words`). A trained
+/// word may appear from nowhere and its known mishearings may vanish — that
+/// swap is the model's job. Logs counts only, never text (#48).
 ///
 /// ponytail: a bag of words — it catches dropped clauses and invented text,
 /// not a self-correction flipped using the same words. Upgrade path: an
@@ -479,9 +545,13 @@ fn rewrite_guard(input: &str, output: &str, vocabulary: &[VocabEntry]) -> Option
             }
         }
     }
+    // One lost English word may be a filler the model was right to drop. A
+    // lost word in another script was dropped or translated (#112): "the
+    // build failed بكرة" came back without it, "the client قال" as "said".
+    let foreign_lost = have.iter().any(|(w, n)| *n > 0 && w.contains(|c: char| c.is_alphabetic() && c > '\u{024F}'));
     let reason = if leak {
         "example-leak"
-    } else if total - kept >= 2 && kept * 100 < total * MIN_KEPT_PCT {
+    } else if foreign_lost || (total - kept >= 2 && kept * 100 < total * MIN_KEPT_PCT) {
         "dropped-words"
     } else if new > MAX_NEW_WORDS {
         "new-words"
@@ -567,7 +637,21 @@ fn apply_formatting_commands(raw: &str) -> String {
     for (phrase, brk) in FORMATTING_COMMANDS {
         text = replace_whole_ci(&text, phrase, brk).0;
     }
-    collapse_space_around_breaks(&text)
+    // An ASR that hears the command as its own sentence punctuates it
+    // ("list. New line. Apples."), which left ". Apples." on the new line
+    // (#29). A mark alone at the start of a line was the command's, so it
+    // goes with it; one that starts a word (".env") stays.
+    let text = collapse_space_around_breaks(&text);
+    let mut lines = text.split('\n');
+    let mut out = lines.next().unwrap_or_default().to_string();
+    for line in lines {
+        out.push('\n');
+        out.push_str(match line.strip_prefix(['.', ',', ';', ':', '!', '?']) {
+            Some(rest) if rest.is_empty() || rest.starts_with(' ') => rest.trim_start(),
+            _ => line,
+        });
+    }
+    out
 }
 
 /// Rewrite `text` word by word without losing its line breaks. `pass` gets
@@ -753,7 +837,9 @@ fn parse_number_run(words: &[&str]) -> Option<NumberRun> {
                 if group_has_small && group % 10 != 0 {
                     break;
                 }
-                if group_has_small && !(20..=99).contains(&group) {
+                // `% 100`: the ten may sit on a hundred. Without it "one
+                // hundred twenty eight" came out "120 8" (#29).
+                if group_has_small && !(20..=99).contains(&(group % 100)) {
                     break;
                 }
                 group += n;
@@ -791,7 +877,7 @@ fn parse_number_run(words: &[&str]) -> Option<NumberRun> {
                 // don't count "and" as producing; keep scanning
             }
             OrdUnit(n) => {
-                if group_has_small && !(20..=99).contains(&group) {
+                if group_has_small && (group % 10 != 0 || !(20..=99).contains(&(group % 100))) {
                     break;
                 }
                 group += n;
@@ -916,7 +1002,21 @@ fn number_words(toks: &[&str]) -> Vec<String> {
         }
 
         // "the next one", "that one", "a new one": the pronoun, not a count (#66).
-        if run.consumed == 1 && core_refs[i] == "one" && pronoun_one(&core_refs[..i]) {
+        // Nor is it a count before an ordinal ("one second", "one third"), or
+        // as the one English word between Arabic ones (#114).
+        if run.consumed == 1 && core_refs[i] == "one" {
+            let ordinal_next = core_refs.get(i + 1).is_some_and(|w| matches!(classify_number(w), Some(NumTok::OrdUnit(_) | NumTok::OrdTerm(_))));
+            if pronoun_one(&core_refs[..i]) || ordinal_next || arabic_around(toks, i) {
+                out.push(toks[i].to_string());
+                i += 1;
+                continue;
+            }
+        }
+
+        // A lone ordinal is a figure only where one is written (#114): see
+        // `ordinal_figure`. After a number word it is a compound ("twenty
+        // second") and never gets here.
+        if run.ordinal && run.consumed == 1 && !ordinal_figure(toks, &core_refs, i) {
             out.push(toks[i].to_string());
             i += 1;
             continue;
@@ -927,6 +1027,36 @@ fn number_words(toks: &[&str]) -> Vec<String> {
         i += run.consumed;
     }
     out
+}
+
+const MONTHS: [&str; 12] = [
+    "january", "february", "march", "april", "may", "june", "july", "august", "september", "october", "november",
+    "december",
+];
+
+/// Nouns that are numbered, so an ordinal before one is written as a figure:
+/// "3rd floor", "2nd quarter", "5th Avenue".
+const NUMBERED: &[&str] =
+    &["floor", "grade", "quarter", "century", "edition", "anniversary", "birthday", "avenue", "street", "percentile"];
+
+/// Is the lone ordinal at `i` written as a figure (#114)? Only next to its
+/// month ("March fifteenth", "the fifteenth of March") or before a numbered
+/// noun. Anywhere else it is a word: "wait a second", "at first", "first
+/// draft", "First, the budget". A month named "May" has to be capitalized to
+/// count on its own: "you may first want to" has no date in it.
+fn ordinal_figure(toks: &[&str], cores: &[&str], i: usize) -> bool {
+    let month = |j: usize| cores.get(j).is_some_and(|w| MONTHS.contains(w) && (*w != "may" || split_affixes(toks[j]).1 == "May"));
+    (i > 0 && month(i - 1))
+        || month(i + 1)
+        || (cores.get(i + 1) == Some(&"of") && cores.get(i + 2).is_some_and(|w| MONTHS.contains(w)))
+        || cores.get(i + 1).is_some_and(|w| NUMBERED.contains(w))
+}
+
+/// Is the token at `i` an island in Arabic: every neighbour it has is in
+/// Arabic script?
+fn arabic_around(toks: &[&str], i: usize) -> bool {
+    let mut sides = [i.checked_sub(1).map(|j| toks[j]), toks.get(i + 1).copied()].into_iter().flatten().peekable();
+    sides.peek().is_some() && sides.all(|t| t.chars().any(is_arabic))
 }
 
 /// Words right after which a lone "one" is the pronoun, never a count.
@@ -1037,7 +1167,7 @@ fn replace_and_trim_before(hay: &str, needle: &str, rep: &str) -> String {
 /// left-boundary check relies on scanning the ORIGINAL string with a single
 /// global index, and slicing into it mid-scan would silently break that
 /// check at the slice's own start).
-fn find_whole_ci(hay: &str, needle: &str) -> Option<(usize, usize)> {
+pub(crate) fn find_whole_ci(hay: &str, needle: &str) -> Option<(usize, usize)> {
     let hay_lc = hay.to_ascii_lowercase();
     let needle_lc = needle.to_ascii_lowercase();
     let mut i = 0;
@@ -1252,17 +1382,55 @@ fn apply_casing_commands(text: &str) -> (String, Vec<String>) {
 /// Put `apply_casing_commands`' identifiers back in place of their
 /// placeholders.
 fn unmask(text: &str, made: &[String]) -> String {
-    if made.is_empty() {
+    unmask_from(text, made, 0)
+}
+
+/// `unmask` for the placeholders from `first` on, leaving the earlier ones
+/// masked: the trained words `mask_terms` added after the identifiers.
+fn unmask_from(text: &str, made: &[String], first: usize) -> String {
+    if made.len() <= first {
         return text.to_string();
     }
     let mut out = String::with_capacity(text.len());
     for c in text.chars() {
-        match (c as u32).checked_sub(0xE000).and_then(|i| made.get(i as usize)) {
+        match (c as u32).checked_sub(0xE000).map(|i| i as usize).filter(|&i| i >= first).and_then(|i| made.get(i)) {
             Some(ident) => out.push_str(ident),
             None => out.push(c),
         }
     }
     out
+}
+
+/// Mask every whole-word occurrence of a `term` (#113), one placeholder
+/// each, and push the term so `unmask` writes it back as trained. Any casing
+/// of it matches, unless the term is one ordinary English word ("Cursor",
+/// "Notion"): then only the trained casing does, or every "cursor" would come
+/// out capitalized, `dictionary_safe`'s trap again. Longest term first, so
+/// "Nuvanto Flow" is taken whole before "Flow".
+fn mask_terms(text: &str, terms: &[String], made: &mut Vec<String>) -> String {
+    let mut terms: Vec<&str> = terms.iter().map(|t| t.trim()).filter(|t| !t.is_empty()).collect();
+    terms.sort_unstable();
+    terms.dedup();
+    terms.sort_by_key(|t| std::cmp::Reverse(t.len()));
+    let mut text = text.to_string();
+    if terms.is_empty() {
+        return text;
+    }
+    let english = FstDictionary::curated();
+    for term in terms {
+        let exact = !term.contains(' ') && is_real_word(&english, &term.to_lowercase());
+        loop {
+            let found = if exact {
+                text.match_indices(term).map(|(s, _)| (s, s + term.len())).find(|&(s, e)| is_edge(&text[..s], &text[e..]))
+            } else {
+                find_whole_ci(&text, term)
+            };
+            let Some((start, end)) = found else { break };
+            text.replace_range(start..end, placeholder(made.len()).encode_utf8(&mut [0; 4]));
+            made.push(term.to_string());
+        }
+    }
+    text
 }
 
 /// Mask the AI tier's rewrite again, so the snippet pass can't touch the
@@ -1327,7 +1495,16 @@ fn collapse_stutters<'a>(tokens: &[&'a str]) -> Vec<&'a str> {
         // starts a new sentence ("I saw him. Him and I left"), not a
         // stutter — commas don't count, since a stutter is often
         // transcribed with a pause comma in between ("the, the store").
-        let new_sentence = out.last().is_some_and(|p: &&str| p.ends_with(['.', '!', '?']));
+        let new_sentence = out.last().is_some_and(|p: &&str| p.ends_with(['.', '!', '?', '؟', '؛']));
+        // Arabic says a word twice on purpose (#111): "كده كده" is "either
+        // way" where "كده" is "like this", and "شوية شوية", "واحدة واحدة",
+        // "جدا جدا", "لا لا" all mean the pair. The doubling is open-ended
+        // (any noun can be dealt out "بيت بيت"), so a list like
+        // `LEGIT_DOUBLES` can't hold it, and the two mistakes aren't equal: a
+        // real stutter left in ("في في مشكلة") is a repeat the user sees and
+        // deletes, a collapsed pair is a changed meaning they don't. So an
+        // Arabic-script token is never collapsed.
+        let arabic = core.chars().any(is_arabic);
         // A token that OPENS a quoted span is a hard boundary too, same
         // idea as new_sentence: "and I <quote>I am the leader..." tokenizes
         // to "I" then a quote-glued "\"I" (no space between the glyph
@@ -1341,7 +1518,7 @@ fn collapse_stutters<'a>(tokens: &[&'a str]) -> Vec<&'a str> {
         // collapse combined on real input.
         let starts_quoted = tok.starts_with('"') || tok.starts_with('\u{201C}');
         let exempt = LEGIT_DOUBLES.iter().any(|w| w.eq_ignore_ascii_case(core));
-        if !is_numeric && !new_sentence && !starts_quoted && !exempt {
+        if !is_numeric && !new_sentence && !starts_quoted && !exempt && !arabic {
             if let Some(prev) = out.last() {
                 let prev_core = prev.trim_matches(|c: char| !c.is_alphanumeric());
                 if !prev_core.is_empty() && prev_core.eq_ignore_ascii_case(core) {
@@ -1813,6 +1990,34 @@ mod tests {
     }
 
     #[test]
+    fn stutter_collapse_never_touches_arabic() {
+        // #111: each pair means the pair. Through the whole Rules tier, so
+        // Harper's own repetition lint is covered too.
+        let (p, _) = trained(&[]);
+        for same in [
+            "كده كده هنخلص الشغل النهارده",
+            "شوية شوية هتتعود على الموضوع",
+            "امشي واحدة واحدة يا معلم",
+            "لا لا مش كده خالص",
+            "لا، لا مش كده",
+            "الموضوع ده مهم جدا جدا",
+            "يلا يلا نمشي",
+            "بس بس كفاية",
+            "ايوه ايوه صح",
+            "ليه؟ ليه عملت كده",
+            // What never collapsing gives up: a real stutter stays, in view.
+            "في في مشكلة في الـ server",
+        ] {
+            assert_eq!(p.polish(same).text, same);
+        }
+        // ؟ and ؛ end a sentence for Latin words too; English is as before.
+        assert_eq!(rules("okay؟ okay you said that"), "Okay؟ okay you said that");
+        assert_eq!(rules("done؛ done means merged"), "Done؛ done means merged");
+        assert_eq!(rules("الـ build build فشل"), "الـ build فشل");
+        assert_eq!(rules("we should go to the the store"), "We should go to the store");
+    }
+
+    #[test]
     fn stutter_collapse_skips_numeric_tokens() {
         // Repeated digits are meaningful, not disfluency — never collapsed.
         assert_eq!(rules("row 1 1 of 2"), "Row 1 1 of 2");
@@ -1860,6 +2065,16 @@ mod tests {
         // Leading/trailing edges too — no stray space at either end.
         assert_eq!(apply_formatting_commands("new paragraph hello"), "\n\nhello");
         assert_eq!(apply_formatting_commands("hello new line"), "hello\n");
+    }
+
+    #[test]
+    fn formatting_commands_take_the_mark_the_asr_put_after_them() {
+        assert_eq!(apply_formatting_commands("Shopping list. New line. Apples. New line. Rice."), "Shopping list.\nApples.\nRice.");
+        // The mark before the command is the speaker's sentence: it stays.
+        assert_eq!(apply_formatting_commands("Dear team, new paragraph, the office is closed."), "Dear team,\n\nthe office is closed.");
+        assert_eq!(apply_formatting_commands("Thanks. New line."), "Thanks.\n");
+        // Not a stray mark: it starts the word.
+        assert_eq!(apply_formatting_commands("it goes in new line .env"), "it goes in\n.env");
     }
 
     #[test]
@@ -2082,6 +2297,81 @@ mod tests {
         assert_eq!(harper(&cleaned), "I went to the store");
     }
 
+    // ── #113: the user's spellings, and names nobody trained ─────────
+    /// Rules mode with `words` trained.
+    fn trained(words: &[&str]) -> (Polisher, Controls) {
+        let cfg = crate::config::Config::default();
+        let controls = crate::Controls::from_config(&cfg);
+        controls.polish_mode.store(PolishMode::Rules.as_u8(), Ordering::Relaxed);
+        *controls.vocabulary.lock().unwrap() =
+            words.iter().map(|w| VocabEntry { word: w.to_string(), ..Default::default() }).collect();
+        (Polisher::new(controls.clone(), cfg.llm.clone()), controls)
+    }
+
+    #[test]
+    fn harper_never_respells_a_trained_word() {
+        let (p, _) = trained(&["Heliboard", "Qwen"]);
+        let same = "I installed Heliboard and tried Qwen today";
+        assert_eq!(p.polish(same).text, same);
+        // The phonetic corrector's fix stands; "kwen" is too short for it.
+        assert_eq!(p.polish("download heleboard and try kwen").text, "Download Heliboard and try kwen");
+        // Heard in lowercase, written as trained, in either script's company.
+        assert_eq!(p.polish("نزّل heliboard وجرّب qwen").text, "نزّل Heliboard وجرّب Qwen");
+        assert_eq!(p.polish("heliboard and QWEN both work").text, "Heliboard and Qwen both work");
+    }
+
+    #[test]
+    fn harper_never_respells_a_name_it_does_not_know() {
+        let (p, _) = trained(&[]);
+        for same in ["نزّل heliboard وجرّب qwen على onnx", "افتح new ده vanto flow دلوقتي"] {
+            assert_eq!(p.polish(same).text, same);
+        }
+        assert_eq!(p.polish("yalla ya basha inshallah bokra").text, "Yalla ya basha inshallah bokra");
+        // Casing is not respelling, and a real word's lints are untouched.
+        assert_eq!(p.polish("push it to github").text, "Push it to GitHub");
+        assert_eq!(p.polish("I went to the the store.").text, "I went to the store.");
+    }
+
+    #[test]
+    fn a_trained_ordinary_word_keeps_the_casing_it_was_heard_in() {
+        // "Cursor" the editor is trained; "cursor" the caret is still a word.
+        let (p, _) = trained(&["Cursor"]);
+        assert_eq!(p.polish("move the cursor to the top in Cursor").text, "Move the cursor to the top in Cursor");
+    }
+
+    #[test]
+    fn a_word_entry_replacement_is_protected_and_a_snippet_still_keys_on_a_trained_word() {
+        let (p, controls) = trained(&["Heliboard"]);
+        *controls.dictionary.lock().unwrap() = vec![
+            (vec!["zor X".into()], "Zorvecks".into(), EntryKind::Word),
+            (vec!["heliboard link".into()], "example.com/heliboard".into(), EntryKind::Snippet),
+        ];
+        // Made by the entry, and written by the ASR on its own in lowercase.
+        assert_eq!(p.polish("ask zor X about it then ask zorvecks again").text, "Ask Zorvecks about it then ask Zorvecks again");
+        assert_eq!(p.polish("send me the heliboard link").text, "Send me the example.com/heliboard");
+        // The master switch off: entries don't fire, so they recase nothing.
+        controls.replacements_enabled.store(false, Ordering::Relaxed);
+        assert_eq!(p.polish("ask zorvecks again").text, "Ask zorvecks again");
+    }
+
+    #[test]
+    fn mask_terms_takes_the_longest_term_whole_and_each_occurrence() {
+        let terms = ["Flow".to_string(), "Nuvanto Flow".to_string(), " ".to_string()];
+        let mut made = vec!["userName".to_string()]; // an identifier, masked earlier
+        let masked = mask_terms("open nuvanto flow and the Flow tab, not the overflow", &terms, &mut made);
+        assert_eq!(made, ["userName", "Nuvanto Flow", "Flow"]);
+        assert_eq!(unmask_from(&masked, &made, 1), "open Nuvanto Flow and the Flow tab, not the overflow");
+        // "flow" is an ordinary word: lowercase, it is left as said.
+        let mut made = Vec::new();
+        assert_eq!(mask_terms("the flow is fine", &terms, &mut made), "the flow is fine");
+        assert!(made.is_empty());
+        // Placeholders before `first` stay masked.
+        let made = vec!["userName".to_string(), "Qwen".to_string()];
+        let text = format!("{} runs {}", placeholder(0), placeholder(1));
+        assert_eq!(unmask_from(&text, &made, 1), format!("{} runs Qwen", placeholder(0)));
+        assert_eq!(unmask(&text, &made), "userName runs Qwen");
+    }
+
     #[test]
     fn numbers_the_three_reported_examples() {
         // Kai's exact live-tested cases.
@@ -2104,13 +2394,55 @@ mod tests {
 
     #[test]
     fn numbers_ordinals_take_the_right_suffix() {
-        assert_eq!(normalize_numbers("first"), "1st");
-        assert_eq!(normalize_numbers("second"), "2nd");
-        assert_eq!(normalize_numbers("third"), "3rd");
-        assert_eq!(normalize_numbers("fourth"), "4th");
-        assert_eq!(normalize_numbers("eleventh"), "11th"); // 11-13 are always -th
+        assert_eq!(normalize_numbers("March first"), "March 1st");
+        assert_eq!(normalize_numbers("the second of June"), "the 2nd of June");
+        assert_eq!(normalize_numbers("third floor"), "3rd floor");
+        assert_eq!(normalize_numbers("July fourth"), "July 4th");
+        assert_eq!(normalize_numbers("the eleventh of May"), "the 11th of May"); // 11-13 are always -th
         assert_eq!(normalize_numbers("twenty first"), "21st");
-        assert_eq!(normalize_numbers("twentieth"), "20th");
+        assert_eq!(normalize_numbers("the twentieth century"), "the 20th century");
+    }
+
+    #[test]
+    fn numbers_leave_a_lone_ordinal_a_word() {
+        // #114's list, and the QA set's (#29).
+        for s in [
+            "wait a second",
+            "give me one second",
+            "the second one",
+            "this is the first draft",
+            "at first I thought so",
+            "First, the budget. Second, the hiring plan. Third, the office move.",
+            "okay so first we load the data",
+            "pack a first aid kit",
+            "one third of the class",
+            "you may first want to check",
+            "it is due on the fifteenth",
+            "استنى second واحدة بس",
+            "ده الـ first draft بتاعي",
+            "خد one وانا هاخد الـ second",
+        ] {
+            assert_eq!(normalize_numbers(s), s);
+        }
+        assert_eq!(normalize_numbers("wait a second I need one more minute"), "wait a second I need 1 more minute");
+        // Where a figure is written: a compound, a date, a numbered noun.
+        assert_eq!(normalize_numbers("the twenty second of May"), "the 22nd of May");
+        assert_eq!(normalize_numbers("due on march fifteenth"), "due on march 15th");
+        assert_eq!(normalize_numbers("on May first, the second quarter starts"), "on May 1st, the 2nd quarter starts");
+        // A count between Arabic words is still a count, unless it is "one".
+        assert_eq!(normalize_numbers("عايز three نسخ من الملف"), "عايز 3 نسخ من الملف");
+    }
+
+    #[test]
+    fn numbers_a_ten_and_a_unit_join_after_a_hundred() {
+        // Was "120 8": the ten-then-unit check forgot the hundred (#29).
+        assert_eq!(normalize_numbers("one hundred twenty eight"), "128");
+        assert_eq!(normalize_numbers("three hundred and forty five units"), "345 units");
+        assert_eq!(normalize_numbers("two thousand nine hundred ninety nine"), "2999");
+        assert_eq!(normalize_numbers("the one hundred twenty third"), "the 123rd");
+        // Still two numbers: a unit after a unit, a teen after a hundred's unit.
+        assert_eq!(normalize_numbers("one hundred five six"), "105 6");
+        assert_eq!(normalize_numbers("twenty three fourth street"), "23 4th street");
     }
 
     #[test]
@@ -2284,7 +2616,7 @@ mod tests {
         ] {
             assert_eq!(normalize_numbers(s), s);
         }
-        assert_eq!(normalize_numbers("pick the third one"), "pick the 3rd one");
+        assert_eq!(normalize_numbers("pick the third one"), "pick the third one");
     }
 
     #[test]
@@ -2557,6 +2889,39 @@ mod tests {
         assert_eq!(rewrite_guard(input, output, &[]), None); // two new words: a respelling's worth
         let output = "The garden desperately needs fresh cold water, and the fence needs paint.";
         assert_eq!(rewrite_guard(input, output, &[]), Some("new-words"));
+    }
+
+    #[test]
+    fn rewrite_guard_rejects_one_lost_word_of_another_script() {
+        // Dropped, and translated: each a single lost word, which English may lose.
+        let dropped = rewrite_guard("the build failed بكرة so we need a rollback plan", "The build failed. We need a rollback plan.", &[]);
+        assert_eq!(dropped, Some("dropped-words"));
+        let translated = rewrite_guard("the client قال the release is fine", "The client said the release is fine.", &[]);
+        assert_eq!(translated, Some("dropped-words"));
+        assert_eq!(rewrite_guard("the client قال the release is fine", "The client قال the release is fine.", &[]), None);
+        // The filler the prompt names may still go, and so may one English word.
+        assert_eq!(rewrite_guard("يعني the build failed again", "The build failed again.", &[]), None);
+        assert_eq!(rewrite_guard("the build totally failed again today", "The build failed again today.", &[]), None);
+    }
+
+    #[test]
+    fn a_take_with_arabic_script_never_goes_to_the_model() {
+        let cfg = crate::config::Config::default();
+        let controls = crate::Controls::from_config(&cfg);
+        controls.polish_mode.store(PolishMode::Ai.as_u8(), Ordering::Relaxed);
+        controls.ai_min_words.store(0, Ordering::Relaxed);
+        let p = Polisher::new(controls, cfg.llm.clone());
+        // One Arabic word in an English take, a code-switched take, an Arabic one.
+        for (take, rules) in [
+            ("um the build failed بكرة so we need a rollback plan", "The build failed بكرة so we need a rollback plan"),
+            ("um the client قال the release is fine", "The client قال the release is fine"),
+            ("um افتح الـ terminal وشغّل الـ build", "افتح الـ terminal وشغّل الـ build"),
+        ] {
+            let out = p.polish(take);
+            assert_eq!((out.text.as_str(), out.tier, out.fallback), (rules, "rules", "arabic"), "{take}");
+            assert!(!p.uses_ai_tier(take), "no Polishing state for {take}");
+        }
+        assert!(is_arabic('ب') && is_arabic('؟') && is_arabic('ﻻ') && !is_arabic('b') && !is_arabic('é'));
     }
 
     #[test]
