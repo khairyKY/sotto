@@ -119,7 +119,7 @@ const state = {
   level: 0.0,
   since: performance.now(),
 };
-const inst = { env: 0.4, sparkles: [], lastSpark: 0, dots: [] };
+const inst = { env: 0.4, dots: [] };
 // Hit-region for whatever button the current state draws (✕ cancel or ↻
 // retry) — recomputed every frame in drawState, read by the click handler.
 // null when the current state has no button (idle / done).
@@ -151,7 +151,6 @@ function setState(name) {
   if (name === state.name) return;
   state.name = name;
   state.since = performance.now();
-  inst.sparkles = [];
   inst.dots = [];
   if (name === "idle") {
     // Rust's overlay_state only tracks DictationEvent-driven transitions;
@@ -172,6 +171,15 @@ const easeOut = (t) => 1 - Math.pow(1 - t, 3);
 // standing in for CSS ease-in-out.
 const cycle = (ms, per, delay) => (((ms / 1000 - delay) / per) % 1 + 1) % 1;
 const seg = (a, b, u) => a + (b - a) * (0.5 - 0.5 * Math.cos(Math.PI * u));
+/// mm-blob: [dx, dy, scale] of one blob on a `per`-second loop.
+function mmBlob(ms, per, delay) {
+  const p = cycle(ms, per, delay);
+  if (p < 1 / 3) { const u = p * 3; return [seg(0, 3, u), seg(0, -2, u), seg(1, 1.16, u)]; }
+  if (p < 2 / 3) { const u = (p - 1 / 3) * 3; return [seg(3, -3, u), seg(-2, 1, u), seg(1.16, 0.88, u)]; }
+  const u = (p - 2 / 3) * 3; return [seg(-3, 0, u), seg(1, 0, u), seg(0.88, 1, u)];
+}
+// The design's 4-point twinkle star (12x12 viewBox).
+const STAR = new Path2D('M6 0 l1 4 4 1 -4 1 -1 4 -1 -4 -4 -1 4 -1z');
 
 /// `r` is the corner radius and `sc` scales the neumorphic shadow — both
 /// animate during the tucked↔expanded morph, so neither can stay the constant
@@ -296,12 +304,6 @@ function drawTuckedDot(cx, cy, d, alpha, dark, now) {
 
   // mm-blob / mm-bounce, sampled analytically. Each cloud is a soft radial
   // fading to transparent, so they blend instead of stacking as hard circles.
-  const blob = (t, per, delay) => {
-    const p = cycle(now, per, delay);
-    if (p < 1 / 3) { const u = p * 3; return [seg(0, 3, u), seg(0, -2, u), seg(1, 1.16, u)]; }
-    if (p < 2 / 3) { const u = (p - 1 / 3) * 3; return [seg(3, -3, u), seg(-2, 1, u), seg(1.16, 0.88, u)]; }
-    const u = (p - 2 / 3) * 3; return [seg(-3, 0, u), seg(1, 0, u), seg(0.88, 1, u)];
-  };
   const bounce = (per, delay) => 4 * Math.cos(2 * Math.PI * cycle(now, per, delay));
   const cloud = (ox, oy, size, color, a) => {
     const cg = ctx.createRadialGradient(ox, oy, 0, ox, oy, size);
@@ -313,9 +315,9 @@ function drawTuckedDot(cx, cy, d, alpha, dark, now) {
     ctx.fill();
   };
   const left = cx - rad, top = cy - rad;
-  let [bx, by, bs] = blob(now, 3.8, -1.2);
+  let [bx, by, bs] = mmBlob(now, 3.8, -1.2);
   cloud(left + (-2 + 4 + bx) * k, top + (-1 + 4 + by) * k, 4 * k * bs, 'rgba(214,200,240,ALPHA)', '0.90');
-  [bx, by, bs] = blob(now, 4.6, -2.8);
+  [bx, by, bs] = mmBlob(now, 4.6, -2.8);
   cloud(left + (d / k - 1 - 3 + bx) * k, top + (1 + 3 + by) * k, 3 * k * bs, 'rgba(255,254,250,ALPHA)', '0.85');
   const yb = bounce(3.2, -0.8);
   cloud(left + (2 + 3.5) * k, top + (d / k + 1 - 3.5 + yb) * k, 3.5 * k, 'rgba(183,161,228,ALPHA)', '0.80');
@@ -430,55 +432,43 @@ function drawState(x, y, w, h, now, radius, shadowScale, baseAlpha) {
     cancelBtn(xr, yc, btnR, alpha, dark);
     activeBtn = { x: xr, y: yc, r: btnR, action: 'cancel' };
   } else if (name === 'polishing') {
+    // The design's 62x26 box: three gold blobs at .85 drifting as one cloud
+    // (mm-blob), a shimmer bar sweeping across it (mm-shimmer) and a 4-point
+    // twinkle at its top right (mm-twinkle).
     const cx = (contentL + xr) / 2;
-    const gld = gold;
-    const bPhase = now * 0.0024;
-    const blobOffs = [
-      [Math.sin(bPhase) * 3, Math.cos(bPhase * 0.7) * 2],
-      [Math.sin(bPhase + 2.1) * 4, Math.cos(bPhase * 0.7 + 1.4) * 3],
-      [Math.sin(bPhase + 4.2) * 2, Math.cos(bPhase * 0.7 + 2.8) * 1.5],
-    ];
-    const blobSizes = [8, 10, 7.5];
-    for (let i = 0; i < 3; i++) {
-      ctx.fillStyle = gld;
-      ctx.globalAlpha = alpha * 0.25;
+    const glint = dark ? '#FAF0D6' : '#F5E2B0';
+    ctx.fillStyle = gold;
+    ctx.globalAlpha = alpha * 0.85;
+    for (const [ox, oy, r, delay] of [[-14, 1, 8, 0], [1, 0, 10, -0.5], [13.5, 1.5, 7.5, -1]]) {
+      const [bx, by, bs] = mmBlob(sincePhase, 2.6, delay);
       ctx.beginPath();
-      ctx.arc(cx + blobOffs[i][0], yc + blobOffs[i][1], blobSizes[i], 0, Math.PI * 2);
+      ctx.arc(cx + ox + bx, yc + oy + by, r * bs, 0, Math.PI * 2);
       ctx.fill();
     }
-    ctx.globalAlpha = alpha * 0.5;
-    const shimmer = ctx.createLinearGradient(cx - 14, yc, cx + 14, yc);
-    shimmer.addColorStop(0, 'transparent');
-    shimmer.addColorStop(0.5, dark ? '#FAF0D6' : '#F5E2B0');
-    shimmer.addColorStop(1, 'transparent');
-    const shX = ((now * 0.001 * 28) % 28) - 14;
+    // In the design the keyframe's translateX replaces the bar's centring
+    // translate, so the bar's left edge (not its middle) sweeps -28 → 28 px
+    // from the box centre, fading in and out.
+    const sp = cycle(sincePhase, 2, 0);
+    const sx = cx + seg(-28, 28, sp);
+    const shimmer = ctx.createLinearGradient(sx, 0, sx + 22, 0);
+    shimmer.addColorStop(0, glint + '00');
+    shimmer.addColorStop(0.5, glint);
+    shimmer.addColorStop(1, glint + '00');
     ctx.fillStyle = shimmer;
-    ctx.beginPath();
-    ctx.ellipse(cx + shX, yc, 3, 1.5, 0, 0, Math.PI * 2);
+    ctx.globalAlpha = alpha * (sp < 0.5 ? seg(0, 1, sp * 2) : seg(1, 0, sp * 2 - 1));
+    rr(sx, yc, 22, 3, 1.5);
     ctx.fill();
-    ctx.globalAlpha = alpha;
-    if (now - inst.lastSpark > 200) {
-      inst.sparkles.push({
-        x: cx + (Math.random() - 0.5) * 30,
-        y: yc + (Math.random() - 0.5) * 14,
-        born: now, r: 2 + Math.random() * 2,
-      });
-      inst.lastSpark = now;
-    }
-    inst.sparkles = inst.sparkles.filter(s => now - s.born < 800);
-    for (const sp of inst.sparkles) {
-      const age = (now - sp.born) / 800, e = Math.sin(age * Math.PI);
-      ctx.globalAlpha = alpha * e;
-      ctx.fillStyle = dark ? '#FAF0D6' : '#F5E2B0';
-      ctx.beginPath();
-      for (let j = 0; j < 4; j++) {
-        const a = j * Math.PI / 2 + now * 0.001;
-        const sx = sp.x + Math.cos(a) * sp.r * e;
-        const sy = sp.y + Math.sin(a) * sp.r * e;
-        j === 0 ? ctx.moveTo(sx, sy) : ctx.lineTo(sx, sy);
-      }
-      ctx.closePath();
-      ctx.fill();
+    const tp = cycle(sincePhase, 1.8, 0);
+    const k = tp < 0.5 ? seg(0, 1, tp * 2) : seg(1, 0, tp * 2 - 1);
+    if (k > 0.01) {
+      ctx.save();
+      ctx.globalAlpha = alpha * k;
+      ctx.translate(cx + 24.5, yc - 9.5); // 9px star, top -1 / right 2 in the box
+      ctx.scale(0.75 * k, 0.75 * k);
+      ctx.translate(-6, -6);
+      ctx.fillStyle = glint;
+      ctx.fill(STAR);
+      ctx.restore();
     }
     ctx.globalAlpha = alpha;
     cancelBtn(xr, yc, btnR, alpha, dark);
