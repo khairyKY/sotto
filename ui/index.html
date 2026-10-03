@@ -204,16 +204,12 @@
         <section class="page" id="page-dictionary">
           <div class="page-head-row" style="margin-bottom:14px">
             <h1 class="page-title" style="margin:0">Dictionary</h1>
-            <span class="btn-add-header" id="dict-add">+ Add word</span>
-          </div>
-
-          <div class="card-raised master-toggle-card">
-            <div class="toggle-row">
-              <div class="row-label">
-                <div class="label">All replacements</div>
-                <div class="sub">Turn off to pause every dictionary word and snippet</div>
-              </div>
-              <button class="switch" id="dict-master-toggle" role="switch" aria-checked="true"><span class="knob"></span></button>
+            <div class="head-actions">
+              <span class="head-switch">
+                <span class="section-hint">Enabled</span>
+                <button class="switch" id="dict-master-toggle" role="switch" aria-checked="true" aria-label="Words and snippets" title="Turn off to pause every word and snippet"><span class="knob"></span></button>
+              </span>
+              <span class="btn-add-header" id="dict-add">+ Add word</span>
             </div>
           </div>
 
@@ -247,16 +243,12 @@
         <section class="page" id="page-snippets">
           <div class="page-head-row" style="margin-bottom:14px">
             <h1 class="page-title" style="margin:0">Snippets</h1>
-            <span class="btn-add-header" id="snip-add">+ Add snippet</span>
-          </div>
-
-          <div class="card-raised master-toggle-card">
-            <div class="toggle-row">
-              <div class="row-label">
-                <div class="label">All replacements</div>
-                <div class="sub">Same switch as on Dictionary. Turn off to pause every word and snippet.</div>
-              </div>
-              <button class="switch" id="snip-master-toggle" role="switch" aria-checked="true"><span class="knob"></span></button>
+            <div class="head-actions">
+              <span class="head-switch">
+                <span class="section-hint">Enabled</span>
+                <button class="switch" id="snip-master-toggle" role="switch" aria-checked="true" aria-label="Words and snippets" title="Turn off to pause every word and snippet"><span class="knob"></span></button>
+              </span>
+              <span class="btn-add-header" id="snip-add">+ Add snippet</span>
             </div>
           </div>
 
@@ -364,7 +356,7 @@
               <h1 class="page-title" style="margin:0">Transforms</h1>
               <span class="badge-beta">BETA</span>
             </div>
-            <div style="display:flex;align-items:center;gap:9px">
+            <div class="head-switch">
               <span class="section-hint">Enabled</span>
               <button class="switch" id="transforms-enabled" data-lab="transforms_enabled" role="switch" aria-checked="false" aria-label="Transform shortcuts"><span class="knob"></span></button>
             </div>

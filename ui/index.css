@@ -890,11 +890,12 @@ input[type="range"]::-webkit-slider-thumb {
   color: var(--mm-accent);
 }
 
-/* Master replacements toggle — governs the whole list below it. Dictionary
-   and Snippets share one backend flag (set_replacements_enabled), so both
-   pages get their own card here but index.js keeps the two switches and the
-   list dimming in sync in one place (setReplacementsEnabled). */
-.master-toggle-card { margin-bottom: 14px; }
+/* A page's own on/off ("Enabled") and its Add button, in the head row, as
+   Transforms. Dictionary and Snippets share one backend flag
+   (set_replacements_enabled); index.js keeps both switches and the list
+   dimming in step (setReplacementsEnabled). */
+.head-actions { display: flex; align-items: center; gap: 16px; }
+.head-switch { display: flex; align-items: center; gap: 9px; }
 
 /* ── intro callout (Dictionary / Snippets) ──────────────
    The design's flat lilac panel: plum title, one calm line, flat example chips. */
