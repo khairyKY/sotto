@@ -137,14 +137,16 @@ const $ = (id) => document.getElementById(id);
 // ── settings modal ──
 // Settings opens over the app (shell dimmed behind) rather than replacing the
 // content area, so you never lose your place in Home/Insights/etc.
+// Only one nav item is lit: Settings while it's open, the page behind it after.
+const markNav = (page) => document.querySelectorAll(".nav-item").forEach(n => n.classList.toggle("active", n.dataset.page === page));
 function openSettings() {
   $("settings-scrim").hidden = false;
-  document.querySelector('.nav-item[data-page="settings"]')?.classList.add("active");
+  markNav("settings");
   syncPad();
 }
 function closeSettings() {
   $("settings-scrim").hidden = true;
-  document.querySelector('.nav-item[data-page="settings"]')?.classList.remove("active");
+  markNav(document.querySelector(".page.active")?.id.replace("page-", ""));
   syncPad();
 }
 const settingsOpen = () => !$("settings-scrim").hidden;
@@ -154,11 +156,9 @@ function navigate(page) {
   if (page === 'settings') { openSettings(); return; }
   closeSettings(); // tray → Insights etc. while the modal is up should land on that page
   document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
-  document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
   const pg = $(`page-${page}`);
   if (pg) pg.classList.add('active');
-  const nav = document.querySelector(`.nav-item[data-page="${page}"]`);
-  if (nav) nav.classList.add('active');
+  markNav(page);
   if (page === 'insights') loadInsights();
   if (page === 'history') loadHistory();
   if (page === 'home') loadHome();
