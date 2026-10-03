@@ -7,6 +7,7 @@ const CL = {
   goldDark: '#F0D9A4', goldDarkGlow: 'rgba(240,217,164,0.30)',
   blush: '#F0BFCF', blushTxt: '#A85874',
   blushDark: '#5B3F4E', blushDarkTxt: '#F0C3D2',
+  rose: '#C88A94', roseDark: '#7A5060', // error countdown fill
   muted: '#948C86', mutedDark: '#8F859A',
   txt: '#544F5A', txtDark: '#CDC5D2',
   cream: '#F0E9DF', creamShadow: 'rgba(196,183,165,0.40)',
@@ -119,7 +120,7 @@ const state = {
   level: 0.0,
   since: performance.now(),
 };
-const inst = { env: 0.4, sparkles: [], lastSpark: 0, dots: [] };
+const inst = { env: 0.4, dots: [] };
 // Hit-region for whatever button the current state draws (✕ cancel or ↻
 // retry) — recomputed every frame in drawState, read by the click handler.
 // null when the current state has no button (idle / done).
@@ -151,7 +152,6 @@ function setState(name) {
   if (name === state.name) return;
   state.name = name;
   state.since = performance.now();
-  inst.sparkles = [];
   inst.dots = [];
   if (name === "idle") {
     // Rust's overlay_state only tracks DictationEvent-driven transitions;
@@ -166,6 +166,21 @@ function setState(name) {
 
 function rr(x, y, w, h, r) { ctx.beginPath(); ctx.roundRect(x, y, w, h, r); }
 const easeOut = (t) => 1 - Math.pow(1 - t, 3);
+// The design's CSS @keyframes, sampled analytically. `cycle` is how far
+// through its `per`-second loop an animation is at `ms`, with the doc's
+// (negative) animation-delay; `seg` eases one keyframe segment, a cosine
+// standing in for CSS ease-in-out.
+const cycle = (ms, per, delay) => (((ms / 1000 - delay) / per) % 1 + 1) % 1;
+const seg = (a, b, u) => a + (b - a) * (0.5 - 0.5 * Math.cos(Math.PI * u));
+/// mm-blob: [dx, dy, scale] of one blob on a `per`-second loop.
+function mmBlob(ms, per, delay) {
+  const p = cycle(ms, per, delay);
+  if (p < 1 / 3) { const u = p * 3; return [seg(0, 3, u), seg(0, -2, u), seg(1, 1.16, u)]; }
+  if (p < 2 / 3) { const u = (p - 1 / 3) * 3; return [seg(3, -3, u), seg(-2, 1, u), seg(1.16, 0.88, u)]; }
+  const u = (p - 2 / 3) * 3; return [seg(-3, 0, u), seg(1, 0, u), seg(0.88, 1, u)];
+}
+// The design's 4-point twinkle star (12x12 viewBox).
+const STAR = new Path2D('M6 0 l1 4 4 1 -4 1 -1 4 -1 -4 -4 -1 4 -1z');
 
 /// `r` is the corner radius and `sc` scales the neumorphic shadow — both
 /// animate during the tucked↔expanded morph, so neither can stay the constant
@@ -251,14 +266,14 @@ function retryBtn(xr, yc, r, alpha, dark) {
 // rect (not the bar's) and clips to it: the pill is a CR-radius round-rect, so
 // at the bottom 3px its body is ~25px narrower than its bounding box on each
 // side. Drawing the bar to the bounding box left it hanging outside the pill.
-function countdownBar(x, y, w, h, pct, dark) {
+function countdownBar(x, y, w, h, pct, dark, fill = dark ? '#8F859A' : '#B5ADA0') {
   const bh = 3, by = y + h - bh;
   ctx.save();
   rr(x, y, w, h, CR);
   ctx.clip();
   ctx.fillStyle = dark ? CL.baseDark : CL.base;
   ctx.fillRect(x, by, w, bh);
-  ctx.fillStyle = dark ? '#8F859A' : '#B5ADA0';
+  ctx.fillStyle = fill;
   ctx.fillRect(x, by, w * pct, bh);
   ctx.restore();
 }
@@ -290,17 +305,7 @@ function drawTuckedDot(cx, cy, d, alpha, dark, now) {
 
   // mm-blob / mm-bounce, sampled analytically. Each cloud is a soft radial
   // fading to transparent, so they blend instead of stacking as hard circles.
-  const blob = (t, per, delay) => {
-    const p = (((now / 1000 - delay) / per) % 1 + 1) % 1;
-    const seg = (a, b, u) => a + (b - a) * (0.5 - 0.5 * Math.cos(Math.PI * u));
-    if (p < 1 / 3) { const u = p * 3; return [seg(0, 3, u), seg(0, -2, u), seg(1, 1.16, u)]; }
-    if (p < 2 / 3) { const u = (p - 1 / 3) * 3; return [seg(3, -3, u), seg(-2, 1, u), seg(1.16, 0.88, u)]; }
-    const u = (p - 2 / 3) * 3; return [seg(-3, 0, u), seg(1, 0, u), seg(0.88, 1, u)];
-  };
-  const bounce = (per, delay) => {
-    const p = (((now / 1000 - delay) / per) % 1 + 1) % 1;
-    return 4 * Math.cos(2 * Math.PI * p);
-  };
+  const bounce = (per, delay) => 4 * Math.cos(2 * Math.PI * cycle(now, per, delay));
   const cloud = (ox, oy, size, color, a) => {
     const cg = ctx.createRadialGradient(ox, oy, 0, ox, oy, size);
     cg.addColorStop(0, color.replace('ALPHA', a));
@@ -311,9 +316,9 @@ function drawTuckedDot(cx, cy, d, alpha, dark, now) {
     ctx.fill();
   };
   const left = cx - rad, top = cy - rad;
-  let [bx, by, bs] = blob(now, 3.8, -1.2);
+  let [bx, by, bs] = mmBlob(now, 3.8, -1.2);
   cloud(left + (-2 + 4 + bx) * k, top + (-1 + 4 + by) * k, 4 * k * bs, 'rgba(214,200,240,ALPHA)', '0.90');
-  [bx, by, bs] = blob(now, 4.6, -2.8);
+  [bx, by, bs] = mmBlob(now, 4.6, -2.8);
   cloud(left + (d / k - 1 - 3 + bx) * k, top + (1 + 3 + by) * k, 3 * k * bs, 'rgba(255,254,250,ALPHA)', '0.85');
   const yb = bounce(3.2, -0.8);
   cloud(left + (2 + 3.5) * k, top + (d / k + 1 - 3.5 + yb) * k, 3.5 * k, 'rgba(183,161,228,ALPHA)', '0.80');
@@ -359,7 +364,12 @@ function drawState(x, y, w, h, now, radius, shadowScale, baseAlpha) {
   const padL = 14, padR = 8, btnR = 11;
   const xr = x + w - padR - btnR;
   const contentL = x + padL;
-  const contentR = xr - 4;
+  // Every toast shares the design's layout: a 20px icon disc 12px in from the
+  // pill's edge, then its label 8px after the disc.
+  const iconX = x + 22, labelX = x + 40;
+  // Live states centre their animation in the design's flex area: from the
+  // left padding to the 4px gap before the ✕ disc.
+  const liveX = (contentL + xr - btnR - 4) / 2;
 
   const accent = dark ? CL.lilacDark : CL.lilac;
   const amber = dark ? CL.amberDark : CL.amber;
@@ -381,7 +391,7 @@ function drawState(x, y, w, h, now, radius, shadowScale, baseAlpha) {
     // isn't drawn.
     drawTuckedDot(x + w / 2, yc, tweenValue(tw.dot, now), alpha * tweenValue(tw.dotOp, now), dark, now);
   } else if (name === 'listening') {
-    const cx = (contentL + xr) / 2;
+    const cx = liveX;
     const nBars = 5;
     const barW = 3.5;
     const gap = 4;
@@ -405,22 +415,22 @@ function drawState(x, y, w, h, now, radius, shadowScale, baseAlpha) {
     cancelBtn(xr, yc, btnR, alpha, dark);
     activeBtn = { x: xr, y: yc, r: btnR, action: 'cancel' };
   } else if (name === 'transcribing') {
-    const cx = (contentL + xr) / 2;
-    const dotSpan = 28;
-    const sizes = [9, 7, 11, 8];
-    const delays = [0, 0.5, 1.0, 1.5];
-    const cycle = 2.3;
+    // mm-rise: four bubbles at fixed x in the design's 66x26 box, each rising
+    // from the box floor (translateY 9 → -15, scale .4 → 1.05) while it fades
+    // in to .95, down to .55 and out.
+    const cx = liveX, floor = yc + 12;
+    const sizes = [9, 7, 11, 8], xs = [-20.5, -5.5, 10.5, 23];
     for (let i = 0; i < 4; i++) {
-      const p = ((now * 0.001 - delays[i]) % cycle) / cycle;
-      const px = cx - dotSpan + p * dotSpan * 2;
-      const size = sizes[i] * 0.5;
-      const opacity = p < 0.25 ? p / 0.25 : p > 0.72 ? 1 - (p - 0.72) / 0.28 : 0.95;
+      const p = cycle(sincePhase, 2.3, -0.5 * i);
+      const opacity = p < 0.25 ? seg(0, 0.95, p / 0.25)
+        : p < 0.72 ? seg(0.95, 0.55, (p - 0.25) / 0.47)
+        : seg(0.55, 0, (p - 0.72) / 0.28);
       ctx.fillStyle = amber;
-      ctx.globalAlpha = alpha * Math.max(0, opacity);
+      ctx.globalAlpha = alpha * opacity;
       ctx.shadowColor = dark ? CL.amberDarkGlow : CL.amberGlow;
       ctx.shadowBlur = 6;
       ctx.beginPath();
-      ctx.arc(px, yc, size, 0, Math.PI * 2);
+      ctx.arc(cx + xs[i], floor - sizes[i] / 2 + seg(9, -15, p), sizes[i] / 2 * seg(0.4, 1.05, p), 0, Math.PI * 2);
       ctx.fill();
       ctx.shadowBlur = 0;
     }
@@ -428,55 +438,43 @@ function drawState(x, y, w, h, now, radius, shadowScale, baseAlpha) {
     cancelBtn(xr, yc, btnR, alpha, dark);
     activeBtn = { x: xr, y: yc, r: btnR, action: 'cancel' };
   } else if (name === 'polishing') {
-    const cx = (contentL + xr) / 2;
-    const gld = gold;
-    const bPhase = now * 0.0024;
-    const blobOffs = [
-      [Math.sin(bPhase) * 3, Math.cos(bPhase * 0.7) * 2],
-      [Math.sin(bPhase + 2.1) * 4, Math.cos(bPhase * 0.7 + 1.4) * 3],
-      [Math.sin(bPhase + 4.2) * 2, Math.cos(bPhase * 0.7 + 2.8) * 1.5],
-    ];
-    const blobSizes = [8, 10, 7.5];
-    for (let i = 0; i < 3; i++) {
-      ctx.fillStyle = gld;
-      ctx.globalAlpha = alpha * 0.25;
+    // The design's 62x26 box: three gold blobs at .85 drifting as one cloud
+    // (mm-blob), a shimmer bar sweeping across it (mm-shimmer) and a 4-point
+    // twinkle at its top right (mm-twinkle).
+    const cx = liveX;
+    const glint = dark ? '#FAF0D6' : '#F5E2B0';
+    ctx.fillStyle = gold;
+    ctx.globalAlpha = alpha * 0.85;
+    for (const [ox, oy, r, delay] of [[-14, 1, 8, 0], [1, 0, 10, -0.5], [13.5, 1.5, 7.5, -1]]) {
+      const [bx, by, bs] = mmBlob(sincePhase, 2.6, delay);
       ctx.beginPath();
-      ctx.arc(cx + blobOffs[i][0], yc + blobOffs[i][1], blobSizes[i], 0, Math.PI * 2);
+      ctx.arc(cx + ox + bx, yc + oy + by, r * bs, 0, Math.PI * 2);
       ctx.fill();
     }
-    ctx.globalAlpha = alpha * 0.5;
-    const shimmer = ctx.createLinearGradient(cx - 14, yc, cx + 14, yc);
-    shimmer.addColorStop(0, 'transparent');
-    shimmer.addColorStop(0.5, dark ? '#FAF0D6' : '#F5E2B0');
-    shimmer.addColorStop(1, 'transparent');
-    const shX = ((now * 0.001 * 28) % 28) - 14;
+    // In the design the keyframe's translateX replaces the bar's centring
+    // translate, so the bar's left edge (not its middle) sweeps -28 → 28 px
+    // from the box centre, fading in and out.
+    const sp = cycle(sincePhase, 2, 0);
+    const sx = cx + seg(-28, 28, sp);
+    const shimmer = ctx.createLinearGradient(sx, 0, sx + 22, 0);
+    shimmer.addColorStop(0, glint + '00');
+    shimmer.addColorStop(0.5, glint);
+    shimmer.addColorStop(1, glint + '00');
     ctx.fillStyle = shimmer;
-    ctx.beginPath();
-    ctx.ellipse(cx + shX, yc, 3, 1.5, 0, 0, Math.PI * 2);
+    ctx.globalAlpha = alpha * (sp < 0.5 ? seg(0, 1, sp * 2) : seg(1, 0, sp * 2 - 1));
+    rr(sx, yc, 22, 3, 1.5);
     ctx.fill();
-    ctx.globalAlpha = alpha;
-    if (now - inst.lastSpark > 200) {
-      inst.sparkles.push({
-        x: cx + (Math.random() - 0.5) * 30,
-        y: yc + (Math.random() - 0.5) * 14,
-        born: now, r: 2 + Math.random() * 2,
-      });
-      inst.lastSpark = now;
-    }
-    inst.sparkles = inst.sparkles.filter(s => now - s.born < 800);
-    for (const sp of inst.sparkles) {
-      const age = (now - sp.born) / 800, e = Math.sin(age * Math.PI);
-      ctx.globalAlpha = alpha * e;
-      ctx.fillStyle = dark ? '#FAF0D6' : '#F5E2B0';
-      ctx.beginPath();
-      for (let j = 0; j < 4; j++) {
-        const a = j * Math.PI / 2 + now * 0.001;
-        const sx = sp.x + Math.cos(a) * sp.r * e;
-        const sy = sp.y + Math.sin(a) * sp.r * e;
-        j === 0 ? ctx.moveTo(sx, sy) : ctx.lineTo(sx, sy);
-      }
-      ctx.closePath();
-      ctx.fill();
+    const tp = cycle(sincePhase, 1.8, 0);
+    const k = tp < 0.5 ? seg(0, 1, tp * 2) : seg(1, 0, tp * 2 - 1);
+    if (k > 0.01) {
+      ctx.save();
+      ctx.globalAlpha = alpha * k;
+      ctx.translate(cx + 24.5, yc - 9.5); // 9px star, top -1 / right 2 in the box
+      ctx.scale(0.75 * k, 0.75 * k);
+      ctx.translate(-6, -6);
+      ctx.fillStyle = glint;
+      ctx.fill(STAR);
+      ctx.restore();
     }
     ctx.globalAlpha = alpha;
     cancelBtn(xr, yc, btnR, alpha, dark);
@@ -503,60 +501,55 @@ function drawState(x, y, w, h, now, radius, shadowScale, baseAlpha) {
     }
     ctx.stroke();
   } else if (name === 'error') {
-    const gx = contentL + 8;
-    const toastW = contentR - gx;
+    // A solid Blush disc and a rose countdown, as designed.
     ctx.fillStyle = blush;
-    ctx.globalAlpha = alpha * 0.2;
     ctx.beginPath();
-    ctx.arc(gx + 8, yc, 10, 0, Math.PI * 2);
+    ctx.arc(iconX, yc, 10, 0, Math.PI * 2);
     ctx.fill();
-    ctx.globalAlpha = alpha;
     ctx.fillStyle = blushTxt;
     ctx.font = '700 11px "Hanken Grotesk", system-ui, sans-serif';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    ctx.fillText('!', gx + 8, yc);
+    ctx.fillText('!', iconX, yc);
     ctx.font = '500 12px "Hanken Grotesk", system-ui, sans-serif';
     ctx.textAlign = 'left';
     ctx.fillStyle = txt;
-    ctx.fillText("Didn't catch that", gx + 18, yc);
+    ctx.fillText("Didn't catch that", labelX, yc);
     retryBtn(xr, yc, btnR, alpha, dark);
     activeBtn = { x: xr, y: yc, r: btnR, action: 'retry' };
-    countdownBar(x, y, w, h, Math.max(0, 1 - sincePhase / 6000), dark);
+    countdownBar(x, y, w, h, Math.max(0, 1 - sincePhase / 6000), dark, dark ? CL.roseDark : CL.rose);
   } else if (name === 'cancelled') {
-    const gx = contentL + 8;
     ctx.save();
     ctx.globalAlpha = alpha;
     ctx.fillStyle = dark ? '#3A3340' : '#E6DFD4';
     ctx.beginPath();
-    ctx.arc(gx + 8, yc, 10, 0, Math.PI * 2);
+    ctx.arc(iconX, yc, 10, 0, Math.PI * 2);
     ctx.fill();
     ctx.strokeStyle = muted;
     ctx.lineWidth = 1.8;
     ctx.lineCap = 'round';
     const s = 4;
     ctx.beginPath();
-    ctx.moveTo(gx + 8 - s, yc - s); ctx.lineTo(gx + 8 + s, yc + s);
-    ctx.moveTo(gx + 8 + s, yc - s); ctx.lineTo(gx + 8 - s, yc + s);
+    ctx.moveTo(iconX - s, yc - s); ctx.lineTo(iconX + s, yc + s);
+    ctx.moveTo(iconX + s, yc - s); ctx.lineTo(iconX - s, yc + s);
     ctx.stroke();
     ctx.restore();
     ctx.font = '500 12px "Hanken Grotesk", system-ui, sans-serif';
     ctx.textAlign = 'left';
     ctx.textBaseline = 'middle';
     ctx.fillStyle = txt;
-    ctx.fillText('Cancelled', gx + 20, yc);
+    ctx.fillText('Cancelled', labelX, yc);
     retryBtn(xr, yc, btnR, alpha, dark);
     activeBtn = { x: xr, y: yc, r: btnR, action: 'retry' };
     countdownBar(x, y, w, h, Math.max(0, 1 - sincePhase / 6000), dark);
   } else if (name === 'nomodel') {
     // First-run: the speech model is still downloading. Same neutral toast
     // shape as Cancelled — the take is stashed, so ↻ works once it lands.
-    const gx = contentL + 8;
     ctx.save();
     ctx.globalAlpha = alpha;
     ctx.fillStyle = dark ? '#3A3340' : '#E6DFD4';
     ctx.beginPath();
-    ctx.arc(gx + 8, yc, 10, 0, Math.PI * 2);
+    ctx.arc(iconX, yc, 10, 0, Math.PI * 2);
     ctx.fill();
     // Down-arrow glyph: downloading.
     ctx.strokeStyle = muted;
@@ -564,15 +557,15 @@ function drawState(x, y, w, h, now, radius, shadowScale, baseAlpha) {
     ctx.lineCap = 'round';
     ctx.lineJoin = 'round';
     ctx.beginPath();
-    ctx.moveTo(gx + 8, yc - 5); ctx.lineTo(gx + 8, yc + 4);
-    ctx.moveTo(gx + 4.5, yc + 0.5); ctx.lineTo(gx + 8, yc + 4); ctx.lineTo(gx + 11.5, yc + 0.5);
+    ctx.moveTo(iconX, yc - 5); ctx.lineTo(iconX, yc + 4);
+    ctx.moveTo(iconX - 3.5, yc + 0.5); ctx.lineTo(iconX, yc + 4); ctx.lineTo(iconX + 3.5, yc + 0.5);
     ctx.stroke();
     ctx.restore();
     ctx.font = '500 12px "Hanken Grotesk", system-ui, sans-serif';
     ctx.textAlign = 'left';
     ctx.textBaseline = 'middle';
     ctx.fillStyle = txt;
-    ctx.fillText('Model downloading…', gx + 20, yc);
+    ctx.fillText('Model downloading…', labelX, yc);
     retryBtn(xr, yc, btnR, alpha, dark);
     activeBtn = { x: xr, y: yc, r: btnR, action: 'retry' };
     countdownBar(x, y, w, h, Math.max(0, 1 - sincePhase / 6000), dark);
@@ -589,21 +582,17 @@ function drawState(x, y, w, h, now, radius, shadowScale, baseAlpha) {
     // 'kept'); 'nothingtoundo' and 'undoterminal' (neutral). Lecture mode
     // (#23): 'lectureon', a dictation refused while a lecture is captured
     // (neutral).
-    const gx = contentL + 8, kept = name === 'kept' || name === 'notundone';
+    const kept = name === 'kept' || name === 'notundone';
     const tick = name === 'copied' || name === 'fixcopied';
-    ctx.save();
-    ctx.globalAlpha = alpha * (kept ? 0.2 : 1);
     ctx.fillStyle = kept ? blush : (dark ? '#3A3340' : '#E6DFD4');
     ctx.beginPath();
-    ctx.arc(gx + 8, yc, 10, 0, Math.PI * 2);
+    ctx.arc(iconX, yc, 10, 0, Math.PI * 2);
     ctx.fill();
-    ctx.restore();
-    ctx.globalAlpha = alpha;
     ctx.fillStyle = kept ? blushTxt : tick ? accent : muted;
     ctx.font = '700 11px "Hanken Grotesk", system-ui, sans-serif';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    ctx.fillText(kept ? '!' : tick ? '✓' : 'i', gx + 8, yc);
+    ctx.fillText(kept ? '!' : tick ? '✓' : 'i', iconX, yc);
     ctx.font = '500 12px "Hanken Grotesk", system-ui, sans-serif';
     ctx.textAlign = 'left';
     ctx.fillStyle = txt;
@@ -615,7 +604,7 @@ function drawState(x, y, w, h, now, radius, shadowScale, baseAlpha) {
     }[name];
     if (name === 'notfound') {
       // A long word is cut to fit the pill, keeping its closing quote.
-      const fits = (s) => ctx.measureText(`Didn't find “${s}”`).width <= x + w - 16 - (gx + 20);
+      const fits = (s) => ctx.measureText(`Didn't find “${s}”`).width <= x + w - 16 - labelX;
       let word = note;
       if (!fits(word)) {
         while (word.length > 1 && !fits(word + '…')) word = word.slice(0, -1);
@@ -623,7 +612,7 @@ function drawState(x, y, w, h, now, radius, shadowScale, baseAlpha) {
       }
       text = `Didn't find “${word}”`;
     }
-    ctx.fillText(text, gx + 20, yc);
+    ctx.fillText(text, labelX, yc);
   } else if (name === 'smart') {
     // "Something smart just happened": a correction toward a trained word.
     // Sparkle + "heard -> corrected", no button — a glance, then it fades.
