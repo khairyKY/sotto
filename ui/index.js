@@ -297,7 +297,7 @@ function updateStatusBar(s) {
   // Paused (tray) stops the hotkey and pill from starting takes, same chip
   // as "polish off" for the same reason: nothing else here would show it (#60).
   if (s?.paused) parts.push('<span class="status-warn">paused</span>');
-  document.querySelector("#status-bar .status-dot").style.background = s?.paused ? "var(--mm-muted-2)" : "";
+  document.querySelector("#status-bar .status-dot").classList.toggle("paused", !!s?.paused);
   if (s?.models?.length) {
     const sel = s.models.find(m => m.selected);
     if (sel) parts.push(escapeHtml(sel.name));
@@ -943,13 +943,20 @@ function renderToneAppsPage(entries) {
 
     const renderRowContent = () => {
       if (isEditing) {
+        row.classList.add("editing");
         row.innerHTML = `
-          <input class="spoken" list="tone-app-datalist" value="${escapeHtml(e.app)}" placeholder="app (e.g. Slack)" style="flex:1; margin-right:4px;" />
-          <span class="arrow" style="margin:0 4px; color:var(--mm-muted-3);">&rarr;</span>
-          <input class="replacement" list="tone-preset-datalist" value="${escapeHtml(e.tone)}" placeholder="how it should sound" style="flex:1; margin-right:8px;" />
-          <div class="actions" style="display:flex; gap:10px; align-items:center;">
-            <span class="action-btn save-btn" title="Save" style="color:var(--mm-status-green); font-size:14px; font-weight:bold;">&#10003;</span>
-            <span class="action-btn cancel-btn" title="Cancel" style="color:var(--mm-coral); font-size:14px; font-weight:bold;">&#10005;</span>
+          <div class="dict-edit-fields">
+            <input class="dict-edit-input spoken" list="tone-app-datalist" value="${escapeHtml(e.app)}" placeholder="app (e.g. Slack)" />
+            <span class="dict-edit-arrow">&rarr;</span>
+            <input class="dict-edit-input replacement" list="tone-preset-datalist" value="${escapeHtml(e.tone)}" placeholder="how it should sound" />
+            <div class="dict-edit-actions">
+              <span class="action-btn save-btn" title="Save">
+                <svg viewBox="0 0 20 20" width="15" height="15"><path d="M4 10.5 L8 14.5 L16 5.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+              </span>
+              <span class="action-btn cancel-btn" title="Cancel">
+                <svg viewBox="0 0 20 20" width="15" height="15"><path d="M5 5 L15 15 M15 5 L5 15" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+              </span>
+            </div>
           </div>
         `;
         row.querySelector(".save-btn").onclick = (ev) => {
@@ -976,6 +983,7 @@ function renderToneAppsPage(entries) {
         };
         row.querySelector(".spoken").focus();
       } else {
+        row.classList.remove("editing");
         row.innerHTML = `
           <span class="term">${escapeHtml(e.app)}</span>
           <span class="arrow">&rarr;</span>
@@ -1690,7 +1698,7 @@ function renderModels(models) {
     let metaOverride = null;
     if (downloadingThis && downloadError) {
       rightStatus = `<button class="btn btn-primary model-download-btn">Retry</button>`;
-      metaOverride = `<span style="color:var(--mm-coral)" title="${escapeHtml(downloadError)}">Download stopped &middot; Retry picks up where it left off</span>`;
+      metaOverride = `<span class="model-error" title="${escapeHtml(downloadError)}">Download stopped &middot; Retry picks up where it left off</span>`;
     } else if (downloadingThis) {
       const pct = downloadProgress ? downloadProgress.pct : 0;
       rightStatus = `
@@ -1710,22 +1718,19 @@ function renderModels(models) {
     } else if (m.state === "download") {
       rightStatus = `<button class="btn btn-primary model-download-btn">Download</button>`;
     } else if (m.state === "downloading") {
-      rightStatus = `<span class="mono" style="font-size:11px;">downloading &middot; ${m.progress}%</span>`;
+      rightStatus = `<span class="mono">downloading &middot; ${m.progress}%</span>`;
     }
 
     row.innerHTML = `
-      <div style="display:flex;align-items:center;gap:12px;">
-        <span class="model-icon-box">
-          <svg viewBox="0 0 20 20" width="17" height="17">
-            <path d="M10 3 V13 M10 13 A2.4 2.4 0 1 0 7.6 15.4 A2.4 2.4 0 0 0 10 13 M10 3 L15 4.6 V8" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
-          </svg>
-        </span>
-        <div>
-          <div class="name" style="font-weight: 500; color: var(--mm-ink);">${escapeHtml(m.name)} <span class="sub" style="color: var(--mm-muted-2); font-size: 11.5px; font-weight: 400;">${escapeHtml(m.variant)}</span>${m.id === "egyptian-small" ? ' <span class="badge-beta experimental">EXPERIMENTAL</span>' : ""}</div>
-          <div class="meta" style="font: 400 11.5px 'Hanken Grotesk'; color: var(--mm-muted-3); margin-top: 2px;">${metaOverride || (m.state === "installed" ? m.meta : `${m.meta} &middot; ${m.size}`)}</div>
-        </div>
+      <span class="model-icon-box">
+        <svg viewBox="0 0 20 20" width="17" height="17">
+          <path d="M10 3 V13 M10 13 A2.4 2.4 0 1 0 7.6 15.4 A2.4 2.4 0 0 0 10 13 M10 3 L15 4.6 V8" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+      </span>
+      <div class="grow">
+          <div class="name">${escapeHtml(m.name)} <span class="sub">${escapeHtml(m.variant)}</span>${m.id === "egyptian-small" ? ' <span class="badge-beta experimental">EXPERIMENTAL</span>' : ""}</div>
+          <div class="meta">${metaOverride || (m.state === "installed" ? m.meta : `${m.meta} &middot; ${m.size}`)}</div>
       </div>
-      <div style="flex:1"></div>
       ${rightStatus}
     `;
     const selectBtn = row.querySelector(".model-select-btn");
@@ -2160,18 +2165,18 @@ async function boot() {
 
   // Warning cards dismiss wiring
   if (localStorage.getItem("dict-warn-closed") === "true") {
-    $("dict-warn-card").style.display = "none";
+    $("dict-warn-card").hidden = true;
   }
   $("dict-warn-close").onclick = () => {
-    $("dict-warn-card").style.display = "none";
+    $("dict-warn-card").hidden = true;
     localStorage.setItem("dict-warn-closed", "true");
   };
 
   if (localStorage.getItem("snip-warn-closed") === "true") {
-    $("snip-warn-card").style.display = "none";
+    $("snip-warn-card").hidden = true;
   }
   $("snip-warn-close").onclick = () => {
-    $("snip-warn-card").style.display = "none";
+    $("snip-warn-card").hidden = true;
     localStorage.setItem("snip-warn-closed", "true");
   };
 

@@ -268,6 +268,7 @@ body {
   display: inline-block;
   flex: none;
 }
+.status-dot.paused { background: var(--mm-muted-2); }
 /* Polish "off" is the one state that silently degrades every dictation with
    no other signal in the app — a chip, not plain text, so it can't blend in. */
 .status-warn {
@@ -309,6 +310,7 @@ body {
 .insight-card.center { align-items: center; }
 .insight-card .section-label, .insight-card-bottom .section-label { margin: 0; align-self: flex-start; }
 .gauge-wrap { position: relative; width: 130px; height: 74px; margin: 8px 0 2px; }
+.gauge-wrap svg { display: block; }
 .gauge-center {
   position: absolute;
   left: 0; right: 0; bottom: 0;
@@ -454,6 +456,7 @@ body {
   60% { transform: translateX(-4px); }
   80% { transform: translateX(4px); }
 }
+.pron-listen-card .search-bar { margin-bottom: 0; }
 .pron-listen-row { display: flex; align-items: center; gap: 12px; margin-top: 12px; }
 /* Only the status text gives way at 760px; buttons and the switch keep their shape. */
 .pron-listen-row .btn { flex: none; }
@@ -624,6 +627,9 @@ body {
 .row-label .sub { font-size: 12px; color: var(--mm-muted-3); margin-top: 3px; }
 .row-label.nowrap { flex: none; }
 .row-control { display: flex; align-items: center; gap: 8px; }
+/* A row with a list under it (per-app tones, code editors, auto-send). */
+.settings-row.stack { flex-direction: column; align-items: stretch; gap: 10px; }
+#code-editors-section .settings-row.stack { padding-top: 0; }
 .divider { height: 1px; background: var(--mm-divider); margin: 0; }
 
 /* A set key sits in a small well (design recipe 8); the Home hint chip stays flat. */
@@ -816,6 +822,13 @@ input[type="range"]:focus-visible::-webkit-slider-thumb { box-shadow: 0 0 0 2px 
 }
 .modal-title { font: 500 13px "Hanken Grotesk"; color: var(--mm-text); }
 .modal-body { padding: 16px; overflow-y: auto; flex: 1; display: flex; flex-direction: column; gap: 14px; }
+/* The transform editor's fields (Settings is a .modal-body too, so these are scoped). */
+#transform-modal .dict-edit-input { width: 100%; }
+#transform-modal textarea.dict-edit-input { resize: vertical; }
+#transform-modal .toggle-row { padding: 0; }
+.capture .transform-keys { justify-content: center; }
+.modal-actions { display: flex; justify-content: flex-end; gap: 8px; }
+.modal-actions #transform-remove { margin-right: auto; }
 .capture {
   border: 1.5px dashed var(--mm-border);
   border-radius: 10px;
@@ -1196,7 +1209,7 @@ input[type="range"]:focus-visible::-webkit-slider-thumb { box-shadow: 0 0 0 2px 
 }
 .model-row .name {
   font: 500 13px 'Hanken Grotesk';
-  color: var(--mm-text);
+  color: var(--mm-ink);
 }
 .model-row .name .sub {
   color: var(--mm-muted-2);
@@ -1205,9 +1218,10 @@ input[type="range"]:focus-visible::-webkit-slider-thumb { box-shadow: 0 0 0 2px 
 }
 .model-row .meta {
   font: 400 11.5px 'Hanken Grotesk';
-  color: var(--mm-muted-2);
+  color: var(--mm-muted-3);
   margin-top: 2px;
 }
+.model-error { color: var(--mm-coral); }
 .model-badge {
   font: 600 10px 'JetBrains Mono';
   color: var(--mm-success-ink);
@@ -1233,6 +1247,8 @@ input[type="range"]:focus-visible::-webkit-slider-thumb { box-shadow: 0 0 0 2px 
 }
 /* A model that may get things wrong is a caution, not a feature stage: blush, as errors. */
 .badge-beta.experimental { color: var(--mm-coral); background: var(--mm-blush); }
+.transforms-foot { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding-top: 18px; }
+.transforms-foot .btn-ghost { padding-left: 0; font-weight: 500; }
 .transforms-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;

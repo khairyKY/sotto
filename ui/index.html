@@ -155,7 +155,7 @@
             <div class="card-raised insight-card center">
               <div class="section-label">Speaking speed</div>
               <div class="gauge-wrap" id="speed-gauge">
-                <svg viewBox="0 0 130 74" width="130" height="74" style="display:block">
+                <svg viewBox="0 0 130 74" width="130" height="74">
                   <path d="M11 66 A54 54 0 0 1 119 66" fill="none" stroke="var(--mm-gauge-bg)" stroke-width="11" stroke-linecap="round"/>
                   <path d="M11 66 A54 54 0 0 1 119 66" fill="none" stroke="var(--mm-accent)" stroke-width="11" stroke-linecap="round" stroke-dasharray="169.6" stroke-dashoffset="21.2" id="speed-arc"/>
                 </svg>
@@ -186,7 +186,7 @@
               </div>
               <div class="app-list" id="app-list"></div>
             </div>
-            <div class="card-raised insight-card-bottom" style="display: flex; flex-direction: column;">
+            <div class="card-raised insight-card-bottom">
               <div class="insight-head-between">
                 <div class="insight-card-label-large" id="streak-title">12-day streak</div>
                 <div class="insight-card-sublabel" id="longest-streak-title">longest 21 days</div>
@@ -310,7 +310,7 @@
           </header>
 
           <div class="card-raised pron-listen-card">
-            <div class="search-bar" style="margin-bottom:0">
+            <div class="search-bar">
               <input type="text" class="search-input" id="pron-word-input" dir="auto" placeholder="e.g. Claude" autocomplete="off" />
             </div>
             <div class="pron-focus-word" id="pron-focus-word" dir="auto" hidden></div>
@@ -369,9 +369,8 @@
             <p class="page-sub">Select text in any app, press the shortcut, and Sotto&rsquo;s local AI rewrites it in place. Your text never leaves this device.</p>
           </header>
           <div class="transforms-grid" id="transforms-grid"></div>
-          <div style="display:flex;gap:10px;padding-top:18px">
-            <button class="btn btn-ghost" id="transforms-reset" style="padding-left:0;font-weight:500">Reset to defaults</button>
-            <div style="flex:1"></div>
+          <div class="transforms-foot">
+            <button class="btn btn-ghost" id="transforms-reset">Reset to defaults</button>
             <button class="btn btn-primary" id="transforms-add">+ Create new</button>
           </div>
         </section>
@@ -595,10 +594,10 @@
                   <div class="row-label nowrap">
                     <div class="label">Instruction</div>
                   </div>
-                  <input type="text" class="search-input" id="tone-custom-input" placeholder="e.g. Write like a pirate" style="flex:1" />
+                  <input type="text" class="search-input" id="tone-custom-input" placeholder="e.g. Write like a pirate" />
                 </div>
                 <div class="divider"></div>
-                <div class="settings-row bare" style="flex-direction:column; align-items:stretch; gap:10px">
+                <div class="settings-row bare stack">
                   <div class="page-head-row">
                     <div class="row-label">
                       <div class="label">Per-app tones</div>
@@ -834,7 +833,7 @@
                   <button class="switch" data-lab="variable_recognition" role="switch" aria-checked="false" aria-label="Variable names"><span class="knob"></span></button>
                 </div>
                 <div id="code-editors-section" hidden>
-                  <div class="settings-row bare" style="flex-direction:column; align-items:stretch; gap:10px; padding-top:0">
+                  <div class="settings-row bare stack">
                     <div class="page-head-row">
                       <div class="row-label">
                         <div class="label">Code editors</div>
@@ -849,7 +848,7 @@
                 </div>
                 <div class="divider"></div>
                 <!-- No switch: an empty list is auto-send off. -->
-                <div class="settings-row bare" style="flex-direction:column; align-items:stretch; gap:10px">
+                <div class="settings-row bare stack">
                   <div class="page-head-row">
                     <div class="row-label">
                       <div class="label">Auto-send</div>
@@ -904,29 +903,28 @@
         <div class="modal-body">
           <div>
             <div class="section-label">Name</div>
-            <input class="dict-edit-input" id="transform-name" dir="auto" placeholder="e.g. Friendlier" autocomplete="off" style="width:100%" />
+            <input class="dict-edit-input" id="transform-name" dir="auto" placeholder="e.g. Friendlier" autocomplete="off" />
           </div>
           <div>
             <div class="section-label">What it does</div>
-            <textarea class="dict-edit-input" id="transform-prompt" dir="auto" rows="3" placeholder="Tell it what to do, e.g. Make it warmer and more casual." style="width:100%;resize:vertical"></textarea>
+            <textarea class="dict-edit-input" id="transform-prompt" dir="auto" rows="3" placeholder="Tell it what to do, e.g. Make it warmer and more casual."></textarea>
           </div>
           <div>
             <div class="section-label">Shortcut</div>
             <div class="capture" id="transform-capture" tabindex="0">
-              <div class="capture-title transform-keys" id="transform-capture-keys" style="justify-content:center">Press the shortcut</div>
+              <div class="capture-title transform-keys" id="transform-capture-keys">Press the shortcut</div>
               <div class="capture-sub" id="transform-capture-sub">Click here, then press Ctrl, Alt or Win plus one key.</div>
             </div>
           </div>
-          <div class="toggle-row" style="padding:0">
+          <div class="toggle-row">
             <div class="row-label">
               <div class="label">Keep my wording</div>
               <div class="sub">Keep the original if the rewrite drops too much of it.</div>
             </div>
             <button class="switch" id="transform-keep-words" role="switch" aria-checked="false" aria-label="Keep my wording"><span class="knob"></span></button>
           </div>
-          <div style="display:flex;gap:8px">
+          <div class="modal-actions">
             <button class="btn btn-ghost" id="transform-remove">Remove</button>
-            <div style="flex:1"></div>
             <button class="btn btn-ghost" id="transform-cancel">Cancel</button>
             <button class="btn btn-primary" id="transform-save">Save</button>
           </div>
