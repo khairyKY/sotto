@@ -7,6 +7,7 @@ const CL = {
   goldDark: '#F0D9A4', goldDarkGlow: 'rgba(240,217,164,0.30)',
   blush: '#F0BFCF', blushTxt: '#A85874',
   blushDark: '#5B3F4E', blushDarkTxt: '#F0C3D2',
+  rose: '#C88A94', roseDark: '#7A5060', // error countdown fill
   muted: '#948C86', mutedDark: '#8F859A',
   txt: '#544F5A', txtDark: '#CDC5D2',
   cream: '#F0E9DF', creamShadow: 'rgba(196,183,165,0.40)',
@@ -265,14 +266,14 @@ function retryBtn(xr, yc, r, alpha, dark) {
 // rect (not the bar's) and clips to it: the pill is a CR-radius round-rect, so
 // at the bottom 3px its body is ~25px narrower than its bounding box on each
 // side. Drawing the bar to the bounding box left it hanging outside the pill.
-function countdownBar(x, y, w, h, pct, dark) {
+function countdownBar(x, y, w, h, pct, dark, fill = dark ? '#8F859A' : '#B5ADA0') {
   const bh = 3, by = y + h - bh;
   ctx.save();
   rr(x, y, w, h, CR);
   ctx.clip();
   ctx.fillStyle = dark ? CL.baseDark : CL.base;
   ctx.fillRect(x, by, w, bh);
-  ctx.fillStyle = dark ? '#8F859A' : '#B5ADA0';
+  ctx.fillStyle = fill;
   ctx.fillRect(x, by, w * pct, bh);
   ctx.restore();
 }
@@ -363,7 +364,6 @@ function drawState(x, y, w, h, now, radius, shadowScale, baseAlpha) {
   const padL = 14, padR = 8, btnR = 11;
   const xr = x + w - padR - btnR;
   const contentL = x + padL;
-  const contentR = xr - 4;
 
   const accent = dark ? CL.lilacDark : CL.lilac;
   const amber = dark ? CL.amberDark : CL.amber;
@@ -495,26 +495,25 @@ function drawState(x, y, w, h, now, radius, shadowScale, baseAlpha) {
     }
     ctx.stroke();
   } else if (name === 'error') {
+    // A solid Blush 20px disc, 12px in from the pill's edge and 8px before
+    // the label, with a rose countdown, as designed.
     const gx = contentL + 8;
-    const toastW = contentR - gx;
     ctx.fillStyle = blush;
-    ctx.globalAlpha = alpha * 0.2;
     ctx.beginPath();
-    ctx.arc(gx + 8, yc, 10, 0, Math.PI * 2);
+    ctx.arc(gx, yc, 10, 0, Math.PI * 2);
     ctx.fill();
-    ctx.globalAlpha = alpha;
     ctx.fillStyle = blushTxt;
     ctx.font = '700 11px "Hanken Grotesk", system-ui, sans-serif';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    ctx.fillText('!', gx + 8, yc);
+    ctx.fillText('!', gx, yc);
     ctx.font = '500 12px "Hanken Grotesk", system-ui, sans-serif';
     ctx.textAlign = 'left';
     ctx.fillStyle = txt;
     ctx.fillText("Didn't catch that", gx + 18, yc);
     retryBtn(xr, yc, btnR, alpha, dark);
     activeBtn = { x: xr, y: yc, r: btnR, action: 'retry' };
-    countdownBar(x, y, w, h, Math.max(0, 1 - sincePhase / 6000), dark);
+    countdownBar(x, y, w, h, Math.max(0, 1 - sincePhase / 6000), dark, dark ? CL.roseDark : CL.rose);
   } else if (name === 'cancelled') {
     const gx = contentL + 8;
     ctx.save();
