@@ -364,6 +364,9 @@ function drawState(x, y, w, h, now, radius, shadowScale, baseAlpha) {
   const padL = 14, padR = 8, btnR = 11;
   const xr = x + w - padR - btnR;
   const contentL = x + padL;
+  // Every toast shares the design's layout: a 20px icon disc 12px in from the
+  // pill's edge, then its label 8px after the disc.
+  const iconX = x + 22, labelX = x + 40;
 
   const accent = dark ? CL.lilacDark : CL.lilac;
   const amber = dark ? CL.amberDark : CL.amber;
@@ -495,59 +498,55 @@ function drawState(x, y, w, h, now, radius, shadowScale, baseAlpha) {
     }
     ctx.stroke();
   } else if (name === 'error') {
-    // A solid Blush 20px disc, 12px in from the pill's edge and 8px before
-    // the label, with a rose countdown, as designed.
-    const gx = contentL + 8;
+    // A solid Blush disc and a rose countdown, as designed.
     ctx.fillStyle = blush;
     ctx.beginPath();
-    ctx.arc(gx, yc, 10, 0, Math.PI * 2);
+    ctx.arc(iconX, yc, 10, 0, Math.PI * 2);
     ctx.fill();
     ctx.fillStyle = blushTxt;
     ctx.font = '700 11px "Hanken Grotesk", system-ui, sans-serif';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    ctx.fillText('!', gx, yc);
+    ctx.fillText('!', iconX, yc);
     ctx.font = '500 12px "Hanken Grotesk", system-ui, sans-serif';
     ctx.textAlign = 'left';
     ctx.fillStyle = txt;
-    ctx.fillText("Didn't catch that", gx + 18, yc);
+    ctx.fillText("Didn't catch that", labelX, yc);
     retryBtn(xr, yc, btnR, alpha, dark);
     activeBtn = { x: xr, y: yc, r: btnR, action: 'retry' };
     countdownBar(x, y, w, h, Math.max(0, 1 - sincePhase / 6000), dark, dark ? CL.roseDark : CL.rose);
   } else if (name === 'cancelled') {
-    const gx = contentL + 8;
     ctx.save();
     ctx.globalAlpha = alpha;
     ctx.fillStyle = dark ? '#3A3340' : '#E6DFD4';
     ctx.beginPath();
-    ctx.arc(gx + 8, yc, 10, 0, Math.PI * 2);
+    ctx.arc(iconX, yc, 10, 0, Math.PI * 2);
     ctx.fill();
     ctx.strokeStyle = muted;
     ctx.lineWidth = 1.8;
     ctx.lineCap = 'round';
     const s = 4;
     ctx.beginPath();
-    ctx.moveTo(gx + 8 - s, yc - s); ctx.lineTo(gx + 8 + s, yc + s);
-    ctx.moveTo(gx + 8 + s, yc - s); ctx.lineTo(gx + 8 - s, yc + s);
+    ctx.moveTo(iconX - s, yc - s); ctx.lineTo(iconX + s, yc + s);
+    ctx.moveTo(iconX + s, yc - s); ctx.lineTo(iconX - s, yc + s);
     ctx.stroke();
     ctx.restore();
     ctx.font = '500 12px "Hanken Grotesk", system-ui, sans-serif';
     ctx.textAlign = 'left';
     ctx.textBaseline = 'middle';
     ctx.fillStyle = txt;
-    ctx.fillText('Cancelled', gx + 20, yc);
+    ctx.fillText('Cancelled', labelX, yc);
     retryBtn(xr, yc, btnR, alpha, dark);
     activeBtn = { x: xr, y: yc, r: btnR, action: 'retry' };
     countdownBar(x, y, w, h, Math.max(0, 1 - sincePhase / 6000), dark);
   } else if (name === 'nomodel') {
     // First-run: the speech model is still downloading. Same neutral toast
     // shape as Cancelled — the take is stashed, so ↻ works once it lands.
-    const gx = contentL + 8;
     ctx.save();
     ctx.globalAlpha = alpha;
     ctx.fillStyle = dark ? '#3A3340' : '#E6DFD4';
     ctx.beginPath();
-    ctx.arc(gx + 8, yc, 10, 0, Math.PI * 2);
+    ctx.arc(iconX, yc, 10, 0, Math.PI * 2);
     ctx.fill();
     // Down-arrow glyph: downloading.
     ctx.strokeStyle = muted;
@@ -555,15 +554,15 @@ function drawState(x, y, w, h, now, radius, shadowScale, baseAlpha) {
     ctx.lineCap = 'round';
     ctx.lineJoin = 'round';
     ctx.beginPath();
-    ctx.moveTo(gx + 8, yc - 5); ctx.lineTo(gx + 8, yc + 4);
-    ctx.moveTo(gx + 4.5, yc + 0.5); ctx.lineTo(gx + 8, yc + 4); ctx.lineTo(gx + 11.5, yc + 0.5);
+    ctx.moveTo(iconX, yc - 5); ctx.lineTo(iconX, yc + 4);
+    ctx.moveTo(iconX - 3.5, yc + 0.5); ctx.lineTo(iconX, yc + 4); ctx.lineTo(iconX + 3.5, yc + 0.5);
     ctx.stroke();
     ctx.restore();
     ctx.font = '500 12px "Hanken Grotesk", system-ui, sans-serif';
     ctx.textAlign = 'left';
     ctx.textBaseline = 'middle';
     ctx.fillStyle = txt;
-    ctx.fillText('Model downloading…', gx + 20, yc);
+    ctx.fillText('Model downloading…', labelX, yc);
     retryBtn(xr, yc, btnR, alpha, dark);
     activeBtn = { x: xr, y: yc, r: btnR, action: 'retry' };
     countdownBar(x, y, w, h, Math.max(0, 1 - sincePhase / 6000), dark);
@@ -580,13 +579,13 @@ function drawState(x, y, w, h, now, radius, shadowScale, baseAlpha) {
     // 'kept'); 'nothingtoundo' and 'undoterminal' (neutral). Lecture mode
     // (#23): 'lectureon', a dictation refused while a lecture is captured
     // (neutral).
-    const gx = contentL + 8, kept = name === 'kept' || name === 'notundone';
+    const kept = name === 'kept' || name === 'notundone';
     const tick = name === 'copied' || name === 'fixcopied';
     ctx.save();
     ctx.globalAlpha = alpha * (kept ? 0.2 : 1);
     ctx.fillStyle = kept ? blush : (dark ? '#3A3340' : '#E6DFD4');
     ctx.beginPath();
-    ctx.arc(gx + 8, yc, 10, 0, Math.PI * 2);
+    ctx.arc(iconX, yc, 10, 0, Math.PI * 2);
     ctx.fill();
     ctx.restore();
     ctx.globalAlpha = alpha;
@@ -594,7 +593,7 @@ function drawState(x, y, w, h, now, radius, shadowScale, baseAlpha) {
     ctx.font = '700 11px "Hanken Grotesk", system-ui, sans-serif';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    ctx.fillText(kept ? '!' : tick ? '✓' : 'i', gx + 8, yc);
+    ctx.fillText(kept ? '!' : tick ? '✓' : 'i', iconX, yc);
     ctx.font = '500 12px "Hanken Grotesk", system-ui, sans-serif';
     ctx.textAlign = 'left';
     ctx.fillStyle = txt;
@@ -606,7 +605,7 @@ function drawState(x, y, w, h, now, radius, shadowScale, baseAlpha) {
     }[name];
     if (name === 'notfound') {
       // A long word is cut to fit the pill, keeping its closing quote.
-      const fits = (s) => ctx.measureText(`Didn't find “${s}”`).width <= x + w - 16 - (gx + 20);
+      const fits = (s) => ctx.measureText(`Didn't find “${s}”`).width <= x + w - 16 - labelX;
       let word = note;
       if (!fits(word)) {
         while (word.length > 1 && !fits(word + '…')) word = word.slice(0, -1);
@@ -614,7 +613,7 @@ function drawState(x, y, w, h, now, radius, shadowScale, baseAlpha) {
       }
       text = `Didn't find “${word}”`;
     }
-    ctx.fillText(text, gx + 20, yc);
+    ctx.fillText(text, labelX, yc);
   } else if (name === 'smart') {
     // "Something smart just happened": a correction toward a trained word.
     // Sparkle + "heard -> corrected", no button — a glance, then it fades.
