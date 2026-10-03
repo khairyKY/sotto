@@ -26,9 +26,9 @@ body {
 }
 .titlebar-left { display: flex; align-items: center; gap: 11px; }
 .mark-tile {
-  width: 30px; height: 30px; border-radius: 9px; background: var(--mm-tint);
+  width: 26px; height: 26px; border-radius: 8px; background: var(--mm-tint);
   display: flex; align-items: center; justify-content: center;
-  box-shadow: var(--mm-raised-sm);
+  box-shadow: var(--mm-raised-xs);
   color: var(--mm-accent-ink);
 }
 .title { font: 500 16px Newsreader; color: var(--mm-ink); }
@@ -39,7 +39,7 @@ body {
   transition: background 0.12s, color 0.12s;
 }
 .winbtn svg { stroke: currentColor; stroke-width: 1.2; }
-.winbtn:hover { background: rgba(127, 127, 127, 0.12); color: var(--mm-text); }
+.winbtn:hover { background: var(--mm-tint); color: var(--mm-text); }
 .winbtn.close:hover { background: #d0454b; color: #fff; }
 
 /* ── shell layout ──────────────────────────── */
@@ -168,7 +168,7 @@ body {
 /* A History row's review panel belongs to it; the divider goes under both. */
 .list-row + .list-row, .hist-review + .list-row { border-top: 1px solid var(--mm-divider); }
 .list-time { font: 500 10px "JetBrains Mono"; color: var(--mm-muted-2); width: 56px; flex: none; }
-.list-text { flex: 1; min-width: 0; font: 400 12.5px "Hanken Grotesk"; color: var(--mm-text); }
+.list-text { flex: 1; min-width: 0; font: 400 12.5px "Hanken Grotesk"; color: var(--mm-row-text); }
 .list-row .actions { display: flex; align-items: center; gap: 12px; color: var(--mm-muted-2); flex: none; }
 .list-row .action-btn { cursor: pointer; display: flex; align-items: center; justify-content: center; transition: color 0.12s; }
 .list-row .action-btn:hover { color: var(--mm-accent-ink); }
@@ -234,7 +234,7 @@ body {
   transition: background 0.12s;
 }
 .btn-ghost { color: var(--mm-muted); }
-.btn-ghost:hover { background: rgba(127,127,127,0.08); }
+.btn-ghost:hover { background: var(--mm-tint); }
 .btn-primary {
   color: var(--mm-on-accent);
   background: var(--mm-accent);
@@ -284,7 +284,7 @@ body {
   background: var(--mm-base);
   border-radius: 9px;
   padding: 3px;
-  box-shadow: var(--mm-inset-sm);
+  box-shadow: var(--mm-inset-xs);
   gap: 2px;
 }
 .segmented button {
@@ -328,8 +328,8 @@ body {
 
 /* app breakdown: label, bar, value (design §Insights 4) */
 .app-row { display: flex; align-items: center; gap: 9px; margin-bottom: 8px; }
-.app-name { font: 500 12px "Hanken Grotesk"; color: var(--mm-text); width: 64px; flex: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.app-bar-wrap { flex: 1; min-width: 24px; height: 9px; border-radius: 5px; background: var(--mm-base); box-shadow: var(--mm-inset-sm); overflow: hidden; }
+.app-name { font: 500 12px "Hanken Grotesk"; color: var(--mm-row-text); width: 64px; flex: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.app-bar-wrap { flex: 1; min-width: 24px; height: 9px; border-radius: 5px; background: var(--mm-base); box-shadow: var(--mm-inset-xs); overflow: hidden; }
 .app-bar-fill { height: 100%; border-radius: 5px; background: var(--mm-accent); transition: width 0.4s; }
 .app-words { font: 500 9.5px "JetBrains Mono"; color: var(--mm-muted-2); width: 38px; flex: none; text-align: right; }
 
@@ -376,7 +376,7 @@ body {
   background: var(--mm-base);
   border-radius: 10px;
   padding: 8px 12px;
-  box-shadow: var(--mm-inset-sm);
+  box-shadow: var(--mm-inset-xs);
   margin-bottom: 14px;
 }
 .search-icon { color: var(--mm-muted-3); flex: none; }
@@ -502,7 +502,7 @@ body {
 /* Calibrate (#22): the sentence to read, in the display face. */
 .cal-sentence { font: 500 21px/1.35 Newsreader; color: var(--mm-ink); margin: 6px 0 8px; }
 #cal-diff { margin-bottom: 4px; }
-.pron-trained-word { font: 600 12.5px "Hanken Grotesk"; color: var(--mm-text); flex: none; width: 110px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pron-trained-word { font: 600 12.5px "Hanken Grotesk"; color: var(--mm-row-text); flex: none; width: 110px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pron-trained-heard { flex: 1; min-width: 0; font: 400 12px "Hanken Grotesk"; color: var(--mm-muted-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* Strength ring: fills toward full as more distinct mishearings are
    captured (capped visually at PRON_STRENGTH_CAP). A conic-gradient ring
@@ -718,7 +718,7 @@ input[type="range"]::-webkit-slider-thumb {
   padding: 8px;
   background: var(--mm-base);
   border-radius: 10px;
-  box-shadow: var(--mm-inset-sm);
+  box-shadow: var(--mm-inset-xs);
 }
 .anchor-grid button {
   width: 22px; height: 22px;
@@ -766,7 +766,7 @@ input[type="range"]::-webkit-slider-thumb {
   color: var(--mm-muted-3); border-radius: 5px; display: inline-flex;
   align-items: center; justify-content: center; padding: 0; margin-left: 4px;
 }
-.banner-close:hover { background: rgba(127,127,127,0.15); color: var(--mm-text); }
+.banner-close:hover { background: var(--mm-surface); color: var(--mm-text); }
 .banner-close svg { stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; fill: none; }
 
 /* ── hotkey modal ──────────────────────────── */
@@ -914,7 +914,7 @@ input[type="range"]::-webkit-slider-thumb {
 .dict-row-view > .term { flex: 1; } /* Settings' lists: an app name with no aliases */
 .dict-row-view .term {
   font: 500 12px 'JetBrains Mono';
-  color: var(--mm-text);
+  color: var(--mm-row-text);
   word-break: break-all;
 }
 .dict-row-view .arrow {
@@ -999,7 +999,7 @@ input[type="range"]::-webkit-slider-thumb {
   padding: 7px 10px;
   font: 400 12.5px "Hanken Grotesk";
   color: var(--mm-ink);
-  box-shadow: var(--mm-inset-sm);
+  box-shadow: var(--mm-inset-xs);
   outline: 0;
 }
 .dict-edit-input:focus { border-color: var(--mm-accent); }
@@ -1120,7 +1120,7 @@ input[type="range"]::-webkit-slider-thumb {
   background: var(--mm-base);
   border-radius: 8px;
   padding: 7px 12px;
-  box-shadow: var(--mm-inset-sm);
+  box-shadow: var(--mm-inset-xs);
   cursor: pointer;
   position: relative;
 }
@@ -1257,19 +1257,21 @@ input[type="range"]::-webkit-slider-thumb {
   color: var(--mm-ink);
 }
 .transform-title.color-accent {
+  font: 500 12.5px 'Hanken Grotesk';
   color: var(--mm-accent-ink);
 }
+.transform-card.dashed .transform-desc { font-size: 10.5px; }
 .transform-desc {
   font: 400 11.5px/1.5 'Hanken Grotesk';
   color: var(--mm-muted-3);
 }
-/* Live page (#18): every card opens the editor; a card's text is the full
-   instruction, so it's held to three lines. */
+/* Live page (#18): every card opens the editor. A card's text is the full
+   instruction; two lines read as the design's one-line description. */
 .transforms-grid .transform-card { cursor: pointer; }
 .transforms-grid .transform-card:hover .transform-title { color: var(--mm-accent-ink); }
 .transforms-grid .transform-desc {
   display: -webkit-box;
-  -webkit-line-clamp: 3;
+  -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
   overflow: hidden;
 }
@@ -1378,7 +1380,7 @@ input[type="range"]::-webkit-slider-thumb {
   background: var(--mm-base);
   border-radius: 9px;
   padding: 3px;
-  box-shadow: var(--mm-inset-sm);
+  box-shadow: var(--mm-inset-xs);
 }
 .zoom-btn {
   width: 26px; height: 26px;
