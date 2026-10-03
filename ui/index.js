@@ -1105,8 +1105,8 @@ function renderHistoryPage(entries) {
     const row = document.createElement("div");
     row.className = "list-row hist-row";
     // ± only when this session kept the raw transcript (#25); reloaded rows have none.
-    const diffBtn = e.raw ? '<span class="diff-toggle" title="What changed">±</span>' : "";
-    row.innerHTML = `<span class="list-time">${e.time}</span><span class="list-text txt" dir="auto">${escapeHtml(e.text)}</span>${diffBtn}<span class="copy" title="Copy">⧉</span><span class="retry" title="Re-polish &amp; copy">↻</span><span class="flag" title="Flag as wrong">⚑</span>`;
+    const diffBtn = e.raw ? '<span class="diff-toggle" title="See what polish changed">±</span>' : "";
+    row.innerHTML = `<span class="list-time">${e.time}</span><span class="list-text txt" dir="auto">${escapeHtml(e.text)}</span>${diffBtn}<span class="copy" title="Copy">⧉</span><span class="retry" title="Re-polish &amp; copy">↻</span><span class="flag" title="Flag as wrong. It's saved on this device for you to look at later.">⚑</span>`;
     row.querySelector(".copy").onclick = (ev) => { ev.stopPropagation(); copyText(e.text); };
     row.querySelector(".retry").onclick = (ev) => { ev.stopPropagation(); invoke("repolish_copy", { text: e.text }); };
     const flagEl = row.querySelector(".flag");
