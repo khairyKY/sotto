@@ -688,8 +688,6 @@ $("dict-add").onclick = () => {
   dictEntries.push(newEntry);
   renderDictPage(dictEntries);
 };
-// The banner's "+ Add word" chip is a second trigger for the same flow.
-if ($("dict-warn-add")) $("dict-warn-add").onclick = () => $("dict-add").click();
 // Example chips in the banner: click one to prefill it as a draft row in edit
 // state. Nothing is written until the user hits save, so trying an example
 // can't quietly add data they didn't choose. Scoped to this page's banner so
@@ -853,7 +851,6 @@ $("snip-add").onclick = () => {
   snipEntries.push(newEntry);
   renderSnipPage(snipEntries);
 };
-if ($("snip-warn-add")) $("snip-warn-add").onclick = () => $("snip-add").click();
 // Example chips in the banner: click one to prefill it as a draft row in edit
 // state. Nothing is written until the user hits save, so trying an example
 // can't quietly add data they didn't choose. Scoped to this page's banner so

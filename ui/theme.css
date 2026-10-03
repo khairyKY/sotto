@@ -25,6 +25,9 @@
   --mm-gauge-bg: #DED2C0;
   /* Off switch knob (design §Settings toggle); the off track is --mm-gauge-bg. */
   --mm-knob: #F6F0E6;
+  /* Plum text on a lilac callout (design §Dictionary 2); dark borrows the tray menu's lilac text. */
+  --mm-plum-ink: #4A3A78;
+  --mm-plum-muted: #6E5F94;
   /* Streak heatmap ramp (design doc, light) */
   --mm-cal-0: #E6DFD4;
   --mm-cal-1: #DED0EC;
@@ -64,6 +67,8 @@
   --mm-coral: #F0C3D2;
   --mm-gauge-bg: #201B26;
   --mm-knob: #7C7386;
+  --mm-plum-ink: #E6DAF7;
+  --mm-plum-muted: #B7ADBE;
   /* Streak heatmap ramp (design doc, dark) */
   --mm-cal-0: #241F2A;
   --mm-cal-1: #3A3340;
@@ -102,6 +107,8 @@
     --mm-coral: #F0C3D2;
     --mm-gauge-bg: #201B26;
     --mm-knob: #7C7386;
+    --mm-plum-ink: #E6DAF7;
+    --mm-plum-muted: #B7ADBE;
     --mm-raised: 5px 5px 11px rgba(0, 0, 0, 0.5), -5px -5px 11px rgba(255, 255, 255, 0.035);
     --mm-raised-sm: 4px 4px 10px rgba(0, 0, 0, 0.5), -4px -4px 10px rgba(255, 255, 255, 0.035);
     --mm-inset: inset 3px 3px 7px rgba(0, 0, 0, 0.5), inset -3px -3px 7px rgba(255, 255, 255, 0.035);

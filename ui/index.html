@@ -218,15 +218,14 @@
           </div>
 
           <div class="dict-warn-card" id="dict-warn-card">
-            <div class="dict-warn-close" id="dict-warn-close">&#10005;</div>
-            <div class="dict-warn-title">Sotto spells the way <em>you</em> do.</div>
+            <button class="dict-warn-close" id="dict-warn-close" title="Hide" aria-label="Hide">&#10005;</button>
+            <div class="dict-warn-title">Sotto spells the way you do.</div>
             <div class="dict-warn-desc">Teach it names, jargon, and terms it keeps getting wrong &mdash; say the word, get your spelling. Everything stays on this device.</div>
             <!-- Example chips are click-to-try: they prefill a new row in edit
                  state so you can adjust it before saving, rather than silently
                  adding someone else's data. Keep them generic — these ship to
                  every user, so no real names or addresses. -->
             <div class="dict-warn-tags">
-              <span class="dict-warn-tag action" id="dict-warn-add">+ Add word</span>
               <span class="dict-warn-tag example" data-spoken="gee pee tee" data-replacement="GPT">"gee pee tee" &rarr; GPT</span>
               <span class="dict-warn-tag example" data-spoken="ess cue ell" data-replacement="SQL">"ess cue ell" &rarr; SQL</span>
               <span class="dict-warn-tag example" data-spoken="arrow" data-replacement="&rarr;">"arrow" &rarr; &rarr;</span>
@@ -262,14 +261,13 @@
           </div>
 
           <div class="dict-warn-card" id="snip-warn-card">
-            <div class="dict-warn-close" id="snip-warn-close">&#10005;</div>
-            <div class="dict-warn-title">The stuff <em>you</em> shouldn't have to re-type.</div>
+            <button class="dict-warn-close" id="snip-warn-close" title="Hide" aria-label="Hide">&#10005;</button>
+            <div class="dict-warn-title">The stuff you shouldn't have to re-type.</div>
             <div class="dict-warn-desc">Save text you use often &mdash; your email, an intro, a prompt &mdash; then say the trigger phrase to drop it in instantly.</div>
             <!-- Click any example to prefill it as a new snippet in edit state
                  — you confirm or adjust before it saves. Generic on purpose:
                  these ship to every user, so no real addresses or names. -->
             <div class="dict-warn-tags">
-              <span class="dict-warn-tag action" id="snip-warn-add">+ Add snippet</span>
               <span class="dict-warn-tag example" data-spoken="my email" data-replacement="you@example.com">"my email" &rarr; you@example.com</span>
               <span class="dict-warn-tag example" data-spoken="my number" data-replacement="+00 000 000 0000">"my number" &rarr; +00 000&hellip;</span>
               <span class="dict-warn-tag example" data-spoken="intro line" data-replacement="Hey — great to meet you. ">"intro line" &rarr; Hey &mdash; great&hellip;</span>
