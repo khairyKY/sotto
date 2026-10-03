@@ -166,6 +166,12 @@ function setState(name) {
 
 function rr(x, y, w, h, r) { ctx.beginPath(); ctx.roundRect(x, y, w, h, r); }
 const easeOut = (t) => 1 - Math.pow(1 - t, 3);
+// The design's CSS @keyframes, sampled analytically. `cycle` is how far
+// through its `per`-second loop an animation is at `ms`, with the doc's
+// (negative) animation-delay; `seg` eases one keyframe segment, a cosine
+// standing in for CSS ease-in-out.
+const cycle = (ms, per, delay) => (((ms / 1000 - delay) / per) % 1 + 1) % 1;
+const seg = (a, b, u) => a + (b - a) * (0.5 - 0.5 * Math.cos(Math.PI * u));
 
 /// `r` is the corner radius and `sc` scales the neumorphic shadow — both
 /// animate during the tucked↔expanded morph, so neither can stay the constant
@@ -291,16 +297,12 @@ function drawTuckedDot(cx, cy, d, alpha, dark, now) {
   // mm-blob / mm-bounce, sampled analytically. Each cloud is a soft radial
   // fading to transparent, so they blend instead of stacking as hard circles.
   const blob = (t, per, delay) => {
-    const p = (((now / 1000 - delay) / per) % 1 + 1) % 1;
-    const seg = (a, b, u) => a + (b - a) * (0.5 - 0.5 * Math.cos(Math.PI * u));
+    const p = cycle(now, per, delay);
     if (p < 1 / 3) { const u = p * 3; return [seg(0, 3, u), seg(0, -2, u), seg(1, 1.16, u)]; }
     if (p < 2 / 3) { const u = (p - 1 / 3) * 3; return [seg(3, -3, u), seg(-2, 1, u), seg(1.16, 0.88, u)]; }
     const u = (p - 2 / 3) * 3; return [seg(-3, 0, u), seg(1, 0, u), seg(0.88, 1, u)];
   };
-  const bounce = (per, delay) => {
-    const p = (((now / 1000 - delay) / per) % 1 + 1) % 1;
-    return 4 * Math.cos(2 * Math.PI * p);
-  };
+  const bounce = (per, delay) => 4 * Math.cos(2 * Math.PI * cycle(now, per, delay));
   const cloud = (ox, oy, size, color, a) => {
     const cg = ctx.createRadialGradient(ox, oy, 0, ox, oy, size);
     cg.addColorStop(0, color.replace('ALPHA', a));
@@ -405,22 +407,22 @@ function drawState(x, y, w, h, now, radius, shadowScale, baseAlpha) {
     cancelBtn(xr, yc, btnR, alpha, dark);
     activeBtn = { x: xr, y: yc, r: btnR, action: 'cancel' };
   } else if (name === 'transcribing') {
-    const cx = (contentL + xr) / 2;
-    const dotSpan = 28;
-    const sizes = [9, 7, 11, 8];
-    const delays = [0, 0.5, 1.0, 1.5];
-    const cycle = 2.3;
+    // mm-rise: four bubbles at fixed x in the design's 66x26 box, each rising
+    // from the box floor (translateY 9 → -15, scale .4 → 1.05) while it fades
+    // in to .95, down to .55 and out.
+    const cx = (contentL + xr) / 2, floor = yc + 12;
+    const sizes = [9, 7, 11, 8], xs = [-20.5, -5.5, 10.5, 23];
     for (let i = 0; i < 4; i++) {
-      const p = ((now * 0.001 - delays[i]) % cycle) / cycle;
-      const px = cx - dotSpan + p * dotSpan * 2;
-      const size = sizes[i] * 0.5;
-      const opacity = p < 0.25 ? p / 0.25 : p > 0.72 ? 1 - (p - 0.72) / 0.28 : 0.95;
+      const p = cycle(sincePhase, 2.3, -0.5 * i);
+      const opacity = p < 0.25 ? seg(0, 0.95, p / 0.25)
+        : p < 0.72 ? seg(0.95, 0.55, (p - 0.25) / 0.47)
+        : seg(0.55, 0, (p - 0.72) / 0.28);
       ctx.fillStyle = amber;
-      ctx.globalAlpha = alpha * Math.max(0, opacity);
+      ctx.globalAlpha = alpha * opacity;
       ctx.shadowColor = dark ? CL.amberDarkGlow : CL.amberGlow;
       ctx.shadowBlur = 6;
       ctx.beginPath();
-      ctx.arc(px, yc, size, 0, Math.PI * 2);
+      ctx.arc(cx + xs[i], floor - sizes[i] / 2 + seg(9, -15, p), sizes[i] / 2 * seg(0.4, 1.05, p), 0, Math.PI * 2);
       ctx.fill();
       ctx.shadowBlur = 0;
     }
