@@ -715,6 +715,7 @@
                   </div>
                   <button class="switch" id="history-persist-toggle" role="switch" aria-checked="false"><span class="knob"></span></button>
                 </div>
+                <div class="divider"></div>
                 <div class="settings-row bare">
                   <div class="row-label">
                     <div class="label">Clear history</div>
@@ -730,12 +731,16 @@
                   </div>
                   <span class="link-change" id="open-folder">Open folder</span>
                 </div>
-                <div class="settings-row bare" id="models-folder-row" hidden>
-                  <div class="row-label">
-                    <div class="label">Models folder</div>
-                    <div class="sub" id="models-folder-path">&mdash;</div>
+                <!-- The divider hides with its row. -->
+                <div id="models-folder-row" hidden>
+                  <div class="divider"></div>
+                  <div class="settings-row bare">
+                    <div class="row-label">
+                      <div class="label">Models folder</div>
+                      <div class="sub" id="models-folder-path">&mdash;</div>
+                    </div>
+                    <span class="link-change" id="open-models-folder">Open folder</span>
                   </div>
-                  <span class="link-change" id="open-models-folder">Open folder</span>
                 </div>
                 <div class="divider"></div>
                 <div class="toggle-row">
@@ -745,6 +750,7 @@
                   </div>
                   <button class="switch" id="retention-enabled-toggle" role="switch" aria-checked="false"><span class="knob"></span></button>
                 </div>
+                <div class="divider"></div>
                 <div class="settings-row bare">
                   <div class="row-label">
                     <div class="label">Clear recordings</div>
@@ -752,6 +758,7 @@
                   </div>
                   <button class="btn btn-secondary-danger" id="clear-recordings-btn">Clear recordings</button>
                 </div>
+                <div class="divider"></div>
                 <div class="settings-row bare">
                   <div class="row-label">
                     <div class="label">Recordings folder</div>
