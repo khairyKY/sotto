@@ -10,6 +10,8 @@
   --mm-accent: #8E74D0;
   --mm-blush: #F0BFCF;
   --mm-ink: #332E3A;
+  /* Text on a filled accent (Retry, the active segment): white in light, Base-dark in dark (design §Home 4). */
+  --mm-on-accent: #FFFFFF;
   --mm-muted: #8E847A;
   --mm-muted-2: #A79E95;
   --mm-muted-3: #948C86;
@@ -47,6 +49,7 @@
   --mm-accent: #C9B8EE;
   --mm-blush: #5B3F4E;
   --mm-ink: #EFE9F1;
+  --mm-on-accent: #241F2A;
   --mm-muted: #9A8FA0;
   --mm-muted-2: #7C7386;
   --mm-muted-3: #8F859A;
@@ -83,6 +86,7 @@
     --mm-accent: #C9B8EE;
     --mm-blush: #5B3F4E;
     --mm-ink: #EFE9F1;
+    --mm-on-accent: #241F2A;
     --mm-muted: #9A8FA0;
     --mm-muted-2: #7C7386;
     --mm-muted-3: #8F859A;

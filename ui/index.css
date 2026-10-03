@@ -204,7 +204,7 @@ body {
    microphone is open. */
 .alert-card:not([hidden]) + .alert-card { margin-top: 12px; }
 .lecture-icon { background: var(--mm-tint); color: var(--mm-accent-ink); }
-.lecture-icon.on { background: var(--mm-accent); color: var(--mm-fg); }
+.lecture-icon.on { background: var(--mm-accent); color: var(--mm-on-accent); }
 .btn {
   background: transparent;
   border: 0;
@@ -217,7 +217,7 @@ body {
 .btn-ghost { color: var(--mm-muted); }
 .btn-ghost:hover { background: rgba(127,127,127,0.08); }
 .btn-primary {
-  color: var(--mm-ink);
+  color: var(--mm-on-accent);
   background: var(--mm-accent);
   padding: 8px 16px;
 }
@@ -294,13 +294,9 @@ body {
   transition: background 0.14s, color 0.14s;
 }
 .segmented button.active {
-  color: var(--mm-ink);
+  color: var(--mm-on-accent);
   background: var(--mm-accent);
   font-weight: 600;
-}
-:root[data-theme="dark"] .segmented button.active,
-:root.dark .segmented button.active {
-  color: var(--mm-base);
 }
 
 .insight-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; margin-bottom: 20px; }
@@ -877,7 +873,7 @@ input[type="range"]::-webkit-slider-thumb {
 /* ── header button & text link overrides ────────────────── */
 .btn-add-header {
   font: 600 12px 'Hanken Grotesk';
-  color: #fff;
+  color: var(--mm-on-accent);
   background: var(--mm-accent);
   padding: 8px 15px;
   border-radius: 10px;
@@ -887,10 +883,6 @@ input[type="range"]::-webkit-slider-thumb {
 }
 .btn-add-header:hover {
   filter: brightness(1.08);
-}
-:root[data-theme="dark"] .btn-add-header,
-:root.dark .btn-add-header {
-  color: var(--mm-base);
 }
 
 .link-change {
@@ -997,10 +989,9 @@ input[type="range"]::-webkit-slider-thumb {
 /* The first chip is the call to action — filled accent, presses in on click. */
 .dict-warn-tag.action {
   background: var(--mm-accent);
-  color: #fff;
+  color: var(--mm-on-accent);
   cursor: pointer;
 }
-:root[data-theme="dark"] .dict-warn-tag.action { color: var(--mm-window); }
 .dict-warn-tag.action:hover { filter: brightness(1.06); }
 .dict-warn-tag.action:active { transform: translateY(0); box-shadow: var(--mm-inset-sm); }
 
