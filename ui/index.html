@@ -152,7 +152,7 @@
 
           <div class="insight-grid">
             <div class="card-raised insight-card center">
-              <div class="insight-card-label">Speaking speed</div>
+              <div class="section-label">Speaking speed</div>
               <div class="gauge-wrap" id="speed-gauge">
                 <svg viewBox="0 0 130 74" width="130" height="74" style="display:block">
                   <path d="M11 66 A54 54 0 0 1 119 66" fill="none" stroke="var(--mm-gauge-bg)" stroke-width="11" stroke-linecap="round"/>
@@ -164,13 +164,13 @@
               <div class="insight-personal-best">&#9670; personal best <span id="speed-pb">128</span></div>
             </div>
             <div class="card-raised insight-card">
-              <div class="insight-card-label">Fixes made by Sotto</div>
+              <div class="section-label">Fixes made by Sotto</div>
               <div class="insight-big" id="fixes-val">0</div>
               <div class="insight-detail-row" id="fixes-words-row"><span class="bold" id="fixes-words-val">0</span> words corrected</div>
               <div class="insight-detail-row" id="fixes-dict-row"><span class="bold" id="fixes-dict-val">0</span> dictionary fixes</div>
             </div>
             <div class="card-raised insight-card">
-              <div class="insight-card-label">Total words</div>
+              <div class="section-label">Total words</div>
               <div class="insight-big" id="total-words-val">0</div>
               <div class="insight-detail-row" id="total-period-row"><span class="bold" id="total-period-val">0</span> <span id="total-period-label">this week</span></div>
               <div class="insight-detail-row" id="total-saved-row">&asymp; <span class="bold" id="total-saved-val">0</span> min saved vs. typing</div>
@@ -180,7 +180,7 @@
           <div class="insight-row-bottom">
             <div class="card-raised insight-card-bottom">
               <div class="insight-head-between">
-                <div class="insight-card-label">Where you dictate</div>
+                <div class="section-label">Where you dictate</div>
                 <div class="insight-card-sublabel">30 days</div>
               </div>
               <div class="app-list" id="app-list"></div>
@@ -329,7 +329,7 @@
 
           <div class="pron-samples-list" id="pron-samples-list"></div>
 
-          <div class="settings-section-title" style="margin-top:22px">Trained words</div>
+          <div class="section-label">Trained words</div>
           <div class="list-well">
             <div class="pron-trained-list" id="pron-trained-list">
               <div class="list-empty">No trained words yet</div>
@@ -338,7 +338,7 @@
 
           <!-- Calibrate (#22), behind the `calibration` config flag. -->
           <div id="cal-section" hidden>
-            <div class="settings-section-title" style="margin-top:22px">Calibrate</div>
+            <div class="section-label">Calibrate</div>
             <div class="card-raised pron-listen-card" id="cal-card">
               <span class="section-hint" id="cal-progress"></span>
               <div class="cal-sentence" id="cal-sentence" dir="auto"></div>
@@ -439,7 +439,7 @@
                    shows it; Polish cleans the words up; Tone is how AI polish
                    sounds; Speech model hears you; App is the window itself;
                    Data & privacy is what's kept; Labs holds what's new. -->
-              <div class="settings-section-title">Dictation</div>
+              <div class="section-label">Dictation</div>
               <div class="card-raised settings-card">
                 <div class="settings-row bare">
                   <div class="row-label">
@@ -511,7 +511,7 @@
                 </div>
               </div>
 
-              <div class="settings-section-title">Polish</div>
+              <div class="section-label">Polish</div>
               <div class="card-raised settings-card">
                 <div class="settings-row bare">
                   <div class="row-label">
@@ -572,7 +572,7 @@
                 </div>
               </div>
 
-              <div class="settings-section-title">Tone</div>
+              <div class="section-label">Tone</div>
               <div class="card-raised settings-card" id="tone-card">
                 <div class="settings-row bare">
                   <div class="row-label">
@@ -615,7 +615,7 @@
               <datalist id="tone-app-datalist"></datalist>
               <datalist id="tone-preset-datalist"></datalist>
 
-              <div class="settings-section-title">Speech model</div>
+              <div class="section-label">Speech model</div>
               <div class="card-raised settings-card">
                 <div id="model-list">
                   <!-- Dynamically populated by JS -->
@@ -643,7 +643,7 @@
                 </div>
               </div>
 
-              <div class="settings-section-title">App</div>
+              <div class="section-label">App</div>
               <div class="card-raised settings-card">
                 <div class="settings-row bare">
                   <div class="row-label">
@@ -689,7 +689,7 @@
                 </div>
               </div>
 
-              <div class="settings-section-title">Data &amp; privacy</div>
+              <div class="section-label">Data &amp; privacy</div>
               <div class="card-raised settings-card">
                 <div class="toggle-row">
                   <div class="row-label">
@@ -763,7 +763,7 @@
               <!-- Labs (#130): everything that's off by default while it's
                    new. A switch sets its config flag by name (set_lab_flag);
                    the feature's page, card or list shows only while it's on. -->
-              <div class="settings-section-title">Labs <span class="section-hint">New features we're still testing. Each is off until you turn it on.</span></div>
+              <div class="section-label">Labs <span class="section-hint">New features we're still testing. Each is off until you turn it on.</span></div>
               <div class="card-raised settings-card">
                 <div class="toggle-row">
                   <div class="row-label">
@@ -883,7 +883,7 @@
             <div class="capture-title" id="capture-title">Press any key or mouse button</div>
             <div class="capture-sub" id="capture-sub">Click here, then press the key you want. A Stream Deck or macro pad works if it sends a standard key.</div>
           </div>
-          <div class="hotkey-list-head">or pick from the list</div>
+          <div class="section-label hotkey-list-head">Or pick from the list</div>
           <div class="hotkey-list" id="hotkey-list"></div>
         </div>
       </div>
@@ -898,15 +898,15 @@
         </div>
         <div class="modal-body">
           <div>
-            <div class="settings-section-title">Name</div>
+            <div class="section-label">Name</div>
             <input class="dict-edit-input" id="transform-name" dir="auto" placeholder="e.g. Friendlier" autocomplete="off" style="width:100%" />
           </div>
           <div>
-            <div class="settings-section-title">What it does</div>
+            <div class="section-label">What it does</div>
             <textarea class="dict-edit-input" id="transform-prompt" dir="auto" rows="3" placeholder="Tell it what to do, e.g. Make it warmer and more casual." style="width:100%;resize:vertical"></textarea>
           </div>
           <div>
-            <div class="settings-section-title">Shortcut</div>
+            <div class="section-label">Shortcut</div>
             <div class="capture" id="transform-capture" tabindex="0">
               <div class="capture-title transform-keys" id="transform-capture-keys" style="justify-content:center">Press the shortcut</div>
               <div class="capture-sub" id="transform-capture-sub">Click here, then press Ctrl, Alt or Win plus one key.</div>

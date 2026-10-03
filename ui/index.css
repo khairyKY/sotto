@@ -307,13 +307,7 @@ body {
 /* Numbers sit left, as the design; only the speed gauge is centred. */
 .insight-card { padding: 17px 19px; display: flex; flex-direction: column; }
 .insight-card.center { align-items: center; }
-.insight-card-label {
-  font: 600 9.5px "JetBrains Mono";
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
-  color: var(--mm-muted-2);
-  align-self: flex-start;
-}
+.insight-card .section-label, .insight-card-bottom .section-label { margin: 0; align-self: flex-start; }
 .gauge-wrap { position: relative; width: 130px; height: 74px; margin: 8px 0 2px; }
 .gauge-center {
   position: absolute;
@@ -830,13 +824,9 @@ input[type="range"]::-webkit-slider-thumb {
 }
 .capture-title { font: 500 14px "Hanken Grotesk"; color: var(--mm-text); }
 .capture-sub { font: 400 12px "Hanken Grotesk"; color: var(--mm-muted-3); margin-top: 6px; }
-.hotkey-list-head {
-  font: 500 11px "Hanken Grotesk"; color: var(--mm-header);
-  text-transform: uppercase; letter-spacing: 0.06em;
-  padding: 4px 4px 0;
-  border-top: 1px solid var(--mm-divider);
-  padding-top: 12px;
-}
+/* Modal field labels and list heads are section labels too. */
+.modal-body .section-label { margin: 0 0 8px; }
+.modal-body .hotkey-list-head { margin: 0; padding-top: 12px; border-top: 1px solid var(--mm-divider); }
 .hotkey-list { display: flex; flex-direction: column; gap: 2px; }
 .hotkey-group-label { font: 500 11px "Hanken Grotesk"; color: var(--mm-header); padding: 6px 8px 4px; }
 .hotkey-option {
@@ -1123,15 +1113,9 @@ input[type="range"]::-webkit-slider-thumb {
   flex-direction: column;
   gap: 18px;
 }
-.settings-section-title {
-  font: 600 10px 'JetBrains Mono';
-  letter-spacing: .15em;
-  text-transform: uppercase;
-  color: var(--mm-muted-2);
-  margin: 0 0 8px;
-}
+.settings-container > .section-label { margin: 0 0 8px; }
 /* A section's one-line note (Labs), in the body voice beside the mono title. */
-.settings-section-title .section-hint { margin-left: 8px; font: 400 11.5px 'Hanken Grotesk'; letter-spacing: 0; text-transform: none; }
+.section-label .section-hint { margin-left: 8px; font: 400 11.5px 'Hanken Grotesk'; letter-spacing: 0; text-transform: none; }
 .settings-card {
   background: var(--mm-fg);
   border-radius: 13px;
