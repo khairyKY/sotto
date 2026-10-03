@@ -581,14 +581,10 @@ function drawState(x, y, w, h, now, radius, shadowScale, baseAlpha) {
     // (neutral).
     const kept = name === 'kept' || name === 'notundone';
     const tick = name === 'copied' || name === 'fixcopied';
-    ctx.save();
-    ctx.globalAlpha = alpha * (kept ? 0.2 : 1);
     ctx.fillStyle = kept ? blush : (dark ? '#3A3340' : '#E6DFD4');
     ctx.beginPath();
     ctx.arc(iconX, yc, 10, 0, Math.PI * 2);
     ctx.fill();
-    ctx.restore();
-    ctx.globalAlpha = alpha;
     ctx.fillStyle = kept ? blushTxt : tick ? accent : muted;
     ctx.font = '700 11px "Hanken Grotesk", system-ui, sans-serif';
     ctx.textAlign = 'center';
