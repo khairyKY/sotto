@@ -839,21 +839,7 @@ input[type="range"]::-webkit-slider-thumb {
 .hotkey-option.active { background: var(--mm-tint); color: var(--mm-accent-ink); font-weight: 600; }
 .hotkey-option .warn { font: 500 10.5px; color: #D4A06A; background: rgba(212,160,106,0.14); padding: 2px 7px; border-radius: 20px; }
 
-/* ── header button & text link overrides ────────────────── */
-.btn-add-header {
-  font: 600 12px 'Hanken Grotesk';
-  color: var(--mm-on-accent);
-  background: var(--mm-accent);
-  padding: 8px 15px;
-  border-radius: 10px;
-  cursor: pointer;
-  transition: background 0.12s, filter 0.12s;
-  display: inline-block;
-}
-.btn-add-header:hover {
-  filter: brightness(1.08);
-}
-
+/* ── text link ────────────────── */
 .link-change {
   font: 600 12.5px 'Hanken Grotesk';
   color: var(--mm-accent-ink);

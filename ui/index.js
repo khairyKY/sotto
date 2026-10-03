@@ -1689,7 +1689,7 @@ function renderModels(models) {
     let rightStatus = "";
     let metaOverride = null;
     if (downloadingThis && downloadError) {
-      rightStatus = `<button class="btn btn-primary model-download-btn" style="font-size:11px; padding:4px 10px; border-radius:6px;">Retry</button>`;
+      rightStatus = `<button class="btn btn-primary model-download-btn">Retry</button>`;
       metaOverride = `<span style="color:var(--mm-coral)" title="${escapeHtml(downloadError)}">Download stopped &middot; Retry picks up where it left off</span>`;
     } else if (downloadingThis) {
       const pct = downloadProgress ? downloadProgress.pct : 0;
@@ -1706,9 +1706,9 @@ function renderModels(models) {
       if (load === "loading") metaOverride = "Loading&hellip;";
       if (load === "ready") metaOverride = `Ready${m.meta ? ` &middot; ${escapeHtml(m.meta)}` : ""}`;
     } else if (m.state === "installed") {
-      rightStatus = `<button class="btn btn-outline model-select-btn" style="font-size:11px; padding:4px 10px; border-radius:6px;">Use this</button>`;
+      rightStatus = `<button class="btn btn-outline model-select-btn">Use this</button>`;
     } else if (m.state === "download") {
-      rightStatus = `<button class="btn btn-primary model-download-btn" style="font-size:11px; padding:4px 10px; border-radius:6px;">Download</button>`;
+      rightStatus = `<button class="btn btn-primary model-download-btn">Download</button>`;
     } else if (m.state === "downloading") {
       rightStatus = `<span class="mono" style="font-size:11px;">downloading &middot; ${m.progress}%</span>`;
     }
