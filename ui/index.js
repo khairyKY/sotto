@@ -2269,7 +2269,7 @@ async function boot() {
     t.setAttribute("aria-checked", String(!!s.historyPersist));
     initSwitch(t, (on) => {
       const ok = confirm(on
-        ? "Keep History after restarts?\n\nSotto saves your dictated text to history.jsonl in your data folder. It stays on this device and is never uploaded. Turning this off deletes the file."
+        ? "Keep History after restarts?\n\nSotto saves your dictated text in your data folder. It stays on this device and is never uploaded. Turning this off deletes it."
         : "Stop keeping History?\n\nThis deletes the saved file. This session's list stays until Sotto quits.");
       if (!ok) { t.setAttribute("aria-checked", String(!on)); return; }
       invoke("set_history_persist", { enabled: on });
