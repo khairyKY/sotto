@@ -137,14 +137,16 @@ const $ = (id) => document.getElementById(id);
 // ── settings modal ──
 // Settings opens over the app (shell dimmed behind) rather than replacing the
 // content area, so you never lose your place in Home/Insights/etc.
+// Only one nav item is lit: Settings while it's open, the page behind it after.
+const markNav = (page) => document.querySelectorAll(".nav-item").forEach(n => n.classList.toggle("active", n.dataset.page === page));
 function openSettings() {
   $("settings-scrim").hidden = false;
-  document.querySelector('.nav-item[data-page="settings"]')?.classList.add("active");
+  markNav("settings");
   syncPad();
 }
 function closeSettings() {
   $("settings-scrim").hidden = true;
-  document.querySelector('.nav-item[data-page="settings"]')?.classList.remove("active");
+  markNav(document.querySelector(".page.active")?.id.replace("page-", ""));
   syncPad();
 }
 const settingsOpen = () => !$("settings-scrim").hidden;
@@ -154,11 +156,9 @@ function navigate(page) {
   if (page === 'settings') { openSettings(); return; }
   closeSettings(); // tray → Insights etc. while the modal is up should land on that page
   document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
-  document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
   const pg = $(`page-${page}`);
   if (pg) pg.classList.add('active');
-  const nav = document.querySelector(`.nav-item[data-page="${page}"]`);
-  if (nav) nav.classList.add('active');
+  markNav(page);
   if (page === 'insights') loadInsights();
   if (page === 'history') loadHistory();
   if (page === 'home') loadHome();
@@ -283,6 +283,7 @@ function renderLecture(s) {
   $("lecture-folder").hidden = !s?.lecturesDir;
   $("lecture-folder").onclick = () => invoke("open_url", { url: s.lecturesDir });
 }
+$("recent-all").onclick = () => navigate("history");
 $("lecture-toggle").onclick = async () => {
   await invoke("set_lecture", { on: !lectureOn });
   if (!hasTauri) loadHome();
@@ -296,7 +297,7 @@ function updateStatusBar(s) {
   // Paused (tray) stops the hotkey and pill from starting takes, same chip
   // as "polish off" for the same reason: nothing else here would show it (#60).
   if (s?.paused) parts.push('<span class="status-warn">paused</span>');
-  document.querySelector("#status-bar .status-dot").style.background = s?.paused ? "var(--mm-muted-2)" : "";
+  document.querySelector("#status-bar .status-dot").classList.toggle("paused", !!s?.paused);
   if (s?.models?.length) {
     const sel = s.models.find(m => m.selected);
     if (sel) parts.push(escapeHtml(sel.name));
@@ -317,16 +318,18 @@ function renderRecent(entries) {
   const host = $("recent-list");
   host.innerHTML = "";
   if (!entries || !entries.length) {
-    host.innerHTML = '<div class="recent-empty">Nothing dictated yet this session</div>';
+    host.innerHTML = '<div class="list-empty">Nothing dictated yet</div>';
+    $("recent-all").hidden = true;
     return;
   }
-  // Kept history can hold hundreds; Home only ever showed the last 20.
-  entries.slice(0, 20).forEach((e, i) => {
+  $("recent-all").hidden = false;
+  // Five, as the design: Home stays one screen and the status line in view.
+  entries.slice(0, 5).forEach((e, i) => {
     const row = document.createElement("div");
-    row.className = "recent-item";
+    row.className = "list-row";
     row.innerHTML = `
-      <span class="recent-time">${e.time}</span>
-      <span class="recent-text" dir="auto">${escapeHtml(e.text)}</span>
+      <span class="list-time">${e.time}</span>
+      <span class="list-text recent-text" dir="auto">${escapeHtml(e.text)}</span>
       <span class="recent-copy" title="Copy">⧉</span>
       <span class="recent-retry" title="Re-polish &amp; copy">↻</span>`;
     row.querySelector(".recent-copy").onclick = (ev) => { ev.stopPropagation(); copyText(e.text); };
@@ -395,18 +398,18 @@ function mockStreakData() {
   }
   return data;
 }
+const compactNum = new Intl.NumberFormat("en", { notation: "compact", maximumFractionDigits: 1 }); // 3,420 → 3.4k, as the design
 function renderAppBreakdown(apps) {
   const host = $("app-list");
   host.innerHTML = "";
-  if (!apps.length) { host.innerHTML = '<div style="padding:14px 16px;font-size:12.5px;color:var(--mm-muted-3)">No data yet</div>'; return; }
+  if (!apps.length) { host.innerHTML = '<div class="list-empty">No apps yet</div>'; return; }
   apps.forEach(a => {
     const row = document.createElement("div");
     row.className = "app-row";
     row.innerHTML = `
-      <span class="app-name">${escapeHtml(a.name)}</span>
+      <span class="app-name" title="${escapeHtml(a.name)} · ${a.pct}%">${escapeHtml(a.name)}</span>
       <div class="app-bar-wrap"><div class="app-bar-fill" style="width:${a.pct}%"></div></div>
-      <span class="app-pct">${a.pct}%</span>
-      <span class="app-words">${(a.words || 0).toLocaleString()}</span>`;
+      <span class="app-words">${compactNum.format(a.words || 0).toLowerCase()}</span>`;
     host.appendChild(row);
   });
 }
@@ -522,6 +525,9 @@ function setReplacementsEnabled(on) {
   renderSnipPage(snipEntries);
 }
 
+// An empty list says whether there's nothing yet or nothing matches the search.
+const emptyList = (none, query) => `<div class="list-empty">${query.trim() ? `Nothing matches “${escapeHtml(query.trim())}”` : none}</div>`;
+
 // ── dictionary (main page) ──
 let dictEntries = [];
 function renderDictPage(entries) {
@@ -532,13 +538,13 @@ function renderDictPage(entries) {
   const filtered = q ? entries.filter(e => e.spoken.toLowerCase().includes(q) || e.replacement.toLowerCase().includes(q)) : entries;
 
   if (!filtered.length) {
-    host.innerHTML = '<div style="padding:14px 16px;font-size:12.5px;color:var(--mm-muted-3)">No dictionary words found</div>';
+    host.innerHTML = emptyList("No words yet", $("dict-search").value);
     return;
   }
 
   filtered.forEach((e, idx) => {
     const row = document.createElement("div");
-    row.className = "dict-row-view";
+    row.className = "list-row dict-row-view";
 
     // `_draft` marks a row prefilled from an example chip: it opens in edit
     // state even though it has content, because nothing is saved until the
@@ -622,12 +628,11 @@ function renderDictPage(entries) {
       } else {
         row.classList.toggle("entry-off", e.enabled === false);
         row.innerHTML = `
-          <button class="switch entry-toggle" role="switch" aria-checked="${e.enabled !== false}"><span class="knob"></span></button>
-          <span class="term" dir="auto">${escapeHtml(e.spoken)}</span>
-          ${renderAliasChips(e.aliases)}
+          <span class="term-col"><span class="term" dir="auto">${escapeHtml(e.spoken)}</span>${renderAliasChips(e.aliases)}</span>
           <span class="arrow">&rarr;</span>
           <span class="replace" dir="auto">${escapeHtml(e.replacement)}</span>
           <div class="actions">
+            <button class="switch entry-toggle" role="switch" aria-checked="${e.enabled !== false}" aria-label="Use this word"><span class="knob"></span></button>
             <span class="action-btn edit-btn" title="Edit">
               <svg viewBox="0 0 20 20" width="15" height="15"><path d="M13 4 L16 7 L7 16 H4 V13 Z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg>
             </span>
@@ -685,8 +690,6 @@ $("dict-add").onclick = () => {
   dictEntries.push(newEntry);
   renderDictPage(dictEntries);
 };
-// The banner's "+ Add word" chip is a second trigger for the same flow.
-if ($("dict-warn-add")) $("dict-warn-add").onclick = () => $("dict-add").click();
 // Example chips in the banner: click one to prefill it as a draft row in edit
 // state. Nothing is written until the user hits save, so trying an example
 // can't quietly add data they didn't choose. Scoped to this page's banner so
@@ -715,13 +718,13 @@ function renderSnipPage(entries) {
   const filtered = q ? entries.filter(e => e.spoken.toLowerCase().includes(q) || e.replacement.toLowerCase().includes(q)) : entries;
 
   if (!filtered.length) {
-    host.innerHTML = '<div style="padding:14px 16px;font-size:12.5px;color:var(--mm-muted-3)">No snippets found</div>';
+    host.innerHTML = emptyList("No snippets yet", $("snip-search").value);
     return;
   }
 
   filtered.forEach((e, idx) => {
     const row = document.createElement("div");
-    row.className = "snip-row-view";
+    row.className = "list-row snip-row-view";
 
     // `_draft` marks a row prefilled from an example chip: it opens in edit
     // state even though it has content, because nothing is saved until the
@@ -803,11 +806,10 @@ function renderSnipPage(entries) {
       } else {
         row.classList.toggle("entry-off", e.enabled === false);
         row.innerHTML = `
-          <button class="switch entry-toggle" role="switch" aria-checked="${e.enabled !== false}"><span class="knob"></span></button>
-          <span class="trigger" dir="auto">${escapeHtml(e.spoken)}</span>
-          ${renderAliasChips(e.aliases)}
+          <span class="term-col"><span class="trigger" dir="auto">${escapeHtml(e.spoken)}</span>${renderAliasChips(e.aliases)}</span>
           <span class="preview" dir="auto">${escapeHtml(e.replacement)}</span>
           <div class="actions">
+            <button class="switch entry-toggle" role="switch" aria-checked="${e.enabled !== false}" aria-label="Use this snippet"><span class="knob"></span></button>
             <span class="action-btn edit-btn" title="Edit">
               <svg viewBox="0 0 20 20" width="15" height="15"><path d="M13 4 L16 7 L7 16 H4 V13 Z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg>
             </span>
@@ -850,7 +852,6 @@ $("snip-add").onclick = () => {
   snipEntries.push(newEntry);
   renderSnipPage(snipEntries);
 };
-if ($("snip-warn-add")) $("snip-warn-add").onclick = () => $("snip-add").click();
 // Example chips in the banner: click one to prefill it as a draft row in edit
 // state. Nothing is written until the user hits save, so trying an example
 // can't quietly add data they didn't choose. Scoped to this page's banner so
@@ -924,31 +925,38 @@ async function populateToneAppDatalist() {
 }
 
 // Per-app tone rows — same add/edit/remove list shape as the Dictionary page
-// (reuses its dict-row-view / dict-entries-container markup and classes).
+// (reuses its list-row / dict-row-view markup and classes).
 let appTones = [];
 function renderToneAppsPage(entries) {
   const host = $("tone-apps-list");
   if (!host) return;
   host.innerHTML = "";
   if (!entries.length) {
-    host.innerHTML = '<div style="padding:14px 16px;font-size:12.5px;color:var(--mm-muted-3)">No per-app tones yet</div>';
+    host.innerHTML = '<div class="list-empty">No per-app tones yet</div>';
     return;
   }
   entries.forEach((e) => {
     const row = document.createElement("div");
-    row.className = "dict-row-view";
+    row.className = "list-row dict-row-view";
 
     let isEditing = (e.app === "");
 
     const renderRowContent = () => {
       if (isEditing) {
+        row.classList.add("editing");
         row.innerHTML = `
-          <input class="spoken" list="tone-app-datalist" value="${escapeHtml(e.app)}" placeholder="app (e.g. Slack)" style="flex:1; margin-right:4px;" />
-          <span class="arrow" style="margin:0 4px; color:var(--mm-muted-3);">&rarr;</span>
-          <input class="replacement" list="tone-preset-datalist" value="${escapeHtml(e.tone)}" placeholder="how it should sound" style="flex:1; margin-right:8px;" />
-          <div class="actions" style="display:flex; gap:10px; align-items:center;">
-            <span class="action-btn save-btn" title="Save" style="color:var(--mm-status-green); font-size:14px; font-weight:bold;">&#10003;</span>
-            <span class="action-btn cancel-btn" title="Cancel" style="color:var(--mm-coral); font-size:14px; font-weight:bold;">&#10005;</span>
+          <div class="dict-edit-fields">
+            <input class="dict-edit-input spoken" list="tone-app-datalist" value="${escapeHtml(e.app)}" placeholder="app (e.g. Slack)" />
+            <span class="dict-edit-arrow">&rarr;</span>
+            <input class="dict-edit-input replacement" list="tone-preset-datalist" value="${escapeHtml(e.tone)}" placeholder="how it should sound" />
+            <div class="dict-edit-actions">
+              <span class="action-btn save-btn" title="Save">
+                <svg viewBox="0 0 20 20" width="15" height="15"><path d="M4 10.5 L8 14.5 L16 5.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+              </span>
+              <span class="action-btn cancel-btn" title="Cancel">
+                <svg viewBox="0 0 20 20" width="15" height="15"><path d="M5 5 L15 15 M15 5 L5 15" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+              </span>
+            </div>
           </div>
         `;
         row.querySelector(".save-btn").onclick = (ev) => {
@@ -975,6 +983,7 @@ function renderToneAppsPage(entries) {
         };
         row.querySelector(".spoken").focus();
       } else {
+        row.classList.remove("editing");
         row.innerHTML = `
           <span class="term">${escapeHtml(e.app)}</span>
           <span class="arrow">&rarr;</span>
@@ -1043,10 +1052,10 @@ const codeEditors = { listId: "code-editors-list", addId: "code-editors-add", cm
 function renderAppList(list) {
   const host = $(list.listId);
   if (!host) return;
-  host.innerHTML = list.apps.length ? "" : '<div style="padding:14px 16px;font-size:12.5px;color:var(--mm-muted-3)">No apps yet</div>';
+  host.innerHTML = list.apps.length ? "" : '<div class="list-empty">No apps yet</div>';
   list.apps.forEach((app, i) => {
     const row = document.createElement("div");
-    row.className = "dict-row-view";
+    row.className = "list-row dict-row-view";
     if (app === "") {
       row.classList.add("editing");
       row.innerHTML = `
@@ -1097,15 +1106,15 @@ function renderHistoryPage(entries) {
   const host = $("history-list");
   host.innerHTML = "";
   if (!entries.length) {
-    host.innerHTML = '<div class="hist-empty">Nothing dictated yet this session</div>';
+    host.innerHTML = '<div class="list-empty">Nothing dictated yet</div>';
     return;
   }
   entries.forEach((e, i) => {
     const row = document.createElement("div");
-    row.className = "hist-row";
+    row.className = "list-row hist-row";
     // ± only when this session kept the raw transcript (#25); reloaded rows have none.
-    const diffBtn = e.raw ? '<span class="diff-toggle" title="What changed">±</span>' : "";
-    row.innerHTML = `<span class="time">${e.time}</span><span class="txt" dir="auto">${escapeHtml(e.text)}</span>${diffBtn}<span class="copy" title="Copy">⧉</span><span class="retry" title="Re-polish &amp; copy">↻</span><span class="flag" title="Flag as wrong">⚑</span>`;
+    const diffBtn = e.raw ? '<span class="diff-toggle" title="See what polish changed">±</span>' : "";
+    row.innerHTML = `<span class="list-time">${e.time}</span><span class="list-text txt" dir="auto">${escapeHtml(e.text)}</span>${diffBtn}<span class="copy" title="Copy">⧉</span><span class="retry" title="Re-polish &amp; copy">↻</span><span class="flag" title="Flag as wrong. It's saved on this device for you to look at later.">⚑</span>`;
     row.querySelector(".copy").onclick = (ev) => { ev.stopPropagation(); copyText(e.text); };
     row.querySelector(".retry").onclick = (ev) => { ev.stopPropagation(); invoke("repolish_copy", { text: e.text }); };
     const flagEl = row.querySelector(".flag");
@@ -1176,14 +1185,14 @@ function renderPad() {
   const host = $("pad-list");
   host.innerHTML = "";
   if (!pad.rows.length) {
-    host.innerHTML = `<div class="hist-empty">No notes yet. ${escapeHtml($("hint-verb").textContent)} ${escapeHtml($("keycap-display").textContent)} and think out loud.</div>`;
+    host.innerHTML = `<div class="list-empty">No notes yet. ${escapeHtml($("hint-verb").textContent)} ${escapeHtml($("keycap-display").textContent)} and think out loud.</div>`;
     return;
   }
   const into = escapeHtml(`Type into ${pad.targetApp}`);
   pad.rows.slice().reverse().forEach((r) => {
     const row = document.createElement("div");
-    row.className = "hist-row pad-row";
-    row.innerHTML = `<span class="time">${padTime(r.id)}</span><span class="txt" dir="auto">${escapeHtml(r.text)}</span>
+    row.className = "list-row hist-row pad-row";
+    row.innerHTML = `<span class="list-time">${padTime(r.id)}</span><span class="list-text txt" dir="auto">${escapeHtml(r.text)}</span>
       <button class="act" data-a="copy" title="Copy" aria-label="Copy">⧉</button>
       <button class="act" data-a="inject" title="${into}" aria-label="${into}"${pad.targetApp ? "" : " hidden"}>↵</button>
       <button class="act" data-a="park" title="Add to your notes file" aria-label="Add to your notes file"${pad.canPark ? "" : " hidden"}>⇲</button>
@@ -1222,13 +1231,13 @@ function renderTrainedWords() {
   const host = $("pron-trained-list");
   host.innerHTML = "";
   if (!pronVocabulary.length) {
-    host.innerHTML = '<div class="hist-empty">No words trained yet</div>';
+    host.innerHTML = '<div class="list-empty">No trained words yet</div>';
     return;
   }
   pronVocabulary.forEach(v => {
     const { hits, total, pct } = pronStrength(v.recent || []);
     const row = document.createElement("div");
-    row.className = "pron-trained-row";
+    row.className = "list-row pron-trained-row";
     row.innerHTML = `
       <span class="pron-trained-word" dir="auto">${escapeHtml(v.word)}</span>
       <span class="pron-trained-heard">${v.heardAs.length ? "heard as: " + v.heardAs.map(h => `<bdi>${escapeHtml(h)}</bdi>`).join(", ") : ((v.recent || []).length ? "no corrections yet" : "no attempts yet")}</span>
@@ -1688,8 +1697,8 @@ function renderModels(models) {
     let rightStatus = "";
     let metaOverride = null;
     if (downloadingThis && downloadError) {
-      rightStatus = `<button class="btn btn-primary model-download-btn" style="font-size:11px; padding:4px 10px; border-radius:6px;">Retry</button>`;
-      metaOverride = `<span style="color:var(--mm-coral)" title="${escapeHtml(downloadError)}">Download stopped &middot; Retry picks up where it left off</span>`;
+      rightStatus = `<button class="btn btn-primary model-download-btn">Retry</button>`;
+      metaOverride = `<span class="model-error" title="${escapeHtml(downloadError)}">Download stopped &middot; Retry picks up where it left off</span>`;
     } else if (downloadingThis) {
       const pct = downloadProgress ? downloadProgress.pct : 0;
       rightStatus = `
@@ -1705,26 +1714,23 @@ function renderModels(models) {
       if (load === "loading") metaOverride = "Loading&hellip;";
       if (load === "ready") metaOverride = `Ready${m.meta ? ` &middot; ${escapeHtml(m.meta)}` : ""}`;
     } else if (m.state === "installed") {
-      rightStatus = `<button class="btn btn-outline model-select-btn" style="font-size:11px; padding:4px 10px; border-radius:6px;">Use this</button>`;
+      rightStatus = `<button class="btn btn-outline model-select-btn">Use this</button>`;
     } else if (m.state === "download") {
-      rightStatus = `<button class="btn btn-primary model-download-btn" style="font-size:11px; padding:4px 10px; border-radius:6px;">Download</button>`;
+      rightStatus = `<button class="btn btn-primary model-download-btn">Download</button>`;
     } else if (m.state === "downloading") {
-      rightStatus = `<span class="mono" style="font-size:11px;">downloading &middot; ${m.progress}%</span>`;
+      rightStatus = `<span class="mono">downloading &middot; ${m.progress}%</span>`;
     }
 
     row.innerHTML = `
-      <div style="display:flex;align-items:center;gap:12px;">
-        <span class="model-icon-box">
-          <svg viewBox="0 0 20 20" width="17" height="17">
-            <path d="M10 3 V13 M10 13 A2.4 2.4 0 1 0 7.6 15.4 A2.4 2.4 0 0 0 10 13 M10 3 L15 4.6 V8" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
-          </svg>
-        </span>
-        <div>
-          <div class="name" style="font-weight: 500; color: var(--mm-ink);">${escapeHtml(m.name)} <span class="sub" style="color: var(--mm-muted-2); font-size: 11.5px; font-weight: 400;">${escapeHtml(m.variant)}</span>${m.id === "egyptian-small" ? ' <span class="badge-beta">EXPERIMENTAL</span>' : ""}</div>
-          <div class="meta" style="font: 400 11.5px 'Hanken Grotesk'; color: var(--mm-muted-3); margin-top: 2px;">${metaOverride || (m.state === "installed" ? m.meta : `${m.meta} &middot; ${m.size}`)}</div>
-        </div>
+      <span class="model-icon-box">
+        <svg viewBox="0 0 20 20" width="17" height="17">
+          <path d="M10 3 V13 M10 13 A2.4 2.4 0 1 0 7.6 15.4 A2.4 2.4 0 0 0 10 13 M10 3 L15 4.6 V8" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+      </span>
+      <div class="grow">
+          <div class="name">${escapeHtml(m.name)} <span class="sub">${escapeHtml(m.variant)}</span>${m.id === "egyptian-small" ? ' <span class="badge-beta experimental">EXPERIMENTAL</span>' : ""}</div>
+          <div class="meta">${metaOverride || (m.state === "installed" ? m.meta : `${m.meta} &middot; ${m.size}`)}</div>
       </div>
-      <div style="flex:1"></div>
       ${rightStatus}
     `;
     const selectBtn = row.querySelector(".model-select-btn");
@@ -2159,18 +2165,18 @@ async function boot() {
 
   // Warning cards dismiss wiring
   if (localStorage.getItem("dict-warn-closed") === "true") {
-    $("dict-warn-card").style.display = "none";
+    $("dict-warn-card").hidden = true;
   }
   $("dict-warn-close").onclick = () => {
-    $("dict-warn-card").style.display = "none";
+    $("dict-warn-card").hidden = true;
     localStorage.setItem("dict-warn-closed", "true");
   };
 
   if (localStorage.getItem("snip-warn-closed") === "true") {
-    $("snip-warn-card").style.display = "none";
+    $("snip-warn-card").hidden = true;
   }
   $("snip-warn-close").onclick = () => {
-    $("snip-warn-card").style.display = "none";
+    $("snip-warn-card").hidden = true;
     localStorage.setItem("snip-warn-closed", "true");
   };
 
@@ -2179,9 +2185,8 @@ async function boot() {
   setActivationCopy(s.activation);
   selectSegment($("polish"), s.polish);
   if ($("quote-style")) selectSegment($("quote-style"), s.quoteStyle || "straight");
-  // The theme picker has no UI (theme follows the OS per the design doc), but
-  // guard rather than assume: an unguarded null here killed the whole rest of
-  // boot() — settings, dictionary, snippets, history — in one TypeError.
+  // Settings > App > Theme. Guarded: an unguarded null here once killed the
+  // whole rest of boot() — settings, dictionary, snippets, history — in one TypeError.
   if ($("theme")) selectSegment($("theme"), s.theme || "system");
   setThresholdUI(s.threshold);
   initToneUI(s);
@@ -2268,7 +2273,7 @@ async function boot() {
     t.setAttribute("aria-checked", String(!!s.historyPersist));
     initSwitch(t, (on) => {
       const ok = confirm(on
-        ? "Keep History after restarts?\n\nSotto saves your dictated text to history.jsonl in your data folder. It stays on this device and is never uploaded. Turning this off deletes the file."
+        ? "Keep History after restarts?\n\nSotto saves your dictated text in your data folder. It stays on this device and is never uploaded. Turning this off deletes it."
         : "Stop keeping History?\n\nThis deletes the saved file. This session's list stays until Sotto quits.");
       if (!ok) { t.setAttribute("aria-checked", String(!on)); return; }
       invoke("set_history_persist", { enabled: on });
