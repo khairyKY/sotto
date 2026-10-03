@@ -3,7 +3,7 @@
 * { box-sizing: border-box; }
 html, body { margin: 0; height: 100%; }
 body {
-  background: var(--mm-window);
+  background: var(--mm-base); /* one tone with the title bar, as the design's window */
   color: var(--mm-text);
   font-family: "Hanken Grotesk", system-ui, sans-serif;
   -webkit-font-smoothing: antialiased;
@@ -23,7 +23,6 @@ body {
   justify-content: space-between;
   padding-left: 16px;
   background: var(--mm-base);
-  border-bottom: 1px solid var(--mm-divider);
 }
 .titlebar-left { display: flex; align-items: center; gap: 11px; }
 .mark-tile {
