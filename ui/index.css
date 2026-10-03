@@ -240,7 +240,7 @@ body {
 .recent-copy:hover { color: var(--mm-accent-ink); }
 .recent-retry { color: var(--mm-accent); cursor: pointer; font: 600 13px "Hanken Grotesk"; padding: 0 2px; }
 .recent-retry:hover { filter: brightness(1.2); }
-.recent-empty, .hist-empty { padding: 14px 16px; font-size: 12.5px; color: var(--mm-muted-3); }
+.list-empty { padding: 14px 4px; font: 400 12.5px "Hanken Grotesk"; color: var(--mm-muted-3); }
 
 /* ── status bar ────────────────────────────── */
 .status-bar {

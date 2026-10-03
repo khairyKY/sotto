@@ -318,7 +318,7 @@ function renderRecent(entries) {
   const host = $("recent-list");
   host.innerHTML = "";
   if (!entries || !entries.length) {
-    host.innerHTML = '<div class="recent-empty">Nothing dictated yet this session</div>';
+    host.innerHTML = '<div class="list-empty">Nothing dictated yet</div>';
     $("recent-all").hidden = true;
     return;
   }
@@ -402,7 +402,7 @@ const compactNum = new Intl.NumberFormat("en", { notation: "compact", maximumFra
 function renderAppBreakdown(apps) {
   const host = $("app-list");
   host.innerHTML = "";
-  if (!apps.length) { host.innerHTML = '<div style="padding:14px 16px;font-size:12.5px;color:var(--mm-muted-3)">No data yet</div>'; return; }
+  if (!apps.length) { host.innerHTML = '<div class="list-empty">No apps yet</div>'; return; }
   apps.forEach(a => {
     const row = document.createElement("div");
     row.className = "app-row";
@@ -525,6 +525,9 @@ function setReplacementsEnabled(on) {
   renderSnipPage(snipEntries);
 }
 
+// An empty list says whether there's nothing yet or nothing matches the search.
+const emptyList = (none, query) => `<div class="list-empty">${query.trim() ? `Nothing matches “${escapeHtml(query.trim())}”` : none}</div>`;
+
 // ── dictionary (main page) ──
 let dictEntries = [];
 function renderDictPage(entries) {
@@ -535,7 +538,7 @@ function renderDictPage(entries) {
   const filtered = q ? entries.filter(e => e.spoken.toLowerCase().includes(q) || e.replacement.toLowerCase().includes(q)) : entries;
 
   if (!filtered.length) {
-    host.innerHTML = '<div style="padding:14px 16px;font-size:12.5px;color:var(--mm-muted-3)">No dictionary words found</div>';
+    host.innerHTML = emptyList("No words yet", $("dict-search").value);
     return;
   }
 
@@ -715,7 +718,7 @@ function renderSnipPage(entries) {
   const filtered = q ? entries.filter(e => e.spoken.toLowerCase().includes(q) || e.replacement.toLowerCase().includes(q)) : entries;
 
   if (!filtered.length) {
-    host.innerHTML = '<div style="padding:14px 16px;font-size:12.5px;color:var(--mm-muted-3)">No snippets found</div>';
+    host.innerHTML = emptyList("No snippets yet", $("snip-search").value);
     return;
   }
 
@@ -929,7 +932,7 @@ function renderToneAppsPage(entries) {
   if (!host) return;
   host.innerHTML = "";
   if (!entries.length) {
-    host.innerHTML = '<div style="padding:14px 16px;font-size:12.5px;color:var(--mm-muted-3)">No per-app tones yet</div>';
+    host.innerHTML = '<div class="list-empty">No per-app tones yet</div>';
     return;
   }
   entries.forEach((e) => {
@@ -1041,7 +1044,7 @@ const codeEditors = { listId: "code-editors-list", addId: "code-editors-add", cm
 function renderAppList(list) {
   const host = $(list.listId);
   if (!host) return;
-  host.innerHTML = list.apps.length ? "" : '<div style="padding:14px 16px;font-size:12.5px;color:var(--mm-muted-3)">No apps yet</div>';
+  host.innerHTML = list.apps.length ? "" : '<div class="list-empty">No apps yet</div>';
   list.apps.forEach((app, i) => {
     const row = document.createElement("div");
     row.className = "list-row dict-row-view";
@@ -1095,7 +1098,7 @@ function renderHistoryPage(entries) {
   const host = $("history-list");
   host.innerHTML = "";
   if (!entries.length) {
-    host.innerHTML = '<div class="hist-empty">Nothing dictated yet this session</div>';
+    host.innerHTML = '<div class="list-empty">Nothing dictated yet</div>';
     return;
   }
   entries.forEach((e, i) => {
@@ -1174,7 +1177,7 @@ function renderPad() {
   const host = $("pad-list");
   host.innerHTML = "";
   if (!pad.rows.length) {
-    host.innerHTML = `<div class="hist-empty">No notes yet. ${escapeHtml($("hint-verb").textContent)} ${escapeHtml($("keycap-display").textContent)} and think out loud.</div>`;
+    host.innerHTML = `<div class="list-empty">No notes yet. ${escapeHtml($("hint-verb").textContent)} ${escapeHtml($("keycap-display").textContent)} and think out loud.</div>`;
     return;
   }
   const into = escapeHtml(`Type into ${pad.targetApp}`);
@@ -1220,7 +1223,7 @@ function renderTrainedWords() {
   const host = $("pron-trained-list");
   host.innerHTML = "";
   if (!pronVocabulary.length) {
-    host.innerHTML = '<div class="hist-empty">No words trained yet</div>';
+    host.innerHTML = '<div class="list-empty">No trained words yet</div>';
     return;
   }
   pronVocabulary.forEach(v => {
