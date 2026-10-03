@@ -29,6 +29,8 @@
   --mm-gauge-bg: #DED2C0;
   /* Off switch knob (design §Settings toggle); the off track is --mm-gauge-bg. */
   --mm-knob: #F6F0E6;
+  /* Slider handle (design §Settings, Use AI past). */
+  --mm-thumb: #FFFFFF;
   /* Plum text on a lilac callout (design §Dictionary 2); dark borrows the tray menu's lilac text. */
   --mm-plum-ink: #4A3A78;
   --mm-plum-muted: #6E5F94;
@@ -78,6 +80,7 @@
   --mm-coral: #F0C3D2;
   --mm-gauge-bg: #201B26;
   --mm-knob: #7C7386;
+  --mm-thumb: #EFE9F1;
   --mm-plum-ink: #E6DAF7;
   --mm-plum-muted: #B7ADBE;
   /* Streak heatmap ramp (design doc, dark) */
@@ -122,6 +125,7 @@
     --mm-coral: #F0C3D2;
     --mm-gauge-bg: #201B26;
     --mm-knob: #7C7386;
+    --mm-thumb: #EFE9F1;
     --mm-plum-ink: #E6DAF7;
     --mm-plum-muted: #B7ADBE;
     --mm-raised: 5px 5px 11px rgba(0, 0, 0, 0.5), -5px -5px 11px rgba(255, 255, 255, 0.035);

@@ -668,18 +668,21 @@ input[type="range"] {
   flex: 1;
   -webkit-appearance: none;
   appearance: none;
-  height: 4px;
-  border-radius: 2px;
-  background: linear-gradient(var(--mm-accent) 0 0) 0/var(--fill, 32%) 100% no-repeat, var(--mm-border);
+  height: 6px;
+  border-radius: 3px;
+  background: linear-gradient(var(--mm-accent) 0 0) 0/var(--fill, 32%) 100% no-repeat, var(--mm-base);
+  box-shadow: var(--mm-inset-xs);
   outline: none;
 }
+/* The design's handle: a 16 px disc with a soft drop (recipe 13). */
 input[type="range"]::-webkit-slider-thumb {
   -webkit-appearance: none;
-  width: 14px; height: 14px; border-radius: 50%;
-  background: var(--mm-fg);
-  box-shadow: 0 0 0 2px var(--mm-accent);
+  width: 16px; height: 16px; border-radius: 50%;
+  background: var(--mm-thumb);
+  box-shadow: 0 1px 3px rgba(150, 128, 104, 0.4);
   cursor: pointer;
 }
+input[type="range"]:focus-visible::-webkit-slider-thumb { box-shadow: 0 0 0 2px var(--mm-accent); }
 .mono { font: 500 12px "JetBrains Mono"; color: var(--mm-text); white-space: nowrap; width: 64px; text-align: right; }
 
 .toggle-row {
