@@ -367,6 +367,9 @@ function drawState(x, y, w, h, now, radius, shadowScale, baseAlpha) {
   // Every toast shares the design's layout: a 20px icon disc 12px in from the
   // pill's edge, then its label 8px after the disc.
   const iconX = x + 22, labelX = x + 40;
+  // Live states centre their animation in the design's flex area: from the
+  // left padding to the 4px gap before the ✕ disc.
+  const liveX = (contentL + xr - btnR - 4) / 2;
 
   const accent = dark ? CL.lilacDark : CL.lilac;
   const amber = dark ? CL.amberDark : CL.amber;
@@ -388,7 +391,7 @@ function drawState(x, y, w, h, now, radius, shadowScale, baseAlpha) {
     // isn't drawn.
     drawTuckedDot(x + w / 2, yc, tweenValue(tw.dot, now), alpha * tweenValue(tw.dotOp, now), dark, now);
   } else if (name === 'listening') {
-    const cx = (contentL + xr) / 2;
+    const cx = liveX;
     const nBars = 5;
     const barW = 3.5;
     const gap = 4;
@@ -415,7 +418,7 @@ function drawState(x, y, w, h, now, radius, shadowScale, baseAlpha) {
     // mm-rise: four bubbles at fixed x in the design's 66x26 box, each rising
     // from the box floor (translateY 9 → -15, scale .4 → 1.05) while it fades
     // in to .95, down to .55 and out.
-    const cx = (contentL + xr) / 2, floor = yc + 12;
+    const cx = liveX, floor = yc + 12;
     const sizes = [9, 7, 11, 8], xs = [-20.5, -5.5, 10.5, 23];
     for (let i = 0; i < 4; i++) {
       const p = cycle(sincePhase, 2.3, -0.5 * i);
@@ -438,7 +441,7 @@ function drawState(x, y, w, h, now, radius, shadowScale, baseAlpha) {
     // The design's 62x26 box: three gold blobs at .85 drifting as one cloud
     // (mm-blob), a shimmer bar sweeping across it (mm-shimmer) and a 4-point
     // twinkle at its top right (mm-twinkle).
-    const cx = (contentL + xr) / 2;
+    const cx = liveX;
     const glint = dark ? '#FAF0D6' : '#F5E2B0';
     ctx.fillStyle = gold;
     ctx.globalAlpha = alpha * 0.85;
