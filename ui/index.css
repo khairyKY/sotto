@@ -765,11 +765,11 @@ input[type="range"]:focus-visible::-webkit-slider-thumb { box-shadow: 0 0 0 2px 
   position: relative;
 }
 .banner-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--mm-accent); flex: none; }
-.banner-dot.amber { background: #D4A06A; }
+.banner-dot.amber { background: var(--mm-warn); }
 .banner-text { flex: 1; }
 .banner-actions { display: inline-flex; gap: 8px; }
 .banner-bar { flex: none; width: 140px; height: 5px; border-radius: 3px; background: var(--mm-border); overflow: hidden; }
-.banner-fill { display: block; width: 0%; height: 100%; background: #D4A06A; transition: width 0.2s; }
+.banner-fill { display: block; width: 0%; height: 100%; background: var(--mm-warn); transition: width 0.2s; }
 .banner-close {
   width: 22px; height: 22px; border: 0; background: transparent; cursor: pointer;
   color: var(--mm-muted-3); border-radius: 5px; display: inline-flex;
@@ -846,7 +846,7 @@ input[type="range"]:focus-visible::-webkit-slider-thumb { box-shadow: 0 0 0 2px 
 }
 .hotkey-option:hover { background: var(--mm-tint); }
 .hotkey-option.active { background: var(--mm-tint); color: var(--mm-accent-ink); font-weight: 600; }
-.hotkey-option .warn { font: 500 10.5px; color: #D4A06A; background: rgba(212,160,106,0.14); padding: 2px 7px; border-radius: 20px; }
+.hotkey-option .warn { font: 500 10.5px "Hanken Grotesk"; color: var(--mm-warn-ink); background: color-mix(in srgb, var(--mm-warn) 16%, transparent); padding: 2px 7px; border-radius: 20px; }
 
 /* ── text link ────────────────── */
 .link-change {
@@ -1211,7 +1211,7 @@ input[type="range"]:focus-visible::-webkit-slider-thumb { box-shadow: 0 0 0 2px 
 .model-badge {
   font: 600 10px 'JetBrains Mono';
   color: var(--mm-success-ink);
-  background: rgba(62, 142, 110, 0.12);
+  background: color-mix(in srgb, var(--mm-success-ink) 12%, transparent);
   padding: 4px 9px;
   border-radius: 6px;
 }
@@ -1225,12 +1225,14 @@ input[type="range"]:focus-visible::-webkit-slider-thumb { box-shadow: 0 0 0 2px 
 /* ── transforms layout ────────────────────────────── */
 .badge-beta {
   font: 600 9.5px 'JetBrains Mono';
-  color: #B07A3A;
-  background: rgba(212, 160, 106, 0.16);
+  color: var(--mm-warn-ink);
+  background: color-mix(in srgb, var(--mm-warn) 16%, transparent);
   padding: 3px 8px;
   border-radius: 6px;
   letter-spacing: .05em;
 }
+/* A model that may get things wrong is a caution, not a feature stage: blush, as errors. */
+.badge-beta.experimental { color: var(--mm-coral); background: var(--mm-blush); }
 .transforms-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;

@@ -25,6 +25,9 @@
   --mm-status-green: #8FBF9F;
   /* Text green for a state label (the model's ACTIVE badge); the dot green is too pale to read. */
   --mm-success-ink: #3E8E6E;
+  /* Amber for "working" and "careful": download dot and bar, BETA, a risky key (design's transcribing amber). */
+  --mm-warn: #D4A06A;
+  --mm-warn-ink: #B07A3A;
   --mm-coral: #A85874;
   --mm-gauge-bg: #DED2C0;
   /* Off switch knob (design §Settings toggle); the off track is --mm-gauge-bg. */
@@ -77,6 +80,8 @@
   --mm-border: rgba(255, 255, 255, 0.05);
   --mm-status-green: #6FA080;
   --mm-success-ink: #8FBF9F;
+  --mm-warn: #E8C48E;
+  --mm-warn-ink: #E8C48E;
   --mm-coral: #F0C3D2;
   --mm-gauge-bg: #201B26;
   --mm-knob: #7C7386;
@@ -122,6 +127,8 @@
     --mm-border: rgba(255, 255, 255, 0.05);
     --mm-status-green: #6FA080;
     --mm-success-ink: #8FBF9F;
+    --mm-warn: #E8C48E;
+    --mm-warn-ink: #E8C48E;
     --mm-coral: #F0C3D2;
     --mm-gauge-bg: #201B26;
     --mm-knob: #7C7386;

@@ -1721,7 +1721,7 @@ function renderModels(models) {
           </svg>
         </span>
         <div>
-          <div class="name" style="font-weight: 500; color: var(--mm-ink);">${escapeHtml(m.name)} <span class="sub" style="color: var(--mm-muted-2); font-size: 11.5px; font-weight: 400;">${escapeHtml(m.variant)}</span>${m.id === "egyptian-small" ? ' <span class="badge-beta">EXPERIMENTAL</span>' : ""}</div>
+          <div class="name" style="font-weight: 500; color: var(--mm-ink);">${escapeHtml(m.name)} <span class="sub" style="color: var(--mm-muted-2); font-size: 11.5px; font-weight: 400;">${escapeHtml(m.variant)}</span>${m.id === "egyptian-small" ? ' <span class="badge-beta experimental">EXPERIMENTAL</span>' : ""}</div>
           <div class="meta" style="font: 400 11.5px 'Hanken Grotesk'; color: var(--mm-muted-3); margin-top: 2px;">${metaOverride || (m.state === "installed" ? m.meta : `${m.meta} &middot; ${m.size}`)}</div>
         </div>
       </div>
