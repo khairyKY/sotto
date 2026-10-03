@@ -21,6 +21,8 @@
   --mm-divider: rgba(150, 128, 104, 0.13);
   --mm-border: rgba(150, 128, 104, 0.12);
   --mm-status-green: #8FBF9F;
+  /* Text green for a state label (the model's ACTIVE badge); the dot green is too pale to read. */
+  --mm-success-ink: #3E8E6E;
   --mm-coral: #A85874;
   --mm-gauge-bg: #DED2C0;
   /* Off switch knob (design §Settings toggle); the off track is --mm-gauge-bg. */
@@ -64,6 +66,7 @@
   --mm-divider: rgba(255, 255, 255, 0.055);
   --mm-border: rgba(255, 255, 255, 0.05);
   --mm-status-green: #6FA080;
+  --mm-success-ink: #8FBF9F;
   --mm-coral: #F0C3D2;
   --mm-gauge-bg: #201B26;
   --mm-knob: #7C7386;
@@ -104,6 +107,7 @@
     --mm-divider: rgba(255, 255, 255, 0.055);
     --mm-border: rgba(255, 255, 255, 0.05);
     --mm-status-green: #6FA080;
+    --mm-success-ink: #8FBF9F;
     --mm-coral: #F0C3D2;
     --mm-gauge-bg: #201B26;
     --mm-knob: #7C7386;
