@@ -2185,9 +2185,8 @@ async function boot() {
   setActivationCopy(s.activation);
   selectSegment($("polish"), s.polish);
   if ($("quote-style")) selectSegment($("quote-style"), s.quoteStyle || "straight");
-  // The theme picker has no UI (theme follows the OS per the design doc), but
-  // guard rather than assume: an unguarded null here killed the whole rest of
-  // boot() — settings, dictionary, snippets, history — in one TypeError.
+  // Settings > App > Theme. Guarded: an unguarded null here once killed the
+  // whole rest of boot() — settings, dictionary, snippets, history — in one TypeError.
   if ($("theme")) selectSegment($("theme"), s.theme || "system");
   setThresholdUI(s.threshold);
   initToneUI(s);

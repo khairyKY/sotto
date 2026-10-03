@@ -319,14 +319,6 @@ body {
 .gauge-val { font: 500 31px Newsreader; color: var(--mm-ink); line-height: 1; }
 .insight-big { font: 500 34px Newsreader; color: var(--mm-ink); margin: 6px 0 8px; }
 .insight-meta { font: 400 11px "Hanken Grotesk"; color: var(--mm-muted-3); }
-.insight-sub { font: 400 10px "Hanken Grotesk"; color: var(--mm-muted-2); margin-top: 4px; }
-.insight-section-label {
-  font: 600 10px "JetBrains Mono";
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
-  color: var(--mm-muted-2);
-  margin: 16px 0 8px;
-}
 
 /* app breakdown: label, bar, value (design §Insights 4) */
 .app-row { display: flex; align-items: center; gap: 9px; margin-bottom: 8px; }
@@ -408,7 +400,7 @@ body {
 
 /* ── pronunciation trainer ──────────────────── */
 .pron-listen-card { padding: 14px; margin-bottom: 16px; border: 1px solid transparent; transition: border-color 0.3s, box-shadow 0.3s; }
-.pron-listen-card.is-listening { border-color: var(--mm-accent); box-shadow: 0 0 0 3px var(--mm-accent-glow, rgba(142,116,208,0.18)); }
+.pron-listen-card.is-listening { border-color: var(--mm-accent); box-shadow: 0 0 0 3px rgba(142,116,208,0.18); }
 .btn:disabled { opacity: 0.5; cursor: default; filter: none; }
 
 /* The word "zooms in" here for the duration of a take, reacting live to mic
@@ -423,7 +415,7 @@ body {
   padding: 10px 0 2px;
   font: 700 40px "Hanken Grotesk";
   color: var(--mm-text);
-  text-shadow: 0 0 calc(6px + var(--amp) * 26px) var(--mm-accent-glow, rgba(142,116,208,0.85));
+  text-shadow: 0 0 calc(6px + var(--amp) * 26px) rgba(142,116,208,0.85);
   transform: scale(calc(1 + var(--amp) * 0.05));
   transition: transform 0.06s linear, text-shadow 0.06s linear;
 }
@@ -432,21 +424,21 @@ body {
    steady glow — "it recognized you". */
 .pron-focus-word.detected {
   color: var(--mm-accent-ink);
-  text-shadow: 0 0 40px var(--mm-accent-glow, rgba(142,116,208,1));
+  text-shadow: 0 0 40px rgba(142,116,208,1);
   transform: scale(1.06);
   animation: pron-focus-ignite 0.5s ease-out;
   transition: text-shadow 0.25s ease-out, transform 0.25s ease-out, color 0.2s;
 }
 @keyframes pron-focus-ignite {
-  0% { text-shadow: 0 0 6px var(--mm-accent-glow, rgba(142,116,208,0.5)); transform: scale(1); }
-  60% { text-shadow: 0 0 58px var(--mm-accent-glow, rgba(142,116,208,1)); transform: scale(1.12); }
-  100% { text-shadow: 0 0 40px var(--mm-accent-glow, rgba(142,116,208,1)); transform: scale(1.06); }
+  0% { text-shadow: 0 0 6px rgba(142,116,208,0.5); transform: scale(1); }
+  60% { text-shadow: 0 0 58px rgba(142,116,208,1); transform: scale(1.12); }
+  100% { text-shadow: 0 0 40px rgba(142,116,208,1); transform: scale(1.06); }
 }
 .pron-focus-word.matched { animation: pron-focus-hit 0.7s ease-out; }
 .pron-focus-word.missed { animation: pron-focus-miss 0.5s ease-out; }
 @keyframes pron-focus-hit {
-  0% { text-shadow: 0 0 6px var(--mm-accent-glow, rgba(142,116,208,0.85)); }
-  35% { text-shadow: 0 0 48px var(--mm-accent-glow, rgba(142,116,208,1)); transform: scale(1.08); }
+  0% { text-shadow: 0 0 6px rgba(142,116,208,0.85); }
+  35% { text-shadow: 0 0 48px rgba(142,116,208,1); transform: scale(1.08); }
   100% { text-shadow: 0 0 6px rgba(142,116,208,0); transform: scale(1); }
 }
 @keyframes pron-focus-miss {
@@ -472,7 +464,7 @@ body {
   animation: pron-listen-ping 1.2s ease-out infinite;
 }
 @keyframes pron-listen-ping {
-  0% { box-shadow: 0 0 0 0 var(--mm-accent-glow, rgba(142,116,208,0.6)); }
+  0% { box-shadow: 0 0 0 0 rgba(142,116,208,0.6); }
   70% { box-shadow: 0 0 0 8px rgba(142,116,208,0); }
   100% { box-shadow: 0 0 0 0 rgba(142,116,208,0); }
 }
@@ -494,7 +486,7 @@ body {
 }
 .pron-sample-row.matched { animation: pron-sample-in 0.2s ease-out, pron-match-glow 0.7s ease-out; }
 @keyframes pron-match-glow {
-  0% { box-shadow: 0 0 0 0 var(--mm-accent-glow, rgba(142,116,208,0.55)); }
+  0% { box-shadow: 0 0 0 0 rgba(142,116,208,0.55); }
   100% { box-shadow: var(--mm-raised-sm); }
 }
 .pron-sample-heard { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -535,33 +527,9 @@ body {
 .pron-strength-num { position: relative; z-index: 1; font: 700 9px "Hanken Grotesk"; color: var(--mm-text); }
 .pron-strength.pron-level-up { animation: pron-pulse 0.5s ease-out; }
 @keyframes pron-pulse {
-  0% { box-shadow: 0 0 0 0 var(--mm-accent-glow, rgba(142,116,208,0.5)); }
+  0% { box-shadow: 0 0 0 0 rgba(142,116,208,0.5); }
   100% { box-shadow: 0 0 0 6px rgba(142,116,208,0); }
 }
-.dict-entries { display: flex; flex-direction: column; gap: 8px; margin-bottom: 11px; }
-.dict-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  background: var(--mm-fg);
-  border-radius: 10px;
-  padding: 8px 12px;
-  box-shadow: var(--mm-raised-sm);
-}
-.dict-row input {
-  flex: 1;
-  background: var(--mm-base);
-  border: 1px solid var(--mm-border);
-  border-radius: 6px;
-  padding: 6px 9px;
-  font: 400 12.5px "Hanken Grotesk";
-  color: var(--mm-text);
-  outline: 0;
-}
-.dict-row input:focus { border-color: var(--mm-accent); }
-.dict-row .arrow { color: var(--mm-muted-3); font-size: 13px; }
-.dict-row .del { color: var(--mm-muted); cursor: pointer; padding: 0 4px; font-size: 13px; }
-.dict-row .del:hover { color: var(--mm-ink); }
 .link-add {
   background: none;
   border: 0;
@@ -601,19 +569,6 @@ body {
 .hist-review-foot .link-add { font-size: 11.5px; }
 
 /* ── settings ──────────────────────────────── */
-.settings-section { margin-bottom: 20px; }
-.section-head {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  margin-bottom: 8px;
-}
-.section-title {
-  font: 600 11px "JetBrains Mono";
-  letter-spacing: 0.07em;
-  text-transform: uppercase;
-  color: var(--mm-header);
-}
 .settings-row[hidden] { display: none; }
 .settings-row {
   display: flex;
@@ -647,28 +602,6 @@ body {
   color: var(--mm-row-text);
   box-shadow: var(--mm-inset-xs);
 }
-.model-list { padding: 4px 0; }
-.model-row {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 13px 16px;
-}
-.model-row .radio {
-  width: 16px; height: 16px; border-radius: 50%;
-  border: 2px solid var(--mm-border);
-  flex: none;
-  display: flex; align-items: center; justify-content: center;
-}
-.model-row .radio.on { border-color: var(--mm-accent); }
-.model-row .radio.on::after { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--mm-accent); }
-.model-row .grow { flex: 1; }
-.model-row .name { font-size: 13px; font-weight: 500; color: var(--mm-text); }
-.model-row .name .sub { color: var(--mm-muted-3); font-weight: 400; }
-.model-row .meta { font-size: 12px; color: var(--mm-muted-3); margin-top: 2px; }
-.model-row .pill { background: var(--mm-tint); color: var(--mm-accent-ink); font: 500 10.5px; padding: 3px 9px; border-radius: 20px; }
-.model-row .size { font: 500 11px "JetBrains Mono"; color: var(--mm-muted-3); width: 56px; text-align: right; }
-
 .slider-wrap { flex: 1; display: flex; align-items: center; gap: 12px; max-width: 260px; }
 input[type="range"] {
   flex: 1;
@@ -1146,10 +1079,6 @@ input[type="range"]:focus-visible::-webkit-slider-thumb { box-shadow: 0 0 0 2px 
   cursor: pointer;
   position: relative;
 }
-.select-text {
-  font: 500 12px 'Hanken Grotesk';
-  color: var(--mm-text);
-}
 .select-native {
   font: 500 12px 'Hanken Grotesk';
   color: var(--mm-text);
@@ -1394,11 +1323,6 @@ input[type="range"]:focus-visible::-webkit-slider-thumb { box-shadow: 0 0 0 2px 
   padding: 0;
 }
 
-/* ── settings history ──────────────────────── */
-.settings-history-list {
-  padding: 4px 0;
-}
-
 /* ── settings: zoom control ────────────────────────── */
 .zoom-control {
   display: flex;
@@ -1452,14 +1376,9 @@ input[type="range"]:focus-visible::-webkit-slider-thumb { box-shadow: 0 0 0 2px 
   cursor: pointer;
   transition: background 0.12s;
 }
-.btn-outline:hover { background: var(--mm-accent-soft, rgba(110,88,168,0.08)); }
+.btn-outline:hover { background: rgba(110, 88, 168, 0.08); }
 :root[data-theme="dark"] .btn-outline,
 :root.dark .btn-outline { border-color: rgba(201, 184, 238, 0.32); }
-.btn-secondary-danger {
-  font: 500 12px "Hanken Grotesk", sans-serif;
-  padding: 6px 13px;
-  border-radius: 9px;
-}
 .mono-inline {
   font: 500 11.5px "JetBrains Mono", monospace;
   color: var(--mm-muted-2);
