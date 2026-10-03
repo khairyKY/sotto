@@ -398,6 +398,7 @@ function mockStreakData() {
   }
   return data;
 }
+const compactNum = new Intl.NumberFormat("en", { notation: "compact", maximumFractionDigits: 1 }); // 3,420 → 3.4k, as the design
 function renderAppBreakdown(apps) {
   const host = $("app-list");
   host.innerHTML = "";
@@ -406,10 +407,9 @@ function renderAppBreakdown(apps) {
     const row = document.createElement("div");
     row.className = "app-row";
     row.innerHTML = `
-      <span class="app-name">${escapeHtml(a.name)}</span>
+      <span class="app-name" title="${escapeHtml(a.name)} · ${a.pct}%">${escapeHtml(a.name)}</span>
       <div class="app-bar-wrap"><div class="app-bar-fill" style="width:${a.pct}%"></div></div>
-      <span class="app-pct">${a.pct}%</span>
-      <span class="app-words">${(a.words || 0).toLocaleString()}</span>`;
+      <span class="app-words">${compactNum.format(a.words || 0).toLowerCase()}</span>`;
     host.appendChild(row);
   });
 }
