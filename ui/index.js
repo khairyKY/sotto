@@ -283,6 +283,7 @@ function renderLecture(s) {
   $("lecture-folder").hidden = !s?.lecturesDir;
   $("lecture-folder").onclick = () => invoke("open_url", { url: s.lecturesDir });
 }
+$("recent-all").onclick = () => navigate("history");
 $("lecture-toggle").onclick = async () => {
   await invoke("set_lecture", { on: !lectureOn });
   if (!hasTauri) loadHome();
@@ -318,10 +319,12 @@ function renderRecent(entries) {
   host.innerHTML = "";
   if (!entries || !entries.length) {
     host.innerHTML = '<div class="recent-empty">Nothing dictated yet this session</div>';
+    $("recent-all").hidden = true;
     return;
   }
-  // Kept history can hold hundreds; Home only ever showed the last 20.
-  entries.slice(0, 20).forEach((e, i) => {
+  $("recent-all").hidden = false;
+  // Five, as the design: Home stays one screen and the status line in view.
+  entries.slice(0, 5).forEach((e, i) => {
     const row = document.createElement("div");
     row.className = "recent-item";
     row.innerHTML = `

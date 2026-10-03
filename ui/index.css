@@ -257,6 +257,9 @@ body {
   align-items: center;
   gap: 7px;
 }
+/* The mic name gives way first, so the warnings and the History link stay. */
+.status-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.status-bar .link-add { margin-left: auto; flex: none; font-size: 11.5px; }
 .status-dot {
   width: 6px; height: 6px; border-radius: 50%;
   background: var(--mm-status-green);
