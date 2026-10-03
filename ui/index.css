@@ -115,23 +115,31 @@ body {
 .page { display: none; }
 .page.active { display: block; }
 
+/* One page header (audit C3): title, an optional right slot, an optional
+   line under it, and the same 16 px to the first block on every page. */
+.page-head { margin-bottom: 16px; }
 .page-title {
   font: 500 31px Newsreader;
   letter-spacing: -0.01em;
   color: var(--mm-ink);
-  margin: 0 0 7px;
+  margin: 0;
 }
 .page-sub {
-  font: 400 14px "Hanken Grotesk";
+  font: 400 14px/1.55 "Hanken Grotesk";
   color: var(--mm-muted);
-  margin: 0 0 20px;
+  margin: 5px 0 0;
 }
 .page-head-row {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  margin-bottom: 2px;
+  flex-wrap: wrap;
+  gap: 6px 12px;
 }
+.title-group { display: flex; align-items: center; gap: 10px; }
+/* Transforms' one-line pitch above its sub, as the design. */
+.page-intro { font: 500 15px Newsreader; color: var(--mm-text); margin-top: 5px; }
+.page-intro + .page-sub { margin-top: 4px; max-width: 440px; }
 .section-label {
   font: 600 10px "JetBrains Mono";
   letter-spacing: 0.1em;
@@ -139,7 +147,7 @@ body {
   color: var(--mm-muted-2);
   margin: 18px 0 8px;
 }
-.section-hint { font-size: 11px; color: var(--mm-muted-3); }
+.section-hint { font-size: 11.5px; color: var(--mm-muted-3); }
 
 /* ── card styles ───────────────────────────── */
 .card-raised {
@@ -1123,7 +1131,7 @@ input[type="range"]::-webkit-slider-thumb {
   margin: 0 0 8px;
 }
 /* A section's one-line note (Labs), in the body voice beside the mono title. */
-.settings-section-title .section-hint { margin-left: 8px; font: 400 11px 'Hanken Grotesk'; letter-spacing: 0; text-transform: none; }
+.settings-section-title .section-hint { margin-left: 8px; font: 400 11.5px 'Hanken Grotesk'; letter-spacing: 0; text-transform: none; }
 .settings-card {
   background: var(--mm-fg);
   border-radius: 13px;

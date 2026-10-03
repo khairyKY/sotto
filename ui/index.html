@@ -78,8 +78,10 @@
 
         <!-- ===================== HOME ===================== -->
         <section class="page active" id="page-home">
-          <h1 class="page-title" id="greeting">Good morning.</h1>
-          <p class="page-sub" id="hotkey-hint"><span id="hint-verb">Hold</span> <span class="keycap-mini" id="keycap-display">Right Ctrl</span> <span id="hint-tail">and speak.</span></p>
+          <header class="page-head">
+            <h1 class="page-title" id="greeting">Good morning.</h1>
+            <p class="page-sub" id="hotkey-hint"><span id="hint-verb">Hold</span> <span class="keycap-mini" id="keycap-display">Right Ctrl</span> <span id="hint-tail">and speak.</span></p>
+          </header>
 
           <div class="stat-row" id="stat-row">
             <div class="card-raised stat-card">
@@ -137,14 +139,16 @@
 
         <!-- ===================== INSIGHTS ===================== -->
         <section class="page" id="page-insights">
-          <div class="page-head-row">
-            <h1 class="page-title" style="margin:0">Insights</h1>
-            <div class="segmented" id="insights-period" data-value="week">
-              <button data-value="week" class="active">Week</button>
-              <button data-value="month">Month</button>
+          <header class="page-head">
+            <div class="page-head-row">
+              <h1 class="page-title">Insights</h1>
+              <div class="segmented" id="insights-period" data-value="week">
+                <button data-value="week" class="active">Week</button>
+                <button data-value="month">Month</button>
+              </div>
             </div>
-          </div>
-          <p class="page-sub">These numbers stay on this device. Nothing is uploaded.</p>
+            <p class="page-sub">These numbers stay on this device. Nothing is uploaded.</p>
+          </header>
 
           <div class="insight-grid">
             <div class="card-raised insight-card center">
@@ -202,8 +206,8 @@
 
         <!-- ===================== DICTIONARY ===================== -->
         <section class="page" id="page-dictionary">
-          <div class="page-head-row" style="margin-bottom:14px">
-            <h1 class="page-title" style="margin:0">Dictionary</h1>
+          <header class="page-head page-head-row">
+            <h1 class="page-title">Dictionary</h1>
             <div class="head-actions">
               <span class="head-switch">
                 <span class="section-hint">Enabled</span>
@@ -211,7 +215,7 @@
               </span>
               <span class="btn-add-header" id="dict-add">+ Add word</span>
             </div>
-          </div>
+          </header>
 
           <div class="dict-warn-card" id="dict-warn-card">
             <button class="dict-warn-close" id="dict-warn-close" title="Hide" aria-label="Hide">&#10005;</button>
@@ -241,8 +245,8 @@
 
         <!-- ===================== SNIPPETS ===================== -->
         <section class="page" id="page-snippets">
-          <div class="page-head-row" style="margin-bottom:14px">
-            <h1 class="page-title" style="margin:0">Snippets</h1>
+          <header class="page-head page-head-row">
+            <h1 class="page-title">Snippets</h1>
             <div class="head-actions">
               <span class="head-switch">
                 <span class="section-hint">Enabled</span>
@@ -250,7 +254,7 @@
               </span>
               <span class="btn-add-header" id="snip-add">+ Add snippet</span>
             </div>
-          </div>
+          </header>
 
           <div class="dict-warn-card" id="snip-warn-card">
             <button class="dict-warn-close" id="snip-warn-close" title="Hide" aria-label="Hide">&#10005;</button>
@@ -280,10 +284,10 @@
 
         <!-- ===================== HISTORY ===================== -->
         <section class="page" id="page-history">
-          <div class="page-head-row" style="margin-bottom:14px">
-            <h1 class="page-title" style="margin:0">History</h1>
-            <span class="section-hint" style="color: var(--mm-muted-3); font-size: 11.5px;">Click any entry to copy it again</span>
-          </div>
+          <header class="page-head page-head-row">
+            <h1 class="page-title">History</h1>
+            <span class="section-hint">Click any entry to copy it again</span>
+          </header>
 
           <div class="list-well">
             <div class="history-list" id="history-list">
@@ -299,11 +303,13 @@
 
         <!-- ===================== PRONUNCIATION ===================== -->
         <section class="page" id="page-pronunciation">
-          <div class="page-head-row" style="margin-bottom:14px">
-            <h1 class="page-title" style="margin:0">Pronunciation</h1>
-            <span class="section-hint" style="color: var(--mm-muted-3); font-size: 11.5px;">Teach Sotto how you say a word</span>
-          </div>
-          <p class="page-sub">Type a word Sotto keeps getting wrong, press &ldquo;Listen for it&rdquo;, then say it. You don&rsquo;t need the dictation key here.</p>
+          <header class="page-head">
+            <div class="page-head-row">
+              <h1 class="page-title">Pronunciation</h1>
+              <span class="section-hint">Teach Sotto how you say a word</span>
+            </div>
+            <p class="page-sub">Type a word Sotto keeps getting wrong, press &ldquo;Listen for it&rdquo;, then say it. You don&rsquo;t need the dictation key here.</p>
+          </header>
 
           <div class="card-raised pron-listen-card">
             <div class="search-bar" style="margin-bottom:0">
@@ -350,20 +356,20 @@
         <!-- ===================== TRANSFORMS (#18) =====================
              Layout per the Marshmallow spec's #transforms screen. -->
         <section class="page" id="page-transforms">
-          <div class="page-head-row" style="margin-bottom:6px">
-            <div style="display:flex;align-items:center;gap:10px">
-              <h1 class="page-title" style="margin:0">Transforms</h1>
-              <span class="badge-beta">BETA</span>
+          <header class="page-head">
+            <div class="page-head-row">
+              <div class="title-group">
+                <h1 class="page-title">Transforms</h1>
+                <span class="badge-beta">BETA</span>
+              </div>
+              <div class="head-switch">
+                <span class="section-hint">Enabled</span>
+                <button class="switch" id="transforms-enabled" data-lab="transforms_enabled" role="switch" aria-checked="false" aria-label="Transform shortcuts"><span class="knob"></span></button>
+              </div>
             </div>
-            <div class="head-switch">
-              <span class="section-hint">Enabled</span>
-              <button class="switch" id="transforms-enabled" data-lab="transforms_enabled" role="switch" aria-checked="false" aria-label="Transform shortcuts"><span class="knob"></span></button>
-            </div>
-          </div>
-          <div style="max-width:440px;margin-bottom:18px">
-            <div style="font:500 15px Newsreader;color:var(--mm-text);margin-bottom:4px">Rewrite anywhere you write.</div>
-            <div class="page-sub" style="margin:0;line-height:1.55">Select text in any app, press the shortcut, and Sotto&rsquo;s local AI rewrites it in place. Your text never leaves this device.</div>
-          </div>
+            <div class="page-intro">Rewrite anywhere you write.</div>
+            <p class="page-sub">Select text in any app, press the shortcut, and Sotto&rsquo;s local AI rewrites it in place. Your text never leaves this device.</p>
+          </header>
           <div class="transforms-grid" id="transforms-grid"></div>
           <div style="display:flex;gap:10px;padding-top:18px">
             <button class="btn btn-ghost" id="transforms-reset" style="padding-left:0;font-weight:500">Reset to defaults</button>
@@ -376,14 +382,16 @@
              v1 is History's rows; the Marshmallow two-pane look waits on
              docs/design-prompts/04-scratchpad.md (Phase C). -->
         <section class="page" id="page-scratchpad">
-          <div class="page-head-row" style="margin-bottom:14px;flex-wrap:wrap;gap:6px 12px">
-            <div style="display:flex;align-items:center;gap:10px">
-              <h1 class="page-title" style="margin:0">Scratchpad</h1>
-              <span class="badge-beta">BETA</span>
+          <header class="page-head">
+            <div class="page-head-row">
+              <div class="title-group">
+                <h1 class="page-title">Scratchpad</h1>
+                <span class="badge-beta">BETA</span>
+              </div>
+              <span class="section-hint" id="pad-chord"></span>
             </div>
-            <span class="section-hint" id="pad-chord"></span>
-          </div>
-          <p class="page-sub">For thoughts you want to come back to. Dictate while this page is in front and it lands here, not in an app.</p>
+            <p class="page-sub">For thoughts you want to come back to. Dictate while this page is in front and it lands here, not in an app.</p>
+          </header>
 
           <div class="list-well">
             <div class="history-list" id="pad-list"></div>
