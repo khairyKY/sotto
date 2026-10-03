@@ -326,10 +326,10 @@ function renderRecent(entries) {
   // Five, as the design: Home stays one screen and the status line in view.
   entries.slice(0, 5).forEach((e, i) => {
     const row = document.createElement("div");
-    row.className = "recent-item";
+    row.className = "list-row";
     row.innerHTML = `
-      <span class="recent-time">${e.time}</span>
-      <span class="recent-text" dir="auto">${escapeHtml(e.text)}</span>
+      <span class="list-time">${e.time}</span>
+      <span class="list-text recent-text" dir="auto">${escapeHtml(e.text)}</span>
       <span class="recent-copy" title="Copy">⧉</span>
       <span class="recent-retry" title="Re-polish &amp; copy">↻</span>`;
     row.querySelector(".recent-copy").onclick = (ev) => { ev.stopPropagation(); copyText(e.text); };
@@ -541,7 +541,7 @@ function renderDictPage(entries) {
 
   filtered.forEach((e, idx) => {
     const row = document.createElement("div");
-    row.className = "dict-row-view";
+    row.className = "list-row dict-row-view";
 
     // `_draft` marks a row prefilled from an example chip: it opens in edit
     // state even though it has content, because nothing is saved until the
@@ -721,7 +721,7 @@ function renderSnipPage(entries) {
 
   filtered.forEach((e, idx) => {
     const row = document.createElement("div");
-    row.className = "snip-row-view";
+    row.className = "list-row snip-row-view";
 
     // `_draft` marks a row prefilled from an example chip: it opens in edit
     // state even though it has content, because nothing is saved until the
@@ -922,7 +922,7 @@ async function populateToneAppDatalist() {
 }
 
 // Per-app tone rows — same add/edit/remove list shape as the Dictionary page
-// (reuses its dict-row-view / dict-entries-container markup and classes).
+// (reuses its list-row / dict-row-view markup and classes).
 let appTones = [];
 function renderToneAppsPage(entries) {
   const host = $("tone-apps-list");
@@ -934,7 +934,7 @@ function renderToneAppsPage(entries) {
   }
   entries.forEach((e) => {
     const row = document.createElement("div");
-    row.className = "dict-row-view";
+    row.className = "list-row dict-row-view";
 
     let isEditing = (e.app === "");
 
@@ -1044,7 +1044,7 @@ function renderAppList(list) {
   host.innerHTML = list.apps.length ? "" : '<div style="padding:14px 16px;font-size:12.5px;color:var(--mm-muted-3)">No apps yet</div>';
   list.apps.forEach((app, i) => {
     const row = document.createElement("div");
-    row.className = "dict-row-view";
+    row.className = "list-row dict-row-view";
     if (app === "") {
       row.classList.add("editing");
       row.innerHTML = `
@@ -1100,10 +1100,10 @@ function renderHistoryPage(entries) {
   }
   entries.forEach((e, i) => {
     const row = document.createElement("div");
-    row.className = "hist-row";
+    row.className = "list-row hist-row";
     // ± only when this session kept the raw transcript (#25); reloaded rows have none.
     const diffBtn = e.raw ? '<span class="diff-toggle" title="What changed">±</span>' : "";
-    row.innerHTML = `<span class="time">${e.time}</span><span class="txt" dir="auto">${escapeHtml(e.text)}</span>${diffBtn}<span class="copy" title="Copy">⧉</span><span class="retry" title="Re-polish &amp; copy">↻</span><span class="flag" title="Flag as wrong">⚑</span>`;
+    row.innerHTML = `<span class="list-time">${e.time}</span><span class="list-text txt" dir="auto">${escapeHtml(e.text)}</span>${diffBtn}<span class="copy" title="Copy">⧉</span><span class="retry" title="Re-polish &amp; copy">↻</span><span class="flag" title="Flag as wrong">⚑</span>`;
     row.querySelector(".copy").onclick = (ev) => { ev.stopPropagation(); copyText(e.text); };
     row.querySelector(".retry").onclick = (ev) => { ev.stopPropagation(); invoke("repolish_copy", { text: e.text }); };
     const flagEl = row.querySelector(".flag");
@@ -1180,8 +1180,8 @@ function renderPad() {
   const into = escapeHtml(`Type into ${pad.targetApp}`);
   pad.rows.slice().reverse().forEach((r) => {
     const row = document.createElement("div");
-    row.className = "hist-row pad-row";
-    row.innerHTML = `<span class="time">${padTime(r.id)}</span><span class="txt" dir="auto">${escapeHtml(r.text)}</span>
+    row.className = "list-row hist-row pad-row";
+    row.innerHTML = `<span class="list-time">${padTime(r.id)}</span><span class="list-text txt" dir="auto">${escapeHtml(r.text)}</span>
       <button class="act" data-a="copy" title="Copy" aria-label="Copy">⧉</button>
       <button class="act" data-a="inject" title="${into}" aria-label="${into}"${pad.targetApp ? "" : " hidden"}>↵</button>
       <button class="act" data-a="park" title="Add to your notes file" aria-label="Add to your notes file"${pad.canPark ? "" : " hidden"}>⇲</button>
@@ -1226,7 +1226,7 @@ function renderTrainedWords() {
   pronVocabulary.forEach(v => {
     const { hits, total, pct } = pronStrength(v.recent || []);
     const row = document.createElement("div");
-    row.className = "pron-trained-row";
+    row.className = "list-row pron-trained-row";
     row.innerHTML = `
       <span class="pron-trained-word" dir="auto">${escapeHtml(v.word)}</span>
       <span class="pron-trained-heard">${v.heardAs.length ? "heard as: " + v.heardAs.map(h => `<bdi>${escapeHtml(h)}</bdi>`).join(", ") : ((v.recent || []).length ? "no corrections yet" : "no attempts yet")}</span>

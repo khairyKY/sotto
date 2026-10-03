@@ -147,11 +147,23 @@ body {
   border-radius: 15px;
   box-shadow: var(--mm-raised);
 }
-.card-recessed {
+/* ── one recessed list (audit C4): Recent, History, Scratchpad, Dictionary,
+   Snippets, trained words and the Settings lists. Design: 11 px rows,
+   12.5 px text, hairline dividers. ── */
+.list-well {
   background: var(--mm-base);
-  border-radius: 14px;
+  border-radius: 12px;
+  padding: 2px 14px;
   box-shadow: var(--mm-inset);
 }
+.list-row { display: flex; align-items: center; gap: 12px; padding: 11px 4px; }
+/* A History row's review panel belongs to it; the divider goes under both. */
+.list-row + .list-row, .hist-review + .list-row { border-top: 1px solid var(--mm-divider); }
+.list-time { font: 500 10px "JetBrains Mono"; color: var(--mm-muted-2); width: 56px; flex: none; }
+.list-text { flex: 1; min-width: 0; font: 400 12.5px "Hanken Grotesk"; color: var(--mm-text); }
+.list-row .actions { display: flex; align-items: center; gap: 12px; color: var(--mm-muted-2); flex: none; }
+.list-row .action-btn { cursor: pointer; display: flex; align-items: center; justify-content: center; transition: color 0.12s; }
+.list-row .action-btn:hover { color: var(--mm-accent-ink); }
 
 /* ── keycap ────────────────────────────────── */
 .keycap-mini {
@@ -222,26 +234,8 @@ body {
 }
 .btn-primary:hover { filter: brightness(1.08); }
 
-/* ── recent list ───────────────────────────── */
-.recent-list { background: var(--mm-base); border-radius: 12px; box-shadow: var(--mm-inset); }
-.recent-item {
-  display: flex;
-  align-items: center;
-  gap: 13px;
-  padding: 12px 16px;
-  border-bottom: 1px solid var(--mm-divider);
-}
-.recent-item:last-child { border-bottom: 0; }
-.recent-time { font: 500 11px "JetBrains Mono"; color: var(--mm-muted-2); width: 58px; flex: none; }
-.recent-text {
-  flex: 1;
-  min-width: 0;
-  font: 400 13.5px "Hanken Grotesk";
-  color: var(--mm-text);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
+/* ── recent list (a .list-row each) ───────────── */
+.recent-text { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .recent-copy { color: var(--mm-muted-2); cursor: pointer; font: 600 13px "Hanken Grotesk"; padding: 0 2px; }
 .recent-copy:hover { color: var(--mm-accent-ink); }
 .recent-retry { color: var(--mm-accent); cursor: pointer; font: 600 13px "Hanken Grotesk"; padding: 0 2px; }
@@ -503,18 +497,10 @@ body {
 .pron-sample-match { color: var(--mm-accent-ink); flex: none; font-size: 15px; }
 /* What "Add correction" saved (#94): quiet, it's a receipt. */
 .pron-learned { font-size: 12px; color: var(--mm-muted-3); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.pron-trained-container { padding: 4px; }
 /* Calibrate (#22): the sentence to read, in the display face. */
 .cal-sentence { font: 500 21px/1.35 Newsreader; color: var(--mm-ink); margin: 6px 0 8px; }
 #cal-diff { margin-bottom: 4px; }
-.pron-trained-row {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 10px 12px;
-}
-.pron-trained-row + .pron-trained-row { border-top: 1px solid var(--mm-divider); }
-.pron-trained-word { font: 600 13px "Hanken Grotesk"; color: var(--mm-text); flex: none; width: 110px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pron-trained-word { font: 600 12.5px "Hanken Grotesk"; color: var(--mm-text); flex: none; width: 110px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pron-trained-heard { flex: 1; min-width: 0; font: 400 12px "Hanken Grotesk"; color: var(--mm-muted-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* Strength ring: fills toward full as more distinct mishearings are
    captured (capped visually at PRON_STRENGTH_CAP). A conic-gradient ring
@@ -581,20 +567,11 @@ body {
 }
 .link-add:hover { text-decoration: underline; }
 
-/* ── history list ──────────────────────────── */
+/* ── history list (a .list-row each; long lines wrap) ── */
 .history-list { display: flex; flex-direction: column; }
-.hist-row {
-  display: flex;
-  gap: 12px;
-  padding: 11px 14px;
-  align-items: flex-start;
-  cursor: pointer;
-  border-radius: 10px;
-  transition: background 0.12s;
-}
-.hist-row:hover { background: var(--mm-tint); }
-.hist-row .time { font: 500 11px "JetBrains Mono"; color: var(--mm-muted-2); width: 58px; flex: none; padding-top: 2px; }
-.hist-row .txt { flex: 1; font: 400 12.5px/1.45 "Hanken Grotesk"; color: var(--mm-text); }
+.hist-row { align-items: baseline; cursor: pointer; }
+.hist-row .txt { line-height: 1.45; transition: color 0.12s; }
+.hist-row:hover .txt { color: var(--mm-ink); }
 .hist-row .copy { color: var(--mm-muted-2); flex: none; font-size: 12px; cursor: pointer; }
 .hist-row .copy:hover { color: var(--mm-accent-ink); }
 .hist-row .retry { color: var(--mm-accent); flex: none; font-size: 12px; cursor: pointer; font-weight: 600; }
@@ -609,8 +586,8 @@ body {
 .pad-row .act { background: none; border: 0; padding: 0; font: 12px "Hanken Grotesk"; color: var(--mm-muted-2); flex: none; cursor: pointer; }
 .pad-row .act:hover, .pad-row .act:focus-visible { color: var(--mm-accent-ink); }
 .pad-row .act[hidden] { display: none; }
-/* Review panel (#25): indented under the row's text (14 pad + 58 time + 12 gap). */
-.hist-review { padding: 0 14px 11px 84px; }
+/* Review panel (#25): indented under the row's text (4 pad + 56 time + 12 gap). */
+.hist-review { padding: 0 4px 11px 72px; }
 .hist-review[hidden] { display: none; }
 .hist-diff { font: 400 12.5px/1.6 "Hanken Grotesk"; color: var(--mm-text-secondary); }
 .hist-diff del { color: var(--mm-muted-2); text-decoration: line-through; }
@@ -944,26 +921,9 @@ input[type="range"]::-webkit-slider-thumb {
 .dict-warn-tag.example:hover { background: var(--mm-surface); }
 
 /* ── dictionary & snippets lists ───────────────────── */
-.dict-entries-container, .history-entries-container {
-  background: var(--mm-base);
-  border-radius: 12px;
-  padding: 2px 14px;
-  box-shadow: var(--mm-inset);
-  margin-bottom: 14px;
-}
 .dict-entries-list {
   display: flex;
   flex-direction: column;
-}
-.dict-row-view {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 11px 4px;
-  border-bottom: 1px solid var(--mm-divider);
-}
-.dict-row-view:last-child {
-  border-bottom: 0;
 }
 /* The spoken phrase, with its other ways to say it underneath. */
 .term-col { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 5px; }
@@ -985,35 +945,8 @@ input[type="range"]::-webkit-slider-thumb {
   flex: 1;
   word-break: break-all;
 }
-.dict-row-view .actions {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  color: var(--mm-muted-2);
-  flex: none;
-}
-.dict-row-view .action-btn {
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  transition: color 0.12s;
-}
-.dict-row-view .action-btn:hover {
-  color: var(--mm-accent-ink);
-}
 
 /* snippet rows specific layout */
-.snip-row-view {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 12px 4px;
-  border-bottom: 1px solid var(--mm-divider);
-}
-.snip-row-view:last-child {
-  border-bottom: 0;
-}
 .snip-row-view .term-col { flex: none; width: 150px; }
 .snip-row-view .trigger {
   font: 600 12.5px 'Hanken Grotesk';
@@ -1028,23 +961,6 @@ input[type="range"]::-webkit-slider-thumb {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-}
-.snip-row-view .actions {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  color: var(--mm-muted-2);
-  flex: none;
-}
-.snip-row-view .action-btn {
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  transition: color 0.12s;
-}
-.snip-row-view .action-btn:hover {
-  color: var(--mm-accent-ink);
 }
 
 /* Master toggle off: dim the whole list so it can't read as "on but silently
