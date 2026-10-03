@@ -626,14 +626,20 @@ body {
 .row-control { display: flex; align-items: center; gap: 8px; }
 .divider { height: 1px; background: var(--mm-divider); margin: 0; }
 
+/* A set key sits in a small well (design recipe 8); the Home hint chip stays flat. */
 .keycap {
   background: var(--mm-base);
-  border: 1px solid var(--mm-border);
-  border-bottom-width: 2px;
+  box-shadow: var(--mm-inset-xs);
   border-radius: 6px;
   padding: 5px 10px;
   font: 500 12px "JetBrains Mono", monospace;
-  color: var(--mm-text);
+  color: var(--mm-row-text);
+}
+.transform-keys .keycap-mini {
+  font-size: 10.5px;
+  padding: 3px 7px;
+  color: var(--mm-row-text);
+  box-shadow: var(--mm-inset-xs);
 }
 .model-list { padding: 4px 0; }
 .model-row {
