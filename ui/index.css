@@ -965,10 +965,13 @@ input[type="range"]::-webkit-slider-thumb {
 .dict-row-view:last-child {
   border-bottom: 0;
 }
+/* The spoken phrase, with its other ways to say it underneath. */
+.term-col { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 5px; }
+.term-col .alias-list { align-self: flex-start; }
+.dict-row-view > .term { flex: 1; } /* Settings' lists: an app name with no aliases */
 .dict-row-view .term {
   font: 500 12px 'JetBrains Mono';
   color: var(--mm-text);
-  flex: 1;
   word-break: break-all;
 }
 .dict-row-view .arrow {
@@ -984,6 +987,7 @@ input[type="range"]::-webkit-slider-thumb {
 }
 .dict-row-view .actions {
   display: flex;
+  align-items: center;
   gap: 12px;
   color: var(--mm-muted-2);
   flex: none;
@@ -1010,11 +1014,10 @@ input[type="range"]::-webkit-slider-thumb {
 .snip-row-view:last-child {
   border-bottom: 0;
 }
+.snip-row-view .term-col { flex: none; width: 150px; }
 .snip-row-view .trigger {
   font: 600 12.5px 'Hanken Grotesk';
   color: var(--mm-ink);
-  flex: none;
-  width: 150px;
   word-break: break-all;
 }
 .snip-row-view .preview {
@@ -1028,6 +1031,7 @@ input[type="range"]::-webkit-slider-thumb {
 }
 .snip-row-view .actions {
   display: flex;
+  align-items: center;
   gap: 12px;
   color: var(--mm-muted-2);
   flex: none;
@@ -1057,12 +1061,6 @@ input[type="range"]::-webkit-slider-thumb {
 .snip-row-view.entry-off .preview,
 .snip-row-view.entry-off .alias-chip {
   opacity: 0.45;
-}
-/* The switch itself is a fixed 38px control — without flex:none it competes
-   for space with the flex:1 term/replace columns and can get squeezed. */
-.dict-row-view .switch,
-.snip-row-view .switch {
-  flex: none;
 }
 
 /* Alias chips — a smaller sibling of .dict-warn-tag, tinted (not --mm-base)

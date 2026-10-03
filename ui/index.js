@@ -625,12 +625,11 @@ function renderDictPage(entries) {
       } else {
         row.classList.toggle("entry-off", e.enabled === false);
         row.innerHTML = `
-          <button class="switch entry-toggle" role="switch" aria-checked="${e.enabled !== false}"><span class="knob"></span></button>
-          <span class="term" dir="auto">${escapeHtml(e.spoken)}</span>
-          ${renderAliasChips(e.aliases)}
+          <span class="term-col"><span class="term" dir="auto">${escapeHtml(e.spoken)}</span>${renderAliasChips(e.aliases)}</span>
           <span class="arrow">&rarr;</span>
           <span class="replace" dir="auto">${escapeHtml(e.replacement)}</span>
           <div class="actions">
+            <button class="switch entry-toggle" role="switch" aria-checked="${e.enabled !== false}" aria-label="Use this word"><span class="knob"></span></button>
             <span class="action-btn edit-btn" title="Edit">
               <svg viewBox="0 0 20 20" width="15" height="15"><path d="M13 4 L16 7 L7 16 H4 V13 Z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg>
             </span>
@@ -804,11 +803,10 @@ function renderSnipPage(entries) {
       } else {
         row.classList.toggle("entry-off", e.enabled === false);
         row.innerHTML = `
-          <button class="switch entry-toggle" role="switch" aria-checked="${e.enabled !== false}"><span class="knob"></span></button>
-          <span class="trigger" dir="auto">${escapeHtml(e.spoken)}</span>
-          ${renderAliasChips(e.aliases)}
+          <span class="term-col"><span class="trigger" dir="auto">${escapeHtml(e.spoken)}</span>${renderAliasChips(e.aliases)}</span>
           <span class="preview" dir="auto">${escapeHtml(e.replacement)}</span>
           <div class="actions">
+            <button class="switch entry-toggle" role="switch" aria-checked="${e.enabled !== false}" aria-label="Use this snippet"><span class="knob"></span></button>
             <span class="action-btn edit-btn" title="Edit">
               <svg viewBox="0 0 20 20" width="15" height="15"><path d="M13 4 L16 7 L7 16 H4 V13 Z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg>
             </span>
