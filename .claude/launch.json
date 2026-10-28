@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "sotto-ui",
+      "runtimeExecutable": "npx",
+      "runtimeArgs": ["--yes", "http-server", "ui", "-p", "5199", "-c-1", "--silent"],
+      "port": 5199
+    }
+  ]
+}
