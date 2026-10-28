@@ -878,6 +878,12 @@ const TONE_PRESETS = {
   friendly: "Write in a warm, friendly tone.",
   concise: "Keep it concise and to the point.",
   casual: "Write in a casual, relaxed tone.",
+  // ponytail: the four above are matched by exact string (toneKeyForValue),
+  // so they stay word-for-word; new presets only append.
+  academic: "Write in a formal, academic tone, as for a professor or a university office. Be respectful and precise, and avoid slang.",
+  direct: "Be direct and confident. Lead with the point, state requests plainly, and cut hedging words.",
+  warm: "Write in a kind, empathetic tone that acknowledges the other person's feelings, without sounding stiff.",
+  upbeat: "Write in an upbeat, enthusiastic tone, positive and energetic but not over the top.",
 };
 function toneKeyForValue(tone) {
   if (!tone) return "";
@@ -1536,8 +1542,57 @@ function setTransformCapture(chord, note) {
     : "Click here, then press Ctrl, Alt or Win plus one key.");
 }
 
+// Starters for a new transform, on top of the two seeds config.rs ships
+// (Polish, Prompt engineer). Written for a small local model: one job each,
+// said plainly. keep_words is on where the rewrite should keep the writer's
+// own words, so transform::accept can refuse one that drifts.
+const TRANSFORM_TEMPLATES = [
+  { name: "Fix grammar", keep_words: true,
+    prompt: "Fix spelling, grammar and punctuation only. Change nothing else." },
+  { name: "Bullet points", keep_words: true,
+    prompt: "Turn it into a bulleted list, one idea per line, each starting with \"- \". Keep the writer's words and drop the filler." },
+  { name: "Email", keep_words: false,
+    prompt: "Rewrite it as a short, clear email: a greeting, the message, and a sign-off. Keep every fact, name, date and request." },
+  { name: "Shorter", keep_words: false,
+    prompt: "Cut it to about half its length. Keep the main point and every name, number and date." },
+  { name: "Friendlier", keep_words: false,
+    prompt: "Make it warmer and friendlier, like a message to a colleague you like. Keep the meaning and every fact." },
+  { name: "Translate", keep_words: false,
+    prompt: "If it is in Arabic, translate it into English. If it is in English, translate it into Egyptian Arabic. Output only the translation." },
+];
+
+// The first Ctrl+Alt+digit no transform holds yet, or "" when all ten are taken.
+function nextFreeChord() {
+  for (const d of [1, 2, 3, 4, 5, 6, 7, 8, 9, 0]) {
+    const c = `Ctrl+Alt+Digit${d}`;
+    if (!transforms.some(t => t.chord === c)) return c;
+  }
+  return "";
+}
+
+function renderTransformTemplates(isNew) {
+  const box = $("transform-templates");
+  const have = new Set(transforms.map(t => t.name.toLowerCase()));
+  const left = [...transformDefaults, ...TRANSFORM_TEMPLATES].filter(t => !have.has(t.name.toLowerCase()));
+  $("transform-templates-row").hidden = !isNew || !left.length;
+  box.innerHTML = "";
+  left.forEach(t => {
+    const b = document.createElement("button");
+    b.className = "btn btn-outline";
+    b.textContent = t.name;
+    b.onclick = () => {
+      $("transform-name").value = t.name;
+      $("transform-prompt").value = t.prompt;
+      $("transform-keep-words").setAttribute("aria-checked", String(!!t.keep_words));
+      if (!transformDraftChord) setTransformCapture(nextFreeChord());
+    };
+    box.appendChild(b);
+  });
+}
+
 function openTransformModal(i) {
   transformEditing = i;
+  renderTransformTemplates(i < 0);
   const t = i >= 0 ? transforms[i] : { name: "", chord: "", prompt: "", keep_words: false };
   $("transform-modal-title").textContent = i >= 0 ? "Edit transform" : "New transform";
   $("transform-name").value = t.name;

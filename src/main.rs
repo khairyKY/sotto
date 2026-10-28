@@ -947,7 +947,8 @@ fn set_overlay_always_visible(enabled: bool, app: tauri::AppHandle, state: tauri
 #[serde(rename_all = "camelCase")]
 struct OverlaySettingsDto {
     always_visible: bool,
-    /// The overlay canvas is 280x120 — big enough for the widest toast — but
+    /// The overlay canvas is 280x180 — big enough for the widest toast and the
+    /// vertical side pill — but
     /// the pill inside it is much smaller, so drawing it centred leaves it
     /// floating ~60px off the screen edge it's supposed to be tucked against.
     /// The canvas anchors the pill itself; it needs to know which edge.
@@ -1525,7 +1526,7 @@ const OVERLAY_MARGIN: f64 = 8.0;
 /// Where the pill sits INSIDE the overlay canvas, in CSS px. Must stay in
 /// lockstep with `pillOrigin()` in ui/overlay.js — the canvas draws with it and
 /// the cursor hit-test below measures with it, so a divergence means clicking
-/// empty space. Anchored rather than centred because the canvas (280x120) is
+/// empty space. Anchored rather than centred because the canvas (280x180) is
 /// sized for the widest toast, and centring a 46x16 tucked pill in it left the
 /// pill floating ~60px off the edge it is supposed to be tucked against.
 const OVERLAY_EDGE_INSET: f64 = 8.0; // room for the pill's own drop shadow
@@ -1544,6 +1545,29 @@ fn overlay_pill_origin(cw: f64, ch: f64, pw: f64, ph: f64, anchor: &str) -> (f64
         _ => (ch - ph) / 2.0,
     };
     (x.round(), y.round())
+}
+
+/// The pill's on-screen (width, height) in `state` at `anchor`, `None` when it
+/// has nothing to click. Must mirror `targetGeo()`/`pillShape()` in overlay.js:
+/// on the side anchors the live states stand vertical (the canvas rotates the
+/// 148x40 pill), in the corners they shrink to a 48px bubble, and the text
+/// toasts stay horizontal everywhere. Idle is the HOVER size, not the resting
+/// one: the pill grows the instant the cursor arrives, so the smaller rect
+/// would hand the cursor back to the desktop mid-grow and make it flicker.
+fn overlay_pill_size(state: &str, anchor: &str, always_visible: bool) -> Option<(f64, f64)> {
+    let side = anchor == "middle-left" || anchor == "middle-right";
+    let corner = !anchor.starts_with("middle") && !anchor.ends_with("center");
+    let live = |w: f64, h: f64| {
+        if side { (h, w) } else if corner { (48.0, 48.0) } else { (w, h) }
+    };
+    match state {
+        "error" => Some((236.0, 40.0)),
+        "cancelled" => Some((220.0, 40.0)),
+        "nomodel" => Some((248.0, 40.0)),
+        "listening" | "transcribing" | "polishing" => Some(live(148.0, 40.0)),
+        "idle" if always_visible => Some(if corner { (26.0, 26.0) } else { live(62.0, 20.0) }),
+        _ => None, // idle (default) / done: no buttons
+    }
 }
 
 /// `area_x`/`area_y` are the top-left of the placement area (a monitor's work
@@ -3185,14 +3209,9 @@ fn spawn_overlay_hittest(
             // instant the cursor arrives, so the hover box is what's actually
             // under the pointer; using the smaller rect would hand the cursor
             // back to the desktop mid-grow and make the pill flicker.
-            let pill = match ui_state.lock().unwrap().as_str() {
-                "error" => Some((236.0, 40.0)),
-                "cancelled" => Some((220.0, 40.0)),
-                "nomodel" => Some((248.0, 40.0)),
-                "listening" | "transcribing" | "polishing" => Some((148.0, 40.0)),
-                "idle" if always_visible.load(Ordering::Relaxed) => Some((62.0, 20.0)),
-                _ => None, // idle (default) / done: no buttons
-            };
+            let ui_now = ui_state.lock().unwrap().clone();
+            let anchor_now = position.lock().unwrap().clone();
+            let pill = overlay_pill_size(&ui_now, &anchor_now, always_visible.load(Ordering::Relaxed));
             let Some((pill_w, pill_h)) = pill else {
                 if !ignoring {
                     if let Some(w) = app.get_webview_window("overlay") {
@@ -3605,7 +3624,7 @@ mod tests {
         assert_eq!(i.audio_ms, 4200);
     }
 
-    // 1920x1080 work area starting at the monitor origin, the real 280x120
+    // 1920x1080 work area starting at the monitor origin, the real 280x180
     // overlay window size, 8px margin — same numbers `position_overlay`
     // passes in practice at scale 1.0 on a single monitor with a normal
     // (non-auto-hide) taskbar.
@@ -3614,7 +3633,7 @@ mod tests {
     const MON_W: f64 = 1920.0;
     const MON_H: f64 = 1080.0;
     const PILL_W: f64 = 280.0;
-    const PILL_H: f64 = 120.0;
+    const PILL_H: f64 = 180.0;
     const MARGIN: f64 = 8.0;
 
     fn anchor(name: &str) -> (i32, i32) {
@@ -3635,11 +3654,11 @@ mod tests {
     }
     #[test]
     fn anchor_xy_middle_left() {
-        assert_eq!(anchor("middle-left"), (8, 480));
+        assert_eq!(anchor("middle-left"), (8, 450));
     }
     #[test]
     fn anchor_xy_middle_center() {
-        assert_eq!(anchor("middle-center"), (820, 480));
+        assert_eq!(anchor("middle-center"), (820, 450));
     }
     #[test]
     fn anchor_xy_respects_monitor_origin() {
@@ -3648,7 +3667,7 @@ mod tests {
         // the desktop's (0, 0) — this is what a work-area-aware caller
         // relies on for anything but the primary monitor.
         let (x, y) = anchor_xy(1920.0, 0.0, MON_W, MON_H, PILL_W, PILL_H, "bottom-right", MARGIN);
-        assert_eq!((x, y), (1920 + 1632, 952));
+        assert_eq!((x, y), (1920 + 1632, 892));
     }
     // ── E2: chunked transcription ────────────────────────────────────
     //
@@ -3890,31 +3909,31 @@ mod tests {
 
     #[test]
     fn anchor_xy_middle_right() {
-        assert_eq!(anchor("middle-right"), (1632, 480));
+        assert_eq!(anchor("middle-right"), (1632, 450));
     }
     #[test]
     fn anchor_xy_bottom_left() {
-        assert_eq!(anchor("bottom-left"), (8, 952));
+        assert_eq!(anchor("bottom-left"), (8, 892));
     }
     #[test]
     fn anchor_xy_bottom_center() {
-        assert_eq!(anchor("bottom-center"), (820, 952));
+        assert_eq!(anchor("bottom-center"), (820, 892));
     }
     #[test]
     fn anchor_xy_bottom_right() {
-        assert_eq!(anchor("bottom-right"), (1632, 952));
+        assert_eq!(anchor("bottom-right"), (1632, 892));
     }
     #[test]
     fn anchor_xy_unknown_falls_back_to_bottom_center() {
         assert_eq!(anchor("garbage"), anchor("bottom-center"));
     }
 
-    // ── pill origin inside the 280x120 canvas ───────────────────────────
+    // ── pill origin inside the 280x180 canvas ───────────────────────────
     // The bug these guard: the pill used to be centred in the canvas, so a
     // 46x16 tucked pill sat 60px below the top edge (and 125px in from the
     // left) instead of tucked against it.
     const CW: f64 = 280.0;
-    const CH: f64 = 120.0;
+    const CH: f64 = 180.0;
     const TW: f64 = 46.0; // tucked
     const TH: f64 = 16.0;
 
@@ -3941,6 +3960,22 @@ mod tests {
     fn centre_anchors_still_centre_on_that_axis() {
         let (x, y) = overlay_pill_origin(CW, CH, TW, TH, "middle-center");
         assert_eq!((x, y), (((CW - TW) / 2.0).round(), ((CH - TH) / 2.0).round()));
+    }
+
+    #[test]
+    fn pill_stands_vertical_on_the_sides_and_shrinks_to_a_bubble_in_corners() {
+        assert_eq!(overlay_pill_size("listening", "bottom-center", false), Some((148.0, 40.0)));
+        assert_eq!(overlay_pill_size("listening", "middle-left", false), Some((40.0, 148.0)));
+        assert_eq!(overlay_pill_size("polishing", "top-right", false), Some((48.0, 48.0)));
+        assert_eq!(overlay_pill_size("idle", "middle-right", true), Some((20.0, 62.0)));
+        assert_eq!(overlay_pill_size("idle", "bottom-left", true), Some((26.0, 26.0)));
+        assert_eq!(overlay_pill_size("idle", "bottom-left", false), None);
+        // Toasts carry text, so they stay horizontal wherever the pill sits.
+        assert_eq!(overlay_pill_size("error", "middle-left", false), Some((236.0, 40.0)));
+        // The vertical pill and the widest toast both fit the window.
+        for (w, h) in [(40.0, 148.0), (264.0, 40.0)] {
+            assert!(w + 2.0 * OVERLAY_EDGE_INSET <= CW && h + 2.0 * OVERLAY_EDGE_INSET <= CH);
+        }
     }
 
     /// An expanded toast is wider than the tucked pill, so anchoring must grow

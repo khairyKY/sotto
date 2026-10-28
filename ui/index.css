@@ -1183,6 +1183,8 @@ input[type="range"]:focus-visible::-webkit-slider-thumb { box-shadow: 0 0 0 2px 
   grid-template-columns: 1fr 1fr;
   gap: 12px;
 }
+.transform-templates { display: flex; flex-wrap: wrap; gap: 8px; }
+.transform-templates .btn-outline { padding: 6px 12px; font-size: 12px; }
 .transform-card {
   padding: 16px;
   display: flex;

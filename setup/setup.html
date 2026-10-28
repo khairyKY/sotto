@@ -1,0 +1,231 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Sotto setup</title>
+    <!-- The app's own stylesheets, served from inside sotto-setup.exe
+         (main.rs `asset`), so this window can't drift from the app. -->
+    <link rel="stylesheet" href="./fonts.css" />
+    <link rel="stylesheet" href="./theme.css" />
+    <link rel="stylesheet" href="./index.css" />
+    <style>
+      .titlebar { height: 44px; }
+      .winbtn { height: 44px; width: 44px; }
+      .screen { flex: 1; display: flex; flex-direction: column; padding: 8px 36px 28px; }
+      .screen[hidden] { display: none; }
+      .grow { flex: 1; }
+      .actions { display: flex; justify-content: flex-end; align-items: center; gap: 8px; }
+      .actions .left { margin-right: auto; }
+      .fine { font-size: 11.5px; color: var(--mm-muted-3); }
+
+      /* The pill's resting orb, grown into a hero mark (overlay.js drawTuckedDot). */
+      .orb { width: 76px; height: 76px; flex: none; border-radius: 50%; position: relative; overflow: hidden;
+             background: radial-gradient(circle at 38% 32%, #D6C8F0, #B7A1E4 40%, #8E74D0 80%); box-shadow: var(--mm-raised); }
+      .orb i { position: absolute; border-radius: 50%; filter: blur(4px); animation: drift 4.6s ease-in-out infinite; }
+      .orb i:nth-child(1) { width: 34px; height: 34px; left: 6px; top: 10px; background: rgba(214,200,240,.9); }
+      .orb i:nth-child(2) { width: 26px; height: 26px; right: 8px; top: 18px; background: rgba(255,254,250,.85); animation-duration: 3.8s; animation-delay: -1.2s; }
+      .orb i:nth-child(3) { width: 30px; height: 30px; left: 22px; bottom: 4px; background: rgba(183,161,228,.8); animation-duration: 3.2s; animation-delay: -.8s; }
+      @keyframes drift { 0%,100% { transform: translate(0,0) scale(1); } 33% { transform: translate(4px,-3px) scale(1.16); } 66% { transform: translate(-4px,2px) scale(.88); } }
+      .orb.sm { width: 44px; height: 44px; }
+      .orb.sm i { filter: blur(3px); }
+      .orb.sm i:nth-child(1) { width: 20px; height: 20px; left: 3px; top: 5px; }
+      .orb.sm i:nth-child(2) { width: 15px; height: 15px; right: 4px; top: 10px; }
+      .orb.sm i:nth-child(3) { width: 18px; height: 18px; left: 12px; bottom: 2px; }
+      @media (prefers-color-scheme: dark) {
+        .orb { background: radial-gradient(circle at 38% 32%, #EDE4FB, #D6C8F0 40%, #C9B8EE 80%); }
+      }
+
+      .hero { display: flex; flex-direction: column; align-items: center; text-align: center; gap: 14px; margin-top: 18px; }
+      .hero .page-title { font-size: 34px; }
+      .hero .page-sub { max-width: 330px; }
+
+      .field { display: flex; align-items: center; gap: 10px; }
+      .field .search-input { flex: 1; font: 400 12.5px "JetBrains Mono"; padding: 10px 14px; border-radius: 10px;
+                             background: var(--mm-base); box-shadow: var(--mm-inset-xs); }
+      .opts { padding: 4px 18px; margin-top: 14px; }
+      .opts .toggle-row + .toggle-row { border-top: 1px solid var(--mm-divider); }
+
+      .prog { height: 6px; border-radius: 3px; background: var(--mm-gauge-bg); box-shadow: var(--mm-inset-xs); overflow: hidden; margin-top: 26px; }
+      .prog span { display: block; height: 100%; width: 0; border-radius: 3px; background: var(--mm-accent); transition: width .6s ease-out; }
+      .steps { list-style: none; padding: 0; margin: 18px 0 0; display: grid; gap: 9px; font-size: 12.5px; color: var(--mm-row-text); }
+      .steps li { display: flex; align-items: center; gap: 10px; color: var(--mm-muted-3); }
+      .steps .d { width: 16px; height: 16px; border-radius: 50%; flex: none; display: grid; place-items: center; font-size: 10px; box-shadow: var(--mm-inset-xs); }
+      .steps .ok { color: var(--mm-row-text); }
+      .steps .ok .d { background: var(--mm-tint); color: var(--mm-accent-ink); box-shadow: none; }
+      .steps .ok .d::after { content: "✓"; }
+      .steps .now { color: var(--mm-row-text); }
+      .steps .now .d::after { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--mm-accent); animation: pulse 1.4s ease-in-out infinite; }
+      @keyframes pulse { 50% { opacity: .35; transform: scale(.7); } }
+
+      .tip { padding: 16px 18px; display: flex; align-items: center; gap: 14px; margin-top: 18px; text-align: left; }
+      .tip .label { font-size: 13px; font-weight: 500; color: var(--mm-text); }
+      .tip .sub { font-size: 12px; color: var(--mm-muted-3); margin-top: 3px; }
+      .alert { width: 44px; height: 44px; border-radius: 50%; background: var(--mm-blush); color: var(--mm-coral);
+               display: grid; place-items: center; font: 700 18px "Hanken Grotesk"; flex: none; }
+    </style>
+  </head>
+  <body>
+    <header class="titlebar" id="bar">
+      <div class="titlebar-left">
+        <span class="mark-tile"><svg viewBox="0 0 20 20" width="14" height="14" aria-hidden="true"><path d="M2.5 10 Q5 4.6 7.5 10 T12.5 10 T17.5 10" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+        <span class="title">Sotto setup</span>
+      </div>
+      <div class="titlebar-controls">
+        <button class="winbtn" id="min" title="Minimize" aria-label="Minimize"><svg width="10" height="10"><line x1="1" y1="5" x2="9" y2="5" /></svg></button>
+        <button class="winbtn close" id="close" title="Close" aria-label="Close"><svg width="10" height="10"><line x1="1" y1="1" x2="9" y2="9" /><line x1="9" y1="1" x2="1" y2="9" /></svg></button>
+      </div>
+    </header>
+
+    <section class="screen" id="welcome">
+      <div class="hero">
+        <div class="orb"><i></i><i></i><i></i></div>
+        <h1 class="page-title">Speak, and it's written</h1>
+        <p class="page-sub">Private dictation that runs on this computer. Nothing you say leaves it.</p>
+      </div>
+      <div class="grow"></div>
+      <div class="actions">
+        <span class="fine left" id="meta"></span>
+        <button class="btn btn-ghost" id="to-options">Options</button>
+        <button class="btn btn-primary go">Install</button>
+      </div>
+    </section>
+
+    <section class="screen" id="options" hidden>
+      <h1 class="page-title" style="font-size:26px">Options</h1>
+      <div class="section-label">Install to</div>
+      <div class="field">
+        <input class="search-input" id="dir" spellcheck="false" />
+        <span class="link-change" id="pick">Change</span>
+      </div>
+      <div class="card-raised opts">
+        <div class="toggle-row">
+          <div class="row-label"><div class="label">Start with Windows</div><div class="sub">Ready the moment you sign in</div></div>
+          <button class="switch" id="autostart" role="switch" aria-checked="true" aria-label="Start with Windows"><span class="knob"></span></button>
+        </div>
+        <div class="toggle-row">
+          <div class="row-label"><div class="label">Desktop shortcut</div></div>
+          <button class="switch" id="desktop" role="switch" aria-checked="false" aria-label="Desktop shortcut"><span class="knob"></span></button>
+        </div>
+      </div>
+      <div class="grow"></div>
+      <div class="actions">
+        <button class="btn btn-ghost left" id="back">Back</button>
+        <button class="btn btn-primary go">Install</button>
+      </div>
+    </section>
+
+    <section class="screen" id="installing" hidden>
+      <div style="display:flex;align-items:center;gap:16px;margin-top:10px">
+        <div class="orb sm"><i></i><i></i><i></i></div>
+        <div>
+          <h1 class="page-title" style="font-size:26px" id="inst-title">Installing…</h1>
+          <p class="page-sub" style="margin-top:2px">This takes a few seconds.</p>
+        </div>
+      </div>
+      <div class="prog"><span id="fill"></span></div>
+      <ul class="steps" id="steps">
+        <li><span class="d"></span>Closing Sotto if it's running</li>
+        <li><span class="d"></span>Copying the app</li>
+        <li><span class="d"></span>Setting up shortcuts</li>
+        <li><span class="d"></span><span id="auto-step"></span></li>
+      </ul>
+    </section>
+
+    <section class="screen" id="done" hidden>
+      <div class="hero" style="margin-top:6px">
+        <div class="orb sm"><i></i><i></i><i></i></div>
+        <h1 class="page-title" style="font-size:30px" id="done-title">Sotto is ready</h1>
+      </div>
+      <div class="card-raised tip" id="tip">
+        <span class="keycap">Right Ctrl</span>
+        <div><div class="label">Hold it and speak</div><div class="sub">Let go, and your words are typed where your cursor is.</div></div>
+      </div>
+      <div class="grow"></div>
+      <div class="actions">
+        <span class="fine left" id="done-note"></span>
+        <button class="btn btn-primary" id="open">Open Sotto</button>
+      </div>
+    </section>
+
+    <section class="screen" id="error" hidden>
+      <div style="display:flex;align-items:center;gap:16px;margin-top:10px">
+        <div class="alert">!</div>
+        <div>
+          <h1 class="page-title" style="font-size:26px">That didn't work</h1>
+          <p class="page-sub" style="margin-top:2px" id="err"></p>
+        </div>
+      </div>
+      <div class="grow"></div>
+      <div class="actions">
+        <button class="btn btn-ghost left" id="err-close">Close</button>
+        <button class="btn btn-primary" id="retry">Try again</button>
+      </div>
+    </section>
+
+    <script>
+      const S = window.SETUP || { version: "0.0.0", size: "", update: false, dir: "C:\\Sotto", autostart: true, desktop: false, firstRun: true };
+      const $ = (id) => document.getElementById(id);
+      const send = (msg) => window.ipc ? window.ipc.postMessage(JSON.stringify(msg)) : console.log("[ipc]", msg);
+      const on = (id) => $(id).getAttribute("aria-checked") === "true";
+      let busy = false;
+
+      function show(id) {
+        document.querySelectorAll(".screen").forEach(s => s.hidden = s.id !== id);
+        $("close").hidden = busy;
+      }
+
+      // Initial state: an update keeps the folder and choices it found.
+      $("meta").textContent = `Version ${S.version}${S.size ? " · " + S.size : ""}`;
+      $("dir").value = S.dir;
+      $("autostart").setAttribute("aria-checked", String(S.autostart));
+      $("desktop").setAttribute("aria-checked", String(S.desktop));
+      document.querySelectorAll(".go").forEach(b => b.textContent = S.update ? "Update" : "Install");
+      if (S.update) {
+        $("inst-title").textContent = "Updating…";
+        $("done-title").textContent = "Sotto is up to date";
+        $("tip").hidden = true;
+        $("done-note").textContent = "Your settings, dictionary and history are kept.";
+      } else if (S.firstRun) {
+        $("done-note").textContent = "The speech model downloads on first launch.";
+      }
+
+      // Title bar: drag from anywhere but its buttons.
+      $("bar").addEventListener("mousedown", (e) => { if (e.button === 0 && !e.target.closest("button")) send({ cmd: "drag" }); });
+      $("min").onclick = () => send({ cmd: "minimize" });
+      $("close").onclick = () => send({ cmd: "close" });
+      $("err-close").onclick = () => send({ cmd: "close" });
+
+      document.querySelectorAll(".switch").forEach(s => s.onclick = () => s.setAttribute("aria-checked", String(!on(s.id))));
+      $("to-options").onclick = () => show("options");
+      $("back").onclick = () => show("welcome");
+      $("retry").onclick = () => show("options");
+      $("pick").onclick = () => send({ cmd: "pick", dir: $("dir").value });
+      $("open").onclick = () => send({ cmd: "open", dir: $("dir").value.trim() });
+
+      document.querySelectorAll(".go").forEach(b => b.onclick = () => {
+        const dir = $("dir").value.trim();
+        if (!/^[A-Za-z]:\\/.test(dir)) { show("options"); $("dir").focus(); return; }
+        busy = true;
+        $("auto-step").textContent = on("autostart") ? "Turning on start with Windows" : "Leaving start with Windows off";
+        document.querySelectorAll("#steps li").forEach(li => li.className = "");
+        $("fill").style.width = "0";
+        show("installing");
+        send({ cmd: "install", dir, autostart: on("autostart"), desktop: on("desktop") });
+      });
+
+      // Called from main.rs.
+      const FILL = ["10%", "78%", "90%", "96%", "100%"];
+      window.setup = {
+        step(n) {
+          document.querySelectorAll("#steps li").forEach((li, i) => li.className = i < n ? "ok" : i === n ? "now" : "");
+          // The copy is the long step: creep across it rather than sit still.
+          $("fill").style.transition = n === 1 ? "width 6s cubic-bezier(.2,.6,.3,1)" : "width .6s ease-out";
+          $("fill").style.width = FILL[n];
+          if (n === 4) { busy = false; setTimeout(() => show("done"), 500); }
+        },
+        fail(msg) { busy = false; $("err").textContent = msg; show("error"); },
+        picked(dir) { $("dir").value = dir; },
+      };
+    </script>
+  </body>
+</html>
