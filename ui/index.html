@@ -584,6 +584,10 @@
                         <option value="friendly">Friendly</option>
                         <option value="concise">Concise</option>
                         <option value="casual">Casual</option>
+                        <option value="academic">Academic</option>
+                        <option value="direct">Direct</option>
+                        <option value="warm">Warm</option>
+                        <option value="upbeat">Upbeat</option>
                         <option value="custom">Custom&hellip;</option>
                       </select>
                       <span class="select-arrow">&#9660;</span>
@@ -901,6 +905,10 @@
           <button class="winbtn" id="transform-modal-close" title="Cancel" aria-label="Cancel"><svg width="10" height="10"><line x1="1" y1="1" x2="9" y2="9" /><line x1="9" y1="1" x2="1" y2="9" /></svg></button>
         </div>
         <div class="modal-body">
+          <div id="transform-templates-row">
+            <div class="section-label">Start from a template</div>
+            <div class="transform-templates" id="transform-templates"></div>
+          </div>
           <div>
             <div class="section-label">Name</div>
             <input class="dict-edit-input" id="transform-name" dir="auto" placeholder="e.g. Friendlier" autocomplete="off" />
