@@ -78,7 +78,7 @@ const tw = {
 };
 let pillHover = false;
 let pressUntil = 0;
-// Which screen edge the window is anchored to. The canvas (280x120) is sized
+// Which screen edge the window is anchored to. The canvas (280x180) is sized
 // for the widest toast, so centring the much smaller pill inside it left the
 // tucked pill floating ~60px off the edge it's meant to hug — and 125px in on
 // left/right anchors. Anchoring the pill within the canvas, to the same edge
@@ -102,14 +102,37 @@ function pillOrigin(cw, ch, w, h) {
 
 const isExpandedState = (n) => n !== 'idle';
 
-/// Target geometry for the current phase. Expanded states keep their existing
-/// per-state widths (error/cancelled toasts are wider) — this only decides the
-/// tucked/hover/expanded morph.
+// The pill's shape follows where it sits (mirrored by overlay_pill_size in
+// main.rs). On the side anchors it stands vertical: the canvas rotates the
+// horizontal drawing a quarter turn, so every animation is unchanged. In the
+// corners the live states shrink to a bubble with no ✕ (a click on it stops
+// or cancels). Text toasts stay horizontal everywhere: sideways text is
+// unreadable.
+const LIVE = ['listening', 'transcribing', 'polishing'];
+const BUBBLE = 48;
+const GEO_CORNER = {
+  tucked: { w: 20, h: 20, r: 10, op: 0.62, shadow: 0.4 },
+  hover: { w: 26, h: 26, r: 13, op: 1, shadow: 1 },
+};
+function layout() {
+  const [v, hz] = overlayPosition.split('-');
+  if (v === 'middle') return hz === 'center' ? 'flat' : 'side';
+  return hz === 'center' ? 'flat' : 'corner';
+}
+/// Drawn rotated: the side layout's idle, live and done (a tick, drawn upright).
+const isRotated = (name) => layout() === 'side' && (name === 'idle' || name === 'done' || LIVE.includes(name));
+const isBubble = (name) => layout() === 'corner' && (LIVE.includes(name) || name === 'done');
+
+/// Target geometry for the current phase, in the drawing's own (horizontal)
+/// frame: a rotated pill is still 148x40 here. Expanded states keep their
+/// per-state widths (error/cancelled toasts are wider).
 function targetGeo(name) {
+  if (isBubble(name)) return { w: BUBBLE, h: BUBBLE, r: 18, op: 1, shadow: 1 };
   if (isExpandedState(name)) {
     return { w: pillWidthFor(name), h: PH, r: CR, op: 1, shadow: 1 };
   }
-  return pillHover ? GEO.hover : GEO.tucked;
+  const g = layout() === 'corner' ? GEO_CORNER : GEO;
+  return pillHover ? g.hover : g.tucked;
 }
 
 const canvas = document.getElementById('pill');
@@ -120,7 +143,7 @@ const state = {
   level: 0.0,
   since: performance.now(),
 };
-const inst = { env: 0.4, dots: [] };
+const inst = { env: 0, dots: [] };
 // Hit-region for whatever button the current state draws (✕ cancel or ↻
 // retry) — recomputed every frame in drawState, read by the click handler.
 // null when the current state has no button (idle / done).
@@ -153,6 +176,7 @@ function setState(name) {
   state.name = name;
   state.since = performance.now();
   inst.dots = [];
+  inst.env = 0;
   if (name === "idle") {
     // Rust's overlay_state only tracks DictationEvent-driven transitions;
     // this one is timed entirely in here (see the "done"/"error"/"cancelled"/
@@ -358,9 +382,8 @@ function drawState(x, y, w, h, now, radius, shadowScale, baseAlpha) {
   }
   y += dy;
 
-  const target = Math.max(0.22, Math.min(0.97, 0.22 + Math.min(1, state.level * 8) * 0.75));
-  inst.env += (target - inst.env) * 0.12;
   const yc = y + h / 2;
+  const bubble = isBubble(name);
   const padL = 14, padR = 8, btnR = 11;
   const xr = x + w - padR - btnR;
   const contentL = x + padL;
@@ -369,7 +392,14 @@ function drawState(x, y, w, h, now, radius, shadowScale, baseAlpha) {
   const iconX = x + 22, labelX = x + 40;
   // Live states centre their animation in the design's flex area: from the
   // left padding to the 4px gap before the ✕ disc.
-  const liveX = (contentL + xr - btnR - 4) / 2;
+  const liveX = bubble ? x + w / 2 : (contentL + xr - btnR - 4) / 2;
+  // The ✕ disc, or in a corner bubble (no room for one) the bubble itself:
+  // a click stops a take while listening, and cancels after.
+  const liveButton = () => {
+    if (bubble) { activeBtn = { x: liveX, y: yc, r: w / 2, action: name === 'listening' ? 'stop' : 'cancel' }; return; }
+    cancelBtn(xr, yc, btnR, alpha, dark);
+    activeBtn = { x: xr, y: yc, r: btnR, action: 'cancel' };
+  };
 
   const accent = dark ? CL.lilacDark : CL.lilac;
   const amber = dark ? CL.amberDark : CL.amber;
@@ -383,6 +413,8 @@ function drawState(x, y, w, h, now, radius, shadowScale, baseAlpha) {
   ctx.globalAlpha = alpha;
   // Recomputed below for whichever branch runs; 'done' has no button.
   activeBtn = null;
+  const shrink = bubble && LIVE.includes(name);
+  if (shrink) { ctx.save(); ctx.translate(liveX, yc); ctx.scale(0.7, 0.7); ctx.translate(-liveX, -yc); }
 
   if (name === 'idle') {
     // The tucked dot. No button: the only interaction here is a body click
@@ -397,23 +429,32 @@ function drawState(x, y, w, h, now, radius, shadowScale, baseAlpha) {
     const gap = 4;
     const totalW = nBars * barW + (nBars - 1) * gap;
     const startX = cx - totalW / 2;
-    const amplitude = Math.min(1, (state.level || 0) * 6);
+    // Silence is still: the bars rest as dots and only breathe (opacity, one
+    // slow 3.2s cycle), so an open mic in a quiet room isn't a busy pill.
+    // Room noise sits under NOISE_FLOOR; the gate eases in above it, and the
+    // envelope rises fast and falls slow, so speech reads at once and the
+    // bars settle rather than drop.
+    const NOISE_FLOOR = 0.012, SPEECH_SPAN = 0.08; // RMS; tune if a quiet mic never lifts the bars
+    const g = Math.min(1, Math.max(0, ((state.level || 0) - NOISE_FLOOR) / SPEECH_SPAN));
+    const voice = g * g * (3 - 2 * g);
+    inst.env += (voice - inst.env) * (voice > inst.env ? 0.35 : 0.06);
+    const amplitude = inst.env;
+    const breathe = 0.5 + 0.5 * Math.cos(2 * Math.PI * cycle(sincePhase, 3.2, 0));
     for (let i = 0; i < nBars; i++) {
       const delay = i * 0.18;
-      const wave = Math.sin((now * 0.003 + delay) * Math.PI * 2);
-      const mix = amplitude * 0.7 + 0.3 * (0.5 + 0.5 * wave);
-      const val = 0.15 + 0.85 * mix;
-      const bh = Math.max(4, val * 18);
+      // The wave only moves the bars as far as the voice lets it: none in silence.
+      const wave = 0.5 + 0.5 * Math.sin((now * 0.0022 + delay) * Math.PI * 2);
+      const val = amplitude * (0.55 + 0.45 * wave);
+      const bh = Math.max(3.5, 3.5 + val * 14.5);
       const bx = startX + i * (barW + gap);
       const by = yc - bh / 2;
       ctx.fillStyle = accent;
-      ctx.globalAlpha = alpha * (0.5 + val * 0.5);
+      ctx.globalAlpha = alpha * (0.45 + 0.1 * breathe * (1 - amplitude) + 0.45 * val);
       rr(bx, by, barW, bh, barW / 2);
       ctx.fill();
     }
     ctx.globalAlpha = alpha;
-    cancelBtn(xr, yc, btnR, alpha, dark);
-    activeBtn = { x: xr, y: yc, r: btnR, action: 'cancel' };
+    liveButton();
   } else if (name === 'transcribing') {
     // mm-rise: four bubbles at fixed x in the design's 66x26 box, each rising
     // from the box floor (translateY 9 → -15, scale .4 → 1.05) while it fades
@@ -435,8 +476,7 @@ function drawState(x, y, w, h, now, radius, shadowScale, baseAlpha) {
       ctx.shadowBlur = 0;
     }
     ctx.globalAlpha = alpha;
-    cancelBtn(xr, yc, btnR, alpha, dark);
-    activeBtn = { x: xr, y: yc, r: btnR, action: 'cancel' };
+    liveButton();
   } else if (name === 'polishing') {
     // The design's 62x26 box: three gold blobs at .85 drifting as one cloud
     // (mm-blob), a shimmer bar sweeping across it (mm-shimmer) and a 4-point
@@ -477,11 +517,11 @@ function drawState(x, y, w, h, now, radius, shadowScale, baseAlpha) {
       ctx.restore();
     }
     ctx.globalAlpha = alpha;
-    cancelBtn(xr, yc, btnR, alpha, dark);
-    activeBtn = { x: xr, y: yc, r: btnR, action: 'cancel' };
+    liveButton();
   } else if (name === 'done') {
     const prog = easeOut(Math.min(sincePhase, 260) / 260);
-    const cx = (contentL + xr) / 2;
+    const cx = bubble || isRotated(name) ? x + w / 2 : (contentL + xr) / 2;
+    if (isRotated(name)) { ctx.save(); ctx.translate(cx, yc); ctx.rotate(-Math.PI / 2); ctx.translate(-cx, -yc); }
     const p1 = [cx - 9, yc + 1], p2 = [cx - 3, yc + 7], p3 = [cx + 11, yc - 8];
     const L1 = Math.hypot(p2[0] - p1[0], p2[1] - p1[1]), L2 = Math.hypot(p3[0] - p2[0], p3[1] - p2[1]);
     const d = prog * (L1 + L2);
@@ -500,6 +540,7 @@ function drawState(x, y, w, h, now, radius, shadowScale, baseAlpha) {
       ctx.lineTo(p2[0] + (p3[0] - p2[0]) * t, p2[1] + (p3[1] - p2[1]) * t);
     }
     ctx.stroke();
+    if (isRotated(name)) ctx.restore();
   } else if (name === 'error') {
     // A solid Blush disc and a rose countdown, as designed.
     ctx.fillStyle = blush;
@@ -655,6 +696,7 @@ function drawState(x, y, w, h, now, radius, shadowScale, baseAlpha) {
     seg(f.corrected, txt, '700');
     if (f.more > 0) seg('  +' + f.more, muted, '500');
   }
+  if (shrink) ctx.restore();
   ctx.globalAlpha = 1;
 }
 
@@ -674,6 +716,15 @@ function pillWidthFor(name) {
 
 function isNote(name) {
   return ['kept', 'noselection', 'copied', 'fixcopied', 'notfound', 'notundone', 'nothingtoundo', 'undoterminal', 'lectureon'].includes(name);
+}
+
+// The last frame's rotation, so a click can be mapped into the drawing's frame.
+const view = { rot: false, cx: 0, cy: 0 };
+/// A pointer position in the drawing's own (unrotated) frame: undoes the
+/// quarter turn frame() applies to a side pill.
+function toLocal(e) {
+  if (!view.rot) return [e.offsetX, e.offsetY];
+  return [view.cx + (e.offsetY - view.cy), view.cy - (e.offsetX - view.cx)];
 }
 
 function frame(now) {
@@ -706,8 +757,16 @@ function frame(now) {
     const w = tweenValue(tw.w, now) * scale;
     const h = tweenValue(tw.h, now) * scale;
     const r = Math.min(tweenValue(tw.r, now), h / 2);
-    const [px, py] = pillOrigin(cw, ch, w, h);
-    drawState(px, py, w, h, now, r, tweenValue(tw.shadow, now), tweenValue(tw.op, now));
+    // A side pill is drawn horizontal and turned a quarter: anchor its
+    // on-screen (swapped) box, then draw the horizontal one about its centre.
+    view.rot = isRotated(state.name);
+    const [sw, sh] = view.rot ? [h, w] : [w, h];
+    const [px, py] = pillOrigin(cw, ch, sw, sh);
+    view.cx = px + sw / 2; view.cy = py + sh / 2;
+    ctx.save();
+    if (view.rot) { ctx.translate(view.cx, view.cy); ctx.rotate(Math.PI / 2); ctx.translate(-view.cx, -view.cy); }
+    drawState(view.cx - w / 2, view.cy - h / 2, w, h, now, r, tweenValue(tw.shadow, now), tweenValue(tw.op, now));
+    ctx.restore();
   }
   requestAnimationFrame(frame);
 }
@@ -719,9 +778,11 @@ function frame(now) {
 // on the pill", so a click on the pill body (no button under it) is a no-op.
 canvas.addEventListener('click', (e) => {
   if (activeBtn) {
-    const d = Math.hypot(e.offsetX - activeBtn.x, e.offsetY - activeBtn.y);
+    const [lx, ly] = toLocal(e);
+    const d = Math.hypot(lx - activeBtn.x, ly - activeBtn.y);
     if (d <= activeBtn.r + 3) { // +3px forgiving hit-area for a small target
-      invoke(activeBtn.action === 'retry' ? 'retry_last' : 'cancel_dictation');
+      if (activeBtn.action === 'stop') pressUntil = performance.now() + PRESS_MS;
+      invoke({ retry: 'retry_last', stop: 'stop_dictation', cancel: 'cancel_dictation' }[activeBtn.action]);
     } else if (state.name === 'listening') {
       // The pill body while listening stops the take (and delivers it), so a
       // take started with a click can be finished with one (#37). The ✕ still
@@ -745,14 +806,15 @@ canvas.addEventListener('click', (e) => {
   }
 });
 
-/// Hit-test against the HOVER rect (62x20), not the resting 46x16 one. The
+/// Hit-test against the HOVER rect (62x20; 20x62 on a side, 26x26 in a corner), not the resting 46x16 one. The
 /// pill grows the moment the cursor arrives, so the hover box is what's
 /// actually under the pointer at click time — and using one stable rect for
 /// both states stops the pill oscillating at the boundary as it resizes.
 function overTuckedPill(e) {
-  const g = GEO.hover;
-  const [px, py] = pillOrigin(window.innerWidth, window.innerHeight, g.w, g.h);
-  return e.offsetX >= px && e.offsetX <= px + g.w && e.offsetY >= py && e.offsetY <= py + g.h;
+  const g = (layout() === 'corner' ? GEO_CORNER : GEO).hover;
+  const [w, h] = layout() === 'side' ? [g.h, g.w] : [g.w, g.h]; // on screen
+  const [px, py] = pillOrigin(window.innerWidth, window.innerHeight, w, h);
+  return e.offsetX >= px && e.offsetX <= px + w && e.offsetY >= py && e.offsetY <= py + h;
 }
 
 // Hover only reaches us at all while Rust has turned click-through off (the
