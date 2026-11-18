@@ -344,6 +344,35 @@ impl ToggleKey {
     }
 }
 
+/// A modifier bound in Toggle mode counts only as a clean tap: down and up
+/// with no other key or click in between. Toggling on its press made every
+/// Ctrl+C, Alt+Tab or capital letter start or stop a take, so any modifier
+/// but the rarely-chorded Right Ctrl was unusable.
+#[derive(Default)]
+struct ModTap {
+    down: bool,
+    dirty: bool,
+}
+
+impl ModTap {
+    /// Feed every key press/release and click. True on a clean tap's release.
+    fn on_input(&mut self, is_bound: bool, pressed: bool) -> bool {
+        if !is_bound {
+            self.dirty |= pressed && self.down;
+            return false;
+        }
+        if pressed {
+            if !self.down {
+                (self.down, self.dirty) = (true, false); // OS auto-repeat lands here too: ignored
+            }
+            return false;
+        }
+        let clean = self.down && !self.dirty;
+        self.down = false;
+        clean
+    }
+}
+
 /// Blocks the calling thread forever, listening system-wide for the configured
 /// hotkey and emitting `DictationEvent`s on `tx`. Must run on its own
 /// dedicated OS thread — rdev owns the thread it's called from on Windows.
@@ -369,6 +398,7 @@ pub fn run_listener(
     let mut toggle = ToggleKey::default();
     let mut chord_key = ChordKey::default();
     let mut pad_key = ChordKey::default();
+    let mut mod_tap = ModTap::default();
 
     let callback = move |event: rdev::Event| {
         if suppressed.load(Ordering::SeqCst) {
@@ -400,6 +430,19 @@ pub fn run_listener(
             EventType::KeyRelease(k) => Some((k, false)),
             _ => None,
         };
+
+        // Fed before the chord checks below, which can return early: a
+        // Ctrl+Alt+1 Transform must still dirty a bound Ctrl's tap.
+        let mode = ActivationMode::from_u8(activation.load(Ordering::Relaxed));
+        let mod_toggle = mode == ActivationMode::Toggle
+            && matches!(bound, Input::Key(k) if is_modifier(k) && k != Key::CapsLock);
+        let tapped = mod_toggle
+            && match event.event_type {
+                EventType::KeyPress(k) => mod_tap.on_input(Input::Key(k) == bound, true),
+                EventType::KeyRelease(k) => mod_tap.on_input(Input::Key(k) == bound, false),
+                EventType::ButtonPress(_) => mod_tap.on_input(false, true),
+                _ => false,
+            };
 
         // The Scratchpad chord (#19), by a Transform chord's rules. Not
         // blocked mid-take: a take lands where it was spoken, pad or not.
@@ -443,8 +486,6 @@ pub fn run_listener(
             _ => return,
         };
 
-        let mode = ActivationMode::from_u8(activation.load(Ordering::Relaxed));
-
         // Pausing only blocks *starting* a new dictation — a stop/release
         // already in flight always goes through, so we never strand the
         // recorder mid-capture.
@@ -459,6 +500,17 @@ pub fn run_listener(
                 } else if !pressed && is_held {
                     is_held = false;
                     let _ = tx.send(DictationEvent::Stop);
+                }
+            }
+            ActivationMode::Toggle if mod_toggle => {
+                // A clean tap is one whole press, played through the same
+                // toggle state machine on its release.
+                if tapped {
+                    let (l, p) = (listening.load(Ordering::Relaxed), paused.load(Ordering::Relaxed));
+                    if let Some(ev) = toggle.on_key(true, l, p) {
+                        let _ = tx.send(ev);
+                    }
+                    toggle.on_key(false, l, p);
                 }
             }
             ActivationMode::Toggle => {
@@ -482,6 +534,26 @@ pub fn run_listener(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_modifier_counts_only_as_a_clean_tap() {
+        let mut t = ModTap::default();
+        // Tap: down, auto-repeat, up.
+        assert!(!t.on_input(true, true));
+        assert!(!t.on_input(true, true));
+        assert!(t.on_input(true, false));
+        // Ctrl+C: another key while held, so no tap.
+        assert!(!t.on_input(true, true));
+        assert!(!t.on_input(false, true));
+        assert!(!t.on_input(false, false));
+        assert!(!t.on_input(true, false));
+        // Keys while it's up don't spoil the next tap.
+        assert!(!t.on_input(false, true));
+        assert!(!t.on_input(true, true));
+        assert!(t.on_input(true, false));
+        // A stray release (pressed before the hook) isn't a tap.
+        assert!(!t.on_input(true, false));
+    }
 
     #[test]
     fn a_clean_press_release_toggles_once() {
