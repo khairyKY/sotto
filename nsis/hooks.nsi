@@ -6,7 +6,23 @@
 ; therefore have to decide separately what to do with them: leave them (so
 ; re-install is fast) or remove them (so uninstall is truly complete).
 
+; Close a running Sotto and wait until it has really exited. Tauri's own
+; check kills it too, but then waits a fixed 500 ms; with the speech model
+; loaded Sotto can take longer to let go of sotto.exe, and the copy fails.
+; Up to 5 s (20 x 250 ms); `find` exits 0 while sotto.exe is still listed.
 !macro NSIS_HOOK_PREINSTALL
+  nsExec::Exec 'taskkill /F /IM sotto.exe /T'
+  Pop $0
+  StrCpy $1 0
+  sotto_wait_exit:
+    nsExec::Exec 'cmd /c tasklist /FI "IMAGENAME eq sotto.exe" /NH | find /I "sotto.exe"'
+    Pop $0
+    StrCmp $0 "0" 0 sotto_exited
+    IntOp $1 $1 + 1
+    IntCmp $1 20 sotto_exited
+    Sleep 250
+    Goto sotto_wait_exit
+  sotto_exited:
 !macroend
 
 !macro NSIS_HOOK_POSTINSTALL
