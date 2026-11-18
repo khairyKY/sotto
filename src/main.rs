@@ -1496,13 +1496,21 @@ fn spawn_update_check(app: tauri::AppHandle) {
                 return;
             }
         };
-        match updater.check().await {
-            Ok(Some(update)) => {
-                tracing::info!(version = %update.version, "update available");
-                let _ = app.emit("update-available", update.version.clone());
+        // Launched at sign-in, the first check often runs before the network
+        // is up, and a single failure used to mean no banner all session.
+        // ponytail: three retries, then wait for the next launch; a periodic
+        // re-check if Sotto ever stays up for days.
+        for (attempt, wait_secs) in [0u64, 60, 300, 1800].into_iter().enumerate() {
+            tokio::time::sleep(Duration::from_secs(wait_secs)).await;
+            match updater.check().await {
+                Ok(Some(update)) => {
+                    tracing::info!(version = %update.version, "update available");
+                    let _ = app.emit("update-available", update.version.clone());
+                    return;
+                }
+                Ok(None) => return tracing::info!("Sotto is up to date"),
+                Err(err) => tracing::warn!(?err, attempt, "update check failed"),
             }
-            Ok(None) => tracing::info!("Sotto is up to date"),
-            Err(err) => tracing::warn!(?err, "update check failed"),
         }
     });
 }
@@ -1872,7 +1880,7 @@ fn spawn_pipeline(
                         if take.samples.len() >= MIN_CLIP_SAMPLES {
                             record_outcome(&take, &stats_enabled, "cancelled");
                             take.reason = "Cancelled";
-                            stash = Some(take);
+                            restash(&app, &mut stash, Some(take));
                         }
                         publish_take(&app, &take_info, &stash);
                     }
@@ -2500,6 +2508,24 @@ impl Drop for Take {
     }
 }
 
+/// Put `next` in the retry stash. A take it pushes out (a newer take stashed
+/// over it, or a later one delivered) was never delivered, and there's only
+/// one slot: with recordings on, its audio is kept with them instead of lost.
+/// Dismiss clears the stash directly; that one the user meant to throw away.
+fn restash(app: &tauri::AppHandle, stash: &mut Option<Take>, next: Option<Take>) {
+    let Some(old) = std::mem::replace(stash, next) else { return };
+    let state = app.state::<AppState>();
+    let (on, max_mb) = {
+        let cfg = state.cfg.lock().unwrap();
+        (cfg.retention.enabled, cfg.retention.max_mb)
+    };
+    if on && !old.samples.is_empty() {
+        let raw = old.raw_text.as_deref().unwrap_or("");
+        recordings::record(&old.samples, raw, "", "", "", "undelivered", old.audio_ms, max_mb, old.reason);
+        tracing::info!(audio_ms = old.audio_ms, "undelivered take kept with recordings");
+    }
+}
+
 impl From<&Take> for TakeInfo {
     fn from(t: &Take) -> Self {
         TakeInfo {
@@ -2744,7 +2770,7 @@ fn process_take(
                 emit_state(app, if model_missing { "nomodel" } else { "error" });
                 record_outcome(&take, stats_enabled, "error");
                 take.reason = if model_missing { "Speech model still downloading" } else { "Couldn't transcribe it" };
-                *stash = Some(take);
+                restash(app, stash, Some(take));
                 return;
             }
         }
@@ -2753,7 +2779,7 @@ fn process_take(
         emit_state(app, "cancelled");
         record_outcome(&take, stats_enabled, "cancelled");
         take.reason = "Cancelled";
-        *stash = Some(take);
+        restash(app, stash, Some(take));
         return;
     }
     let raw = take.raw_text.clone().unwrap_or_default();
@@ -2761,7 +2787,7 @@ fn process_take(
         emit_state(app, "error");
         record_outcome(&take, stats_enabled, "error");
         take.reason = "Didn't catch any speech";
-        *stash = Some(take);
+        restash(app, stash, Some(take));
         return;
     }
 
@@ -2794,7 +2820,7 @@ fn process_take(
         }
         let _ = app.emit("pronunciation-sample", PronunciationSampleDto { word: target, heard, matched });
         emit_state(app, "done");
-        *stash = None;
+        restash(app, stash, None);
         return;
     }
 
@@ -2826,14 +2852,14 @@ fn process_take(
         emit_state(app, "cancelled");
         record_outcome(&take, stats_enabled, "cancelled");
         take.reason = "Cancelled";
-        *stash = Some(take);
+        restash(app, stash, Some(take));
         return;
     }
     if result.text.is_empty() {
         emit_state(app, "error");
         record_outcome(&take, stats_enabled, "error");
         take.reason = "Polish came back empty";
-        *stash = Some(take);
+        restash(app, stash, Some(take));
         return;
     }
 
@@ -2851,9 +2877,9 @@ fn process_take(
         emit_state(app, if saved { "done" } else { "error" });
         if !saved {
             take.reason = "Couldn't save it to the Scratchpad";
-            *stash = Some(take);
+            restash(app, stash, Some(take));
         } else if !stash.as_ref().is_some_and(|t| t.reason == RECOVERED) {
-            *stash = None;
+            restash(app, stash, None);
         }
         return;
     }
@@ -2933,7 +2959,7 @@ fn process_take(
             // restart: Sotto usually starts hidden, so nobody may have seen
             // its card yet, and it can't be redone by just speaking again.
             if !stash.as_ref().is_some_and(|t| t.reason == RECOVERED) {
-                *stash = None;
+                restash(app, stash, None);
             }
             tracing::info!(chars = result.text.chars().count(), auto_sent, "injected");
         }
@@ -2942,7 +2968,7 @@ fn process_take(
             emit_state(app, "error");
             record_outcome(&take, stats_enabled, "error");
             take.reason = "Couldn't paste into that app";
-            *stash = Some(take);
+            restash(app, stash, Some(take));
         }
     }
 }
