@@ -109,6 +109,15 @@ fn install(dir: String, autostart: bool, desktop: bool, send: impl Fn(String)) {
     for exe in ["sotto.exe", "llama-server.exe"] {
         let _ = quiet("taskkill").args(["/F", "/IM", exe, "/T"]).status();
     }
+    // taskkill returns before the process is gone; until it is, sotto.exe is
+    // locked and the copy fails. Up to 5 s.
+    for _ in 0..20 {
+        let listed = quiet("tasklist").args(["/FI", "IMAGENAME eq sotto.exe", "/NH"]).output();
+        if !listed.is_ok_and(|o| String::from_utf8_lossy(&o.stdout).to_ascii_lowercase().contains("sotto.exe")) {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(250));
+    }
 
     step(1);
     let tmp = std::env::temp_dir().join(format!("sotto-setup-{}.exe", std::process::id()));
@@ -116,16 +125,18 @@ fn install(dir: String, autostart: bool, desktop: bool, send: impl Fn(String)) {
         return fail("Couldn't unpack the installer. Check there's free space on your system drive.");
     }
     // NSIS wants /D last and unquoted, even with spaces in it.
-    let ok = quiet(tmp.to_str().unwrap_or_default())
+    let status = quiet(tmp.to_str().unwrap_or_default())
         .raw_arg("/S")
         .raw_arg(format!("/D={dir}"))
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false);
+        .status();
     let _ = std::fs::remove_file(&tmp);
     let exe = Path::new(&dir).join("sotto.exe");
-    if !ok || !exe.exists() {
-        return fail("Sotto couldn't be installed in that folder. Try another one.");
+    match status {
+        Err(_) => return fail("Windows or your antivirus stopped the installer from starting. Allow Sotto setup, then try again."),
+        Ok(s) if !s.success() || !exe.exists() => {
+            return fail("Sotto couldn't be installed in that folder. Try another one, or close Sotto and try again.")
+        }
+        Ok(_) => {}
     }
 
     step(2); // the silent installer makes the desktop shortcut; keep it or not
